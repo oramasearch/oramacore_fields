@@ -360,8 +360,7 @@ mod tests {
     fn test_sorted_merge_desc_empty() {
         let left: Vec<(u64, u64)> = vec![];
         let right: Vec<(u64, u64)> = vec![];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert!(result.is_empty());
     }
 
@@ -369,8 +368,7 @@ mod tests {
     fn test_sorted_merge_desc_left_only() {
         let left = vec![(20u64, 2), (10, 1)];
         let right: Vec<(u64, u64)> = vec![];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(20, 2), (10, 1)]);
     }
 
@@ -378,8 +376,7 @@ mod tests {
     fn test_sorted_merge_desc_right_only() {
         let left: Vec<(u64, u64)> = vec![];
         let right = vec![(20u64, 2), (10, 1)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(20, 2), (10, 1)]);
     }
 
@@ -387,8 +384,7 @@ mod tests {
     fn test_sorted_merge_desc_interleaved() {
         let left = vec![(40u64, 4), (20, 2)];
         let right = vec![(30u64, 3), (10, 1)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(40, 4), (30, 3), (20, 2), (10, 1)]);
     }
 
@@ -397,8 +393,7 @@ mod tests {
         // Equal value, left doc > right doc → take left first (descending doc order)
         let left = vec![(10u64, 5)];
         let right = vec![(10u64, 2)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(10, 5), (10, 2)]);
     }
 
@@ -407,8 +402,7 @@ mod tests {
         // Equal value, left doc < right doc → take right first (descending doc order)
         let left = vec![(10u64, 2)];
         let right = vec![(10u64, 5)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(10, 5), (10, 2)]);
     }
 
@@ -417,8 +411,7 @@ mod tests {
         // Same (value, doc_id) in both → consume both, yield once
         let left = vec![(10u64, 1)];
         let right = vec![(10u64, 1)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(10, 1)]);
     }
 
@@ -427,8 +420,7 @@ mod tests {
         // Consecutive duplicates within a single iterator side
         let left = vec![(10u64, 1), (10, 1)];
         let right: Vec<(u64, u64)> = vec![];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![(10, 1)]);
     }
 
@@ -436,8 +428,7 @@ mod tests {
     fn test_sorted_merge_desc_f64() {
         let left = vec![(4.0f64, 4), (2.0, 2)];
         let right = vec![(3.0f64, 3), (1.0, 1)];
-        let result: Vec<_> =
-            sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_descending(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result.len(), 4);
         assert!((result[0].0 - 4.0).abs() < f64::EPSILON);
         assert!((result[1].0 - 3.0).abs() < f64::EPSILON);
@@ -451,8 +442,7 @@ mod tests {
     fn test_sorted_merge_doc_ids_empty() {
         let left: Vec<u64> = vec![];
         let right: Vec<u64> = vec![];
-        let result: Vec<_> =
-            sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
         assert!(result.is_empty());
     }
 
@@ -460,8 +450,7 @@ mod tests {
     fn test_sorted_merge_doc_ids_left_only() {
         let left = vec![1u64, 3, 5];
         let right: Vec<u64> = vec![];
-        let result: Vec<_> =
-            sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![1, 3, 5]);
     }
 
@@ -469,8 +458,7 @@ mod tests {
     fn test_sorted_merge_doc_ids_right_only() {
         let left: Vec<u64> = vec![];
         let right = vec![2u64, 4, 6];
-        let result: Vec<_> =
-            sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![2, 4, 6]);
     }
 
@@ -479,8 +467,7 @@ mod tests {
         // Consecutive duplicates within a single side
         let left = vec![1u64, 1, 3];
         let right: Vec<u64> = vec![];
-        let result: Vec<_> =
-            sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
+        let result: Vec<_> = sorted_merge_doc_ids(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![1, 3]);
     }
 }

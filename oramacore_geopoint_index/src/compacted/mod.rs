@@ -385,8 +385,7 @@ impl Iterator for SegmentPointIter<'_> {
         loop {
             // Yield next entry from current leaf
             if self.current_entry < self.entry_count {
-                let entry_offset =
-                    self.entries_start + self.current_entry * LEAF_ENTRY_SIZE;
+                let entry_offset = self.entries_start + self.current_entry * LEAF_ENTRY_SIZE;
                 self.current_entry += 1;
 
                 if entry_offset + LEAF_ENTRY_SIZE > self.leaf_data.len() {
@@ -423,9 +422,9 @@ impl Iterator for SegmentPointIter<'_> {
                     continue;
                 }
 
-                let count = u32::from_ne_bytes(
-                    self.leaf_data[offset..offset + 4].try_into().unwrap(),
-                ) as usize;
+                let count =
+                    u32::from_ne_bytes(self.leaf_data[offset..offset + 4].try_into().unwrap())
+                        as usize;
                 if count == 0 {
                     continue;
                 }
@@ -685,7 +684,10 @@ mod tests {
         let ver_dir = ensure_version_dir(base_path, 1).unwrap();
 
         let p = GeoPoint::new(10.0, 20.0).unwrap().encode();
-        let mut points = vec![PointEntry { point: p, doc_id: 42 }];
+        let mut points = vec![PointEntry {
+            point: p,
+            doc_id: 42,
+        }];
         build::build_bkd(&mut points, &ver_dir).unwrap();
         write_u64_slice(&ver_dir.join("deleted.bin"), &[]).unwrap();
 
@@ -712,8 +714,14 @@ mod tests {
         let p1 = GeoPoint::new(10.0, 20.0).unwrap().encode();
         let p2 = GeoPoint::new(11.0, 21.0).unwrap().encode();
         let mut points = vec![
-            PointEntry { point: p1, doc_id: 1 },
-            PointEntry { point: p2, doc_id: 2 },
+            PointEntry {
+                point: p1,
+                doc_id: 1,
+            },
+            PointEntry {
+                point: p2,
+                doc_id: 2,
+            },
         ];
         build::build_bkd(&mut points, &ver_dir).unwrap();
         write_u64_slice(&ver_dir.join("deleted.bin"), &[1]).unwrap();
@@ -739,8 +747,14 @@ mod tests {
         let p1 = GeoPoint::new(10.0, 20.0).unwrap().encode();
         let p2 = GeoPoint::new(30.0, 40.0).unwrap().encode();
         let mut points = vec![
-            PointEntry { point: p1, doc_id: 1 },
-            PointEntry { point: p2, doc_id: 2 },
+            PointEntry {
+                point: p1,
+                doc_id: 1,
+            },
+            PointEntry {
+                point: p2,
+                doc_id: 2,
+            },
         ];
         build::build_bkd(&mut points, &ver_dir).unwrap();
         write_u64_slice(&ver_dir.join("deleted.bin"), &[]).unwrap();
@@ -761,7 +775,10 @@ mod tests {
         let ver_dir = ensure_version_dir(base_path, 1).unwrap();
 
         let p = GeoPoint::new(10.0, 20.0).unwrap().encode();
-        let mut points = vec![PointEntry { point: p, doc_id: 42 }];
+        let mut points = vec![PointEntry {
+            point: p,
+            doc_id: 42,
+        }];
         build::build_bkd(&mut points, &ver_dir).unwrap();
 
         // Write a corrupted deleted.bin (5 bytes, not a multiple of 8)
@@ -789,8 +806,14 @@ mod tests {
         let p1 = GeoPoint::new(10.0, 20.0).unwrap().encode();
         let p2 = GeoPoint::new(30.0, 40.0).unwrap().encode();
         let mut points = vec![
-            PointEntry { point: p1, doc_id: 1 },
-            PointEntry { point: p2, doc_id: 2 },
+            PointEntry {
+                point: p1,
+                doc_id: 1,
+            },
+            PointEntry {
+                point: p2,
+                doc_id: 2,
+            },
         ];
         build::build_bkd(&mut points, &ver_dir).unwrap();
         write_u64_slice(&ver_dir.join("deleted.bin"), &[]).unwrap();
@@ -829,7 +852,10 @@ mod tests {
                 let lat = -80.0 + (i as f64) * 0.15;
                 let lon = -170.0 + (i as f64) * 0.33;
                 let p = GeoPoint::new(lat, lon).unwrap().encode();
-                PointEntry { point: p, doc_id: i as u64 }
+                PointEntry {
+                    point: p,
+                    doc_id: i as u64,
+                }
             })
             .collect();
         build::build_bkd(&mut points, &ver_dir).unwrap();

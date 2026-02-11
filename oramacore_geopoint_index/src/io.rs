@@ -191,8 +191,7 @@ pub fn write_manifest(version_dir: &Path, point_counts: &[u64]) -> Result<()> {
 /// Read manifest.bin: returns point_counts per segment.
 pub fn read_manifest(version_dir: &Path) -> Result<Vec<u64>> {
     let path = version_dir.join("manifest.bin");
-    let data =
-        fs::read(&path).with_context(|| format!("Failed to read manifest.bin: {path:?}"))?;
+    let data = fs::read(&path).with_context(|| format!("Failed to read manifest.bin: {path:?}"))?;
 
     if data.len() < 8 {
         anyhow::bail!("manifest.bin too small: {} bytes", data.len());

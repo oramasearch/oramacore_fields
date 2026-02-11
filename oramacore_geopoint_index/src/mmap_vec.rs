@@ -17,8 +17,8 @@ pub struct MmapVecWriter<T: Copy> {
 impl<T: Copy> MmapVecWriter<T> {
     pub fn new(dir: &Path) -> Result<Self> {
         let path = dir.join(TMP_FILENAME);
-        let file = File::create(&path)
-            .with_context(|| format!("Failed to create temp file: {path:?}"))?;
+        let file =
+            File::create(&path).with_context(|| format!("Failed to create temp file: {path:?}"))?;
         Ok(Self {
             writer: BufWriter::new(file),
             path,
@@ -37,7 +37,10 @@ impl<T: Copy> MmapVecWriter<T> {
     }
 
     pub fn finish(self) -> Result<MmapVec<T>> {
-        let file = self.writer.into_inner().map_err(|e| e.into_error())
+        let file = self
+            .writer
+            .into_inner()
+            .map_err(|e| e.into_error())
             .with_context(|| format!("Failed to flush temp file: {:?}", self.path))?;
         file.sync_all()
             .with_context(|| format!("Failed to sync temp file: {:?}", self.path))?;

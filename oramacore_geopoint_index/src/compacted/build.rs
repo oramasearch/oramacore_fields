@@ -1,6 +1,6 @@
-use crate::point::PointEntry;
 #[cfg(test)]
 use crate::point::EncodedPoint;
+use crate::point::PointEntry;
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -77,7 +77,11 @@ fn build_iterative(
     }
 
     let mut stack = Vec::with_capacity(64);
-    stack.push(StackItem { node_id: 1, from: 0, to: points.len() });
+    stack.push(StackItem {
+        node_id: 1,
+        from: 0,
+        to: points.len(),
+    });
 
     while let Some(StackItem { node_id, from, to }) = stack.pop() {
         if node_id > inner_nodes.len() {
@@ -90,7 +94,8 @@ fn build_iterative(
 
             // Sort leaf entries by (lat, lon, doc_id)
             slice.sort_unstable_by(|a, b| {
-                a.point.lat
+                a.point
+                    .lat
                     .cmp(&b.point.lat)
                     .then(a.point.lon.cmp(&b.point.lon))
                     .then(a.doc_id.cmp(&b.doc_id))
@@ -123,8 +128,16 @@ fn build_iterative(
             };
 
             // Push right first, then left, so left is processed first
-            stack.push(StackItem { node_id: right, from, to });
-            stack.push(StackItem { node_id: left, from, to });
+            stack.push(StackItem {
+                node_id: right,
+                from,
+                to,
+            });
+            stack.push(StackItem {
+                node_id: left,
+                from,
+                to,
+            });
             continue;
         }
 
@@ -145,8 +158,16 @@ fn build_iterative(
         };
 
         // Push right first, then left, so left is processed first
-        stack.push(StackItem { node_id: right, from: mid, to });
-        stack.push(StackItem { node_id: left, from, to: mid });
+        stack.push(StackItem {
+            node_id: right,
+            from: mid,
+            to,
+        });
+        stack.push(StackItem {
+            node_id: left,
+            from,
+            to: mid,
+        });
     }
 
     Ok(())
@@ -221,7 +242,10 @@ mod tests {
     fn test_build_bkd_single_point() {
         let tmp = TempDir::new().unwrap();
         let p = GeoPoint::new(10.0, 20.0).unwrap().encode();
-        let mut points = vec![PointEntry { point: p, doc_id: 1 }];
+        let mut points = vec![PointEntry {
+            point: p,
+            doc_id: 1,
+        }];
         build_bkd(&mut points, tmp.path()).unwrap();
         assert!(tmp.path().join("inner.idx").exists());
         assert!(tmp.path().join("leaves.dat").exists());
@@ -235,7 +259,10 @@ mod tests {
                 let lat = -90.0 + (i as f64 * 180.0 / 1000.0);
                 let lon = -180.0 + (i as f64 * 360.0 / 1000.0);
                 let p = GeoPoint::new(lat, lon).unwrap().encode();
-                PointEntry { point: p, doc_id: i as u64 }
+                PointEntry {
+                    point: p,
+                    doc_id: i as u64,
+                }
             })
             .collect();
         build_bkd(&mut points, tmp.path()).unwrap();
@@ -246,8 +273,14 @@ mod tests {
     #[test]
     fn test_choose_split_dim_lat_spread() {
         let points: Vec<PointEntry> = vec![
-            PointEntry { point: EncodedPoint { lat: -1000, lon: 0 }, doc_id: 0 },
-            PointEntry { point: EncodedPoint { lat: 1000, lon: 10 }, doc_id: 1 },
+            PointEntry {
+                point: EncodedPoint { lat: -1000, lon: 0 },
+                doc_id: 0,
+            },
+            PointEntry {
+                point: EncodedPoint { lat: 1000, lon: 10 },
+                doc_id: 1,
+            },
         ];
         assert_eq!(choose_split_dim(&points), 0); // lat spread = 2000 > lon spread = 10
     }
@@ -255,8 +288,14 @@ mod tests {
     #[test]
     fn test_choose_split_dim_lon_spread() {
         let points: Vec<PointEntry> = vec![
-            PointEntry { point: EncodedPoint { lat: 0, lon: -1000 }, doc_id: 0 },
-            PointEntry { point: EncodedPoint { lat: 10, lon: 1000 }, doc_id: 1 },
+            PointEntry {
+                point: EncodedPoint { lat: 0, lon: -1000 },
+                doc_id: 0,
+            },
+            PointEntry {
+                point: EncodedPoint { lat: 10, lon: 1000 },
+                doc_id: 1,
+            },
         ];
         assert_eq!(choose_split_dim(&points), 1); // lon spread = 2000 > lat spread = 10
     }

@@ -177,7 +177,13 @@ impl GeoPointStorage {
         };
 
         if delete_ratio > self.threshold.value() || segment_count == 0 {
-            self.full_compact(version_id, &current, &snapshot, all_deletes, delete_ratio > self.threshold.value())?;
+            self.full_compact(
+                version_id,
+                &current,
+                &snapshot,
+                all_deletes,
+                delete_ratio > self.threshold.value(),
+            )?;
         } else if segment_count >= self.max_segments {
             self.partial_merge_compact(version_id, &current, &snapshot, all_deletes)?;
         } else {
@@ -239,12 +245,16 @@ impl GeoPointStorage {
             let new_seg_dir = ensure_segment_subdir(&new_version_dir, old_segment_count)?;
             let mut writer = MmapVecWriter::new(&new_seg_dir)?;
             for (p, id) in snapshot.inserts.iter() {
-                writer.push(&PointEntry { point: p.encode(), doc_id: *id })?;
+                writer.push(&PointEntry {
+                    point: p.encode(),
+                    doc_id: *id,
+                })?;
             }
             let mut mmap_vec = writer.finish()?;
             let slice = mmap_vec.as_mut_slice();
             slice.sort_unstable_by(|a, b| {
-                a.point.lat
+                a.point
+                    .lat
                     .cmp(&b.point.lat)
                     .then(a.point.lon.cmp(&b.point.lon))
                     .then(a.doc_id.cmp(&b.doc_id))
@@ -331,13 +341,17 @@ impl GeoPointStorage {
 
         // Add live inserts
         for (p, id) in snapshot.inserts.iter() {
-            writer.push(&PointEntry { point: p.encode(), doc_id: *id })?;
+            writer.push(&PointEntry {
+                point: p.encode(),
+                doc_id: *id,
+            })?;
         }
 
         let mut mmap_vec = writer.finish()?;
         let slice = mmap_vec.as_mut_slice();
         slice.sort_unstable_by(|a, b| {
-            a.point.lat
+            a.point
+                .lat
                 .cmp(&b.point.lat)
                 .then(a.point.lon.cmp(&b.point.lon))
                 .then(a.doc_id.cmp(&b.doc_id))
@@ -381,14 +395,18 @@ impl GeoPointStorage {
             writer.push(&PointEntry { point: pt, doc_id })?;
         }
         for (p, id) in snapshot.inserts.iter() {
-            writer.push(&PointEntry { point: p.encode(), doc_id: *id })?;
+            writer.push(&PointEntry {
+                point: p.encode(),
+                doc_id: *id,
+            })?;
         }
         let mut mmap_vec = writer.finish()?;
 
         // Deduplicate exact (point, doc_id) pairs
         let slice = mmap_vec.as_mut_slice();
         slice.sort_unstable_by(|a, b| {
-            a.point.lat
+            a.point
+                .lat
                 .cmp(&b.point.lat)
                 .then(a.point.lon.cmp(&b.point.lon))
                 .then(a.doc_id.cmp(&b.doc_id))
@@ -397,7 +415,8 @@ impl GeoPointStorage {
         mmap_vec.set_len(new_len);
 
         // Prune stale deletes: only keep deletes for doc_ids that exist
-        let mut point_doc_ids: Vec<u64> = mmap_vec.as_mut_slice().iter().map(|e| e.doc_id).collect();
+        let mut point_doc_ids: Vec<u64> =
+            mmap_vec.as_mut_slice().iter().map(|e| e.doc_id).collect();
         point_doc_ids.sort_unstable();
         point_doc_ids.dedup();
         let all_deletes: Vec<u64> = all_deletes
@@ -409,7 +428,9 @@ impl GeoPointStorage {
 
         if should_apply_deletes {
             // Strategy A: Apply deletions
-            let retained = retain_in_place(mmap_vec.as_mut_slice(), |e| all_deletes.binary_search(&e.doc_id).is_err());
+            let retained = retain_in_place(mmap_vec.as_mut_slice(), |e| {
+                all_deletes.binary_search(&e.doc_id).is_err()
+            });
             mmap_vec.set_len(retained);
             if !mmap_vec.is_empty() {
                 build_bkd(mmap_vec.as_mut_slice(), &seg_dir)?;
@@ -761,7 +782,8 @@ mod tests {
 
     fn make_index() -> (TempDir, GeoPointStorage) {
         let tmp = TempDir::new().unwrap();
-        let index = GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 10).unwrap();
+        let index =
+            GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 10).unwrap();
         (tmp, index)
     }
 
@@ -1034,7 +1056,10 @@ mod tests {
         // 5 sequential compacts with max_segments=10 -> 5 segments
         for round in 0u64..5 {
             let lat = 10.0 + round as f64 * 10.0;
-            index.insert(IndexedValue::Plain(GeoPoint::new(lat, 20.0).unwrap()), round);
+            index.insert(
+                IndexedValue::Plain(GeoPoint::new(lat, 20.0).unwrap()),
+                round,
+            );
             index.compact(round + 1).unwrap();
         }
 
@@ -1060,7 +1085,8 @@ mod tests {
     #[test]
     fn test_partial_merge_on_max_segments() {
         let tmp = TempDir::new().unwrap();
-        let index = GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 2).unwrap();
+        let index =
+            GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 2).unwrap();
 
         // First compact: full (segment_count=0)
         index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 20.0).unwrap()), 1);
@@ -1077,7 +1103,10 @@ mod tests {
         // After partial merge, segment count should be reduced but not necessarily to 1
         let ver_dir = version_dir(tmp.path(), 3);
         let manifest = read_manifest(&ver_dir).unwrap();
-        assert!(manifest.len() < 3, "segment count should decrease after partial merge");
+        assert!(
+            manifest.len() < 3,
+            "segment count should decrease after partial merge"
+        );
         assert!(manifest.len() >= 1, "should have at least 1 segment");
 
         // All data present
@@ -1167,12 +1196,16 @@ mod tests {
     #[test]
     fn test_partial_merge_preserves_deletes() {
         let tmp = TempDir::new().unwrap();
-        let index = GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 3).unwrap();
+        let index =
+            GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), 3).unwrap();
 
         // Build up 3 segments via hot compacts
         for round in 0u64..3 {
             let lat = 10.0 + round as f64 * 10.0;
-            index.insert(IndexedValue::Plain(GeoPoint::new(lat, 20.0).unwrap()), round);
+            index.insert(
+                IndexedValue::Plain(GeoPoint::new(lat, 20.0).unwrap()),
+                round,
+            );
             index.compact(round + 1).unwrap();
         }
 
@@ -1200,7 +1233,9 @@ mod tests {
     fn test_repeated_partial_merges() {
         let tmp = TempDir::new().unwrap();
         let max_segments = 4;
-        let index = GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), max_segments).unwrap();
+        let index =
+            GeoPointStorage::new(tmp.path().to_path_buf(), Threshold::default(), max_segments)
+                .unwrap();
 
         let mut all_doc_ids: Vec<u64> = Vec::new();
 
@@ -1208,7 +1243,10 @@ mod tests {
             let lat = -80.0 + (round as f64) * 7.0;
             let lon = -170.0 + (round as f64) * 15.0;
             let doc_id = round + 1;
-            index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), doc_id);
+            index.insert(
+                IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()),
+                doc_id,
+            );
             all_doc_ids.push(doc_id);
 
             index.compact(round + 1).unwrap();
@@ -1220,7 +1258,9 @@ mod tests {
                 assert!(
                     manifest.len() <= max_segments + 1,
                     "segment count {} exceeded max_segments {} + 1 at round {}",
-                    manifest.len(), max_segments, round
+                    manifest.len(),
+                    max_segments,
+                    round
                 );
             }
         }

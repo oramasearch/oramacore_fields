@@ -1008,10 +1008,7 @@ mod tests {
         assert_eq!(info.data_file_count, 0);
         assert_eq!(info.pending_inserts, 0);
         assert_eq!(info.pending_deletes, 0);
-        assert_eq!(
-            info.version_dir,
-            temp.path().join("versions").join("0")
-        );
+        assert_eq!(info.version_dir, temp.path().join("versions").join("0"));
     }
 
     #[test]
@@ -1073,7 +1070,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         // Use a high threshold so deletes are carried forward, not applied
         let index: NumberStorage<u64> =
-            NumberStorage::new(temp.path().to_path_buf(), Threshold::try_new(0.99).unwrap()).unwrap();
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::try_new(0.99).unwrap())
+                .unwrap();
 
         // Insert enough entries so that delete ratio stays below threshold
         for i in 0..20 {
@@ -1101,7 +1099,13 @@ mod tests {
 
         // All checks should be Ok
         for check in &result.checks {
-            assert_eq!(check.status, CheckStatus::Ok, "check '{}' failed: {:?}", check.name, check.details);
+            assert_eq!(
+                check.status,
+                CheckStatus::Ok,
+                "check '{}' failed: {:?}",
+                check.name,
+                check.details
+            );
         }
     }
 
@@ -1155,7 +1159,11 @@ mod tests {
         let result = index.integrity_check();
         assert!(!result.passed);
 
-        let failed: Vec<_> = result.checks.iter().filter(|c| c.status == CheckStatus::Failed).collect();
+        let failed: Vec<_> = result
+            .checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Failed)
+            .collect();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].name, "version directory");
     }
@@ -1172,7 +1180,11 @@ mod tests {
         let result = index.integrity_check();
         assert!(!result.passed);
 
-        let header_check = result.checks.iter().find(|c| c.name == "header.idx").unwrap();
+        let header_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "header.idx")
+            .unwrap();
         assert_eq!(header_check.status, CheckStatus::Failed);
     }
 
@@ -1189,9 +1201,17 @@ mod tests {
         let result = index.integrity_check();
         assert!(!result.passed);
 
-        let header_check = result.checks.iter().find(|c| c.name == "header.idx").unwrap();
+        let header_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "header.idx")
+            .unwrap();
         assert_eq!(header_check.status, CheckStatus::Failed);
-        assert!(header_check.details.as_ref().unwrap().contains("not divisible by 24"));
+        assert!(header_check
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("not divisible by 24"));
     }
 
     #[test]
@@ -1206,7 +1226,11 @@ mod tests {
         let result = index.integrity_check();
         assert!(!result.passed);
 
-        let deleted_check = result.checks.iter().find(|c| c.name == "deleted.bin").unwrap();
+        let deleted_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "deleted.bin")
+            .unwrap();
         assert_eq!(deleted_check.status, CheckStatus::Failed);
     }
 
@@ -1223,9 +1247,17 @@ mod tests {
         let result = index.integrity_check();
         assert!(!result.passed);
 
-        let deleted_check = result.checks.iter().find(|c| c.name == "deleted.bin").unwrap();
+        let deleted_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "deleted.bin")
+            .unwrap();
         assert_eq!(deleted_check.status, CheckStatus::Failed);
-        assert!(deleted_check.details.as_ref().unwrap().contains("not divisible by 8"));
+        assert!(deleted_check
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("not divisible by 8"));
     }
 
     #[test]
