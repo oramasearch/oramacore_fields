@@ -1,0 +1,33 @@
+[package]
+name = "oramacore_bool_index"
+version.workspace = true
+edition = "2021"
+description = "On-disk + in-memory boolean postings index with periodic compaction"
+license = "MIT"
+
+[features]
+default = []
+cli = ["clap", "serde"]
+alloc-tests = []
+
+[dependencies]
+anyhow.workspace = true
+arc-swap.workspace = true
+lockfree.workspace = true
+memmap2.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+clap = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[[bin]]
+name = "bool-index-cli"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rand.workspace = true

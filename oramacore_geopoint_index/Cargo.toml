@@ -1,0 +1,29 @@
+[package]
+name = "oramacore_geopoint_index"
+version.workspace = true
+edition = "2024"
+
+[features]
+default = []
+cli = ["clap", "serde"]
+
+[dependencies]
+anyhow.workspace = true
+arc-swap.workspace = true
+memmap2.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+clap = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[[bin]]
+name = "geopoint-index-cli"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rand.workspace = true

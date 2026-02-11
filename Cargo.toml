@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "oramacore_bool_index",
+    "oramacore_number_index",
+    "oramacore_geopoint_index",
+    "oramacore_string_filter_index",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1.0"
+arc-swap = "1.8"
+clap = { version = "4", features = ["derive"] }
+fst = "0.4"
+libc = "0.2"
+lockfree = "0.5.1"
+memmap2 = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tempfile = "3.10"
+rand = "0.8"

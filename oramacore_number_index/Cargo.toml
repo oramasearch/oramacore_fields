@@ -1,0 +1,29 @@
+[package]
+name = "oramacore_number_index"
+version.workspace = true
+edition = "2021"
+
+[features]
+default = []
+cli = ["clap", "serde"]
+
+[dependencies]
+anyhow.workspace = true
+arc-swap.workspace = true
+memmap2.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+clap = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[[bin]]
+name = "oramacore_number_index"
+path = "src/bin/oramacore_number_index.rs"
+required-features = ["cli"]
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rand.workspace = true
