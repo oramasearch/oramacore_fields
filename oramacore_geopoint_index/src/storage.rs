@@ -59,7 +59,7 @@ fn select_segments_to_merge(point_counts: &[u64]) -> Vec<usize> {
         return (0..n).collect();
     }
 
-    let merge_count = ((n + 1) / 2).max(2).min(n);
+    let merge_count = n.div_ceil(2).max(2).min(n);
 
     // Create (index, count) pairs, sort by count ascending
     let mut indexed: Vec<(usize, u64)> = point_counts.iter().copied().enumerate().collect();
@@ -1107,7 +1107,7 @@ mod tests {
             manifest.len() < 3,
             "segment count should decrease after partial merge"
         );
-        assert!(manifest.len() >= 1, "should have at least 1 segment");
+        assert!(!manifest.is_empty(), "should have at least 1 segment");
 
         // All data present
         let op = GeoFilterOp::BoundingBox {

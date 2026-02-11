@@ -1196,7 +1196,7 @@ mod tests {
 
         // Write invalid data to header (not divisible by 24)
         let header_path = temp.path().join("versions").join("0").join("header.idx");
-        fs::write(&header_path, &[0u8; 25]).unwrap();
+        fs::write(&header_path, [0u8; 25]).unwrap();
 
         let result = index.integrity_check();
         assert!(!result.passed);
@@ -1242,7 +1242,7 @@ mod tests {
 
         // Write invalid data to deleted.bin (not divisible by 8)
         let deleted_path = temp.path().join("versions").join("0").join("deleted.bin");
-        fs::write(&deleted_path, &[0u8; 13]).unwrap();
+        fs::write(&deleted_path, [0u8; 13]).unwrap();
 
         let result = index.integrity_check();
         assert!(!result.passed);
