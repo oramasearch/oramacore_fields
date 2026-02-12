@@ -80,20 +80,19 @@ impl StringFilterStorage {
 
     /// Return filter data for iterating over doc_ids matching the exact string value.
     pub fn filter<'a>(&self, value: &'a str) -> FilterData<'a> {
-        let snapshot = {
+        let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                live.get_snapshot()
+                (live.get_snapshot(), self.version.load())
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                live.get_snapshot()
+                (live.get_snapshot(), self.version.load())
             }
         };
-        let version = self.version.load();
         FilterData::new(Arc::clone(&version), snapshot, value)
     }
 

@@ -193,8 +193,19 @@ impl BoolStorage {
     }
 
     pub fn filter(&self, value: bool) -> FilterData {
-        let snapshot = self.fresh_snapshot();
-        let version = self.version.load();
+        let (snapshot, version) = {
+            let live = self.live.read().unwrap();
+            if !live.is_snapshot_dirty() {
+                (live.get_snapshot(), self.version.load())
+            } else {
+                drop(live);
+                let mut live = self.live.write().unwrap();
+                if live.is_snapshot_dirty() {
+                    live.refresh_snapshot();
+                }
+                (live.get_snapshot(), self.version.load())
+            }
+        };
         FilterData::new(Arc::clone(&version), snapshot, value)
     }
 
