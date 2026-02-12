@@ -13,14 +13,15 @@
 //! Use [`NumberIndexer`] to extract values from JSON and [`NumberStorage::insert`]
 //! to index them:
 //!
-//! ```ignore
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use oramacore_fields::number::{NumberIndexer, NumberStorage, FilterOp, Threshold};
 //! use serde_json::json;
-//! use std::path::PathBuf;
 //!
 //! // Create an index and an indexer for plain u64 values
+//! let dir = tempfile::tempdir()?;
 //! let index: NumberStorage<u64> = NumberStorage::new(
-//!     PathBuf::from("/tmp/my_index"),
+//!     dir.path().to_path_buf(),
 //!     Threshold::default(),
 //! )?;
 //! let indexer = NumberIndexer::<u64>::new(false);
@@ -42,6 +43,8 @@
 //! // Delete a document and compact
 //! index.delete(2);
 //! index.compact(1)?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Array Fields
@@ -49,7 +52,16 @@
 //! Documents with array-valued fields (e.g., `tags: [10, 20, 30]`) are indexed
 //! once per element, so a query matching any element finds the document:
 //!
-//! ```ignore
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use oramacore_fields::number::{NumberIndexer, NumberStorage, FilterOp, Threshold};
+//! use serde_json::json;
+//!
+//! let dir = tempfile::tempdir()?;
+//! let index: NumberStorage<u64> = NumberStorage::new(
+//!     dir.path().to_path_buf(),
+//!     Threshold::default(),
+//! )?;
 //! let array_indexer = NumberIndexer::<u64>::new(true);
 //!
 //! let value = array_indexer.index_json(&json!([10, 20, 30])).unwrap();
@@ -58,6 +70,8 @@
 //! // Doc 1 is found when querying for any of its values
 //! let results: Vec<u64> = index.filter(FilterOp::Eq(20)).iter().collect();
 //! assert_eq!(results, vec![1]);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Architecture

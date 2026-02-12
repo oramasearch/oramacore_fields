@@ -20,70 +20,161 @@ Add to your `Cargo.toml`:
 oramacore_fields = "*"
 ```
 
+Each index type provides an **Indexer** that extracts values from JSON and a **Storage** that persists and queries them. The typical flow is:
+
+1. Create a `*Indexer` to parse JSON values
+2. Create a `*Storage` for on-disk persistence
+3. Use `indexer.index_json(json)` to extract an `IndexedValue`
+4. Insert the `IndexedValue` into the storage with a document ID
+5. Query the storage with filter operations
+
 ### Bool Index
 
 ```rust
-use oramacore_fields::bool::{BoolStorage, DeletionThreshold, IndexedValue};
+use oramacore_fields::bool::{BoolIndexer, BoolStorage, DeletionThreshold};
+use serde_json::json;
 use std::path::PathBuf;
 
-let index = BoolStorage::new(PathBuf::from("/tmp/bool_idx"), DeletionThreshold::default()).unwrap();
+// Create an indexer for plain boolean values (use `true` for array fields)
+let indexer = BoolIndexer::new(false);
+let storage = BoolStorage::new(PathBuf::from("/tmp/bool_idx"), DeletionThreshold::default()).unwrap();
 
-index.insert(&IndexedValue::Plain(true), 1);
-index.insert(&IndexedValue::Plain(false), 2);
+// Index JSON values
+let value = indexer.index_json(&json!(true)).unwrap();
+storage.insert(&value, 1);
 
-let true_docs: Vec<u64> = index.filter(true).iter().collect();
-assert_eq!(true_docs, vec![1]);
+let value = indexer.index_json(&json!(false)).unwrap();
+storage.insert(&value, 2);
 
-index.compact(1).unwrap();
+let value = indexer.index_json(&json!(true)).unwrap();
+storage.insert(&value, 3);
+
+// Query: find all documents with `true`
+let true_docs: Vec<u64> = storage.filter(true).iter().collect();
+assert_eq!(true_docs, vec![1, 3]);
+
+// Delete a document and compact to disk
+storage.delete(1);
+storage.compact(1).unwrap();
+```
+
+Array fields are supported by passing `is_array: true`:
+
+```rust
+let array_indexer = BoolIndexer::new(true);
+let value = array_indexer.index_json(&json!([true, false, true])).unwrap();
+storage.insert(&value, 4);
 ```
 
 ### Number Index
 
 ```rust
-use oramacore_fields::number::{NumberStorage, Threshold, FilterOp, IndexedValue};
+use oramacore_fields::number::{NumberIndexer, NumberStorage, Threshold, FilterOp};
+use serde_json::json;
 use std::path::PathBuf;
 
-let index: NumberStorage<u64> = NumberStorage::new(
+// Create an indexer and storage for u64 values
+let indexer = NumberIndexer::<u64>::new(false);
+let storage: NumberStorage<u64> = NumberStorage::new(
     PathBuf::from("/tmp/num_idx"),
     Threshold::default(),
 ).unwrap();
 
-index.insert(&IndexedValue::Plain(42), 1).unwrap();
-index.insert(&IndexedValue::Plain(100), 2).unwrap();
+// Index JSON values
+let value = indexer.index_json(&json!(10)).unwrap();
+storage.insert(&value, 1).unwrap();
 
-let results: Vec<u64> = index.filter(FilterOp::Gte(50)).iter().collect();
-assert_eq!(results, vec![2]);
+let value = indexer.index_json(&json!(20)).unwrap();
+storage.insert(&value, 2).unwrap();
+
+let value = indexer.index_json(&json!(30)).unwrap();
+storage.insert(&value, 3).unwrap();
+
+// Query: find values >= 15
+let results: Vec<u64> = storage.filter(FilterOp::Gte(15)).iter().collect();
+assert_eq!(results, vec![2, 3]);
+
+// Delete and compact
+storage.delete(2);
+storage.compact(1).unwrap();
+```
+
+Also supports `f64` and array fields:
+
+```rust
+// f64 index
+let f64_indexer = NumberIndexer::<f64>::new(false);
+let value = f64_indexer.index_json(&json!(3.14)).unwrap();
+
+// Array field: document matches if any element matches
+let array_indexer = NumberIndexer::<u64>::new(true);
+let value = array_indexer.index_json(&json!([10, 20, 30])).unwrap();
+storage.insert(&value, 4).unwrap();
+
+let results: Vec<u64> = storage.filter(FilterOp::Eq(20)).iter().collect();
+assert!(results.contains(&4));
 ```
 
 ### String Filter Index
 
 ```rust
-use oramacore_fields::string_filter::{StringFilterStorage, Threshold, IndexedValue};
+use oramacore_fields::string_filter::{StringIndexer, StringFilterStorage, Threshold};
+use serde_json::json;
 use std::path::PathBuf;
 
-let index = StringFilterStorage::new(PathBuf::from("/tmp/str_idx"), Threshold::default()).unwrap();
+let indexer = StringIndexer::new(false);
+let storage = StringFilterStorage::new(PathBuf::from("/tmp/str_idx"), Threshold::default()).unwrap();
 
-index.insert(&IndexedValue::Plain("hello".to_string()), 1);
-index.insert(&IndexedValue::Plain("world".to_string()), 2);
+// Index JSON strings
+let value = indexer.index_json(&json!("hello")).unwrap();
+storage.insert(&value, 1);
 
-let docs: Vec<u64> = index.filter("hello").iter().collect();
-assert_eq!(docs, vec![1]);
+let value = indexer.index_json(&json!("world")).unwrap();
+storage.insert(&value, 2);
+
+let value = indexer.index_json(&json!("hello")).unwrap();
+storage.insert(&value, 3);
+
+// Query: exact match
+let docs: Vec<u64> = storage.filter("hello").iter().collect();
+assert_eq!(docs, vec![1, 3]);
+
+// Array field: index multiple tags per document
+let array_indexer = StringIndexer::new(true);
+let value = array_indexer.index_json(&json!(["rust", "search", "index"])).unwrap();
+storage.insert(&value, 4);
 ```
 
 ### GeoPoint Index
 
 ```rust
-use oramacore_fields::geopoint::{GeoPointStorage, Threshold, GeoFilterOp, GeoPoint, IndexedValue};
+use oramacore_fields::geopoint::{GeoPointIndexer, GeoPointStorage, Threshold, GeoFilterOp, GeoPoint};
+use serde_json::json;
 use std::path::PathBuf;
 
-let index = GeoPointStorage::new(PathBuf::from("/tmp/geo_idx"), Threshold::default(), 10).unwrap();
+let indexer = GeoPointIndexer::new(false);
+let storage = GeoPointStorage::new(PathBuf::from("/tmp/geo_idx"), Threshold::default(), 10).unwrap();
 
-let point = GeoPoint::new(41.9028, 12.4964).unwrap(); // Rome
-index.insert(&IndexedValue::Plain(point), 1).unwrap();
+// Index JSON geopoints (objects with "lat" and "lon" fields)
+let value = indexer.index_json(&json!({"lat": 41.9028, "lon": 12.4964})).unwrap(); // Rome
+storage.insert(&value, 1).unwrap();
 
-let results: Vec<u64> = index.filter(GeoFilterOp::Radius {
+let value = indexer.index_json(&json!({"lat": 51.5074, "lon": -0.1278})).unwrap(); // London
+storage.insert(&value, 2).unwrap();
+
+// Query: find points within a radius
+let results: Vec<u64> = storage.filter(GeoFilterOp::Radius {
     center: GeoPoint::new(41.9, 12.5).unwrap(),
     radius_meters: 10_000.0,
+}).iter().collect();
+assert_eq!(results, vec![1]);
+
+// Query: find points within a bounding box
+let results: Vec<u64> = storage.filter(GeoFilterOp::BoundingBox {
+    min_lat: 40.0,
+    max_lat: 55.0,
+    min_lon: -5.0,
+    max_lon: 15.0,
 }).iter().collect();
 ```
 

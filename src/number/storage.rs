@@ -51,13 +51,14 @@ pub type F64Storage = NumberStorage<f64>;
 /// Use [`NumberIndexer`](super::NumberIndexer) to extract values from JSON, then
 /// call [`insert`](Self::insert) to index them:
 ///
-/// ```ignore
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use oramacore_fields::number::{NumberIndexer, NumberStorage, FilterOp, Threshold};
 /// use serde_json::json;
-/// use std::path::PathBuf;
 ///
+/// let dir = tempfile::tempdir()?;
 /// let index: NumberStorage<u64> = NumberStorage::new(
-///     PathBuf::from("/tmp/my_index"),
+///     dir.path().to_path_buf(),
 ///     Threshold::default(),
 /// )?;
 /// let indexer = NumberIndexer::<u64>::new(false);
@@ -79,6 +80,8 @@ pub type F64Storage = NumberStorage<f64>;
 ///
 /// // Compact the index
 /// index.compact(1)?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct NumberStorage<T: IndexableNumber> {
     base_path: PathBuf,
@@ -217,13 +220,14 @@ impl<T: IndexableNumber> NumberStorage<T> {
     /// A `SortHandle` that can be iterated to get doc_ids in sorted order.
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use oramacore_fields::number::{NumberIndexer, NumberStorage, Threshold, SortOrder};
     /// use serde_json::json;
-    /// use std::path::PathBuf;
     ///
+    /// let dir = tempfile::tempdir()?;
     /// let index: NumberStorage<u64> = NumberStorage::new(
-    ///     PathBuf::from("/tmp/my_index"),
+    ///     dir.path().to_path_buf(),
     ///     Threshold::default(),
     /// )?;
     /// let indexer = NumberIndexer::<u64>::new(false);
@@ -240,6 +244,8 @@ impl<T: IndexableNumber> NumberStorage<T> {
     /// // Descending order (largest values first)
     /// let descending: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
     /// assert_eq!(descending, vec![3, 2, 1]); // doc_ids ordered by value: 30, 20, 10
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn sort(&self, order: SortOrder) -> SortHandle<T> {
         // Fast path: try with read lock

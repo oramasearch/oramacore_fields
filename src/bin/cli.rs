@@ -72,6 +72,20 @@ enum BoolCommands {
         #[arg(long)]
         list_ids: bool,
     },
+    /// Filter the index for documents matching a boolean value
+    Filter {
+        /// Path to the index directory
+        path: PathBuf,
+        /// The boolean value to search for (true or false)
+        #[arg(long)]
+        value: bool,
+        /// Maximum number of results to return
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 fn bool_check(path: &Path, verbose: bool) -> Result<(), String> {
@@ -194,6 +208,52 @@ fn bool_show(path: &Path, list_ids: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn bool_filter(
+    path: &Path,
+    value: bool,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<(), String> {
+    use oramacore_fields::bool::{BoolStorage, DeletionThreshold};
+
+    let index = BoolStorage::new(path.to_path_buf(), DeletionThreshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let filter_data = index.filter(value);
+    let mut doc_ids: Vec<u64> = filter_data.iter().collect();
+
+    let total_count = doc_ids.len();
+    if let Some(limit) = limit {
+        doc_ids.truncate(limit);
+    }
+
+    let result = FilterResult {
+        count: total_count,
+        doc_ids,
+    };
+
+    match format {
+        OutputFormat::Human => {
+            println!("Found {} result(s) where value = {value}", result.count);
+            if let Some(limit) = limit {
+                if result.count > limit {
+                    println!("(showing first {limit})");
+                }
+            }
+            println!();
+            for doc_id in &result.doc_ids {
+                println!("{doc_id}");
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Number subcommands
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -205,7 +265,7 @@ enum IndexType {
 }
 
 #[derive(Serialize)]
-struct SearchResult {
+struct FilterResult {
     count: usize,
     doc_ids: Vec<u64>,
 }
@@ -236,8 +296,8 @@ enum NumberCommands {
         #[arg(short, long, value_enum, default_value = "human")]
         format: OutputFormat,
     },
-    /// Search the index with filter operations
-    Search {
+    /// Filter the index with filter operations
+    Filter {
         /// Path to the index directory
         #[arg(short, long)]
         path: PathBuf,
@@ -365,7 +425,7 @@ fn number_info(path: &Path, index_type: IndexType, format: OutputFormat) -> Resu
 }
 
 #[allow(clippy::too_many_arguments)]
-fn number_search(
+fn number_filter(
     path: &Path,
     index_type: IndexType,
     eq: Option<String>,
@@ -379,16 +439,16 @@ fn number_search(
 ) -> Result<(), String> {
     match index_type {
         IndexType::U64 => {
-            number_search_typed::<u64>(path, eq, gt, gte, lt, lte, between, limit, format)
+            number_filter_typed::<u64>(path, eq, gt, gte, lt, lte, between, limit, format)
         }
         IndexType::F64 => {
-            number_search_typed::<f64>(path, eq, gt, gte, lt, lte, between, limit, format)
+            number_filter_typed::<f64>(path, eq, gt, gte, lt, lte, between, limit, format)
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn number_search_typed<T>(
+fn number_filter_typed<T>(
     path: &Path,
     eq: Option<String>,
     gt: Option<String>,
@@ -441,7 +501,7 @@ where
         doc_ids.truncate(limit);
     }
 
-    let result = SearchResult {
+    let result = FilterResult {
         count: total_count,
         doc_ids,
     };
@@ -499,8 +559,8 @@ enum GeoCommands {
         #[arg(long, default_value = "human")]
         format: OutputFormat,
     },
-    /// Search the index with a geo filter
-    Search {
+    /// Filter the index with a geo filter
+    Filter {
         /// Path to the index directory
         path: PathBuf,
         /// Bounding box filter: MIN_LAT,MAX_LAT,MIN_LON,MAX_LON
@@ -590,7 +650,7 @@ fn geo_info(path: PathBuf, format: OutputFormat) {
     }
 }
 
-fn geo_search(
+fn geo_filter(
     path: PathBuf,
     bbox: Option<String>,
     radius: Option<String>,
@@ -706,6 +766,12 @@ fn main() {
             BoolCommands::Check { path, verbose } => bool_check(&path, verbose),
             BoolCommands::Info { path, format } => bool_info(&path, format),
             BoolCommands::Show { path, list_ids } => bool_show(&path, list_ids),
+            BoolCommands::Filter {
+                path,
+                value,
+                limit,
+                format,
+            } => bool_filter(&path, value, limit, format),
         },
         TopLevel::Number { command } => match command {
             NumberCommands::Check {
@@ -718,7 +784,7 @@ fn main() {
                 r#type,
                 format,
             } => number_info(&path, r#type, format),
-            NumberCommands::Search {
+            NumberCommands::Filter {
                 path,
                 r#type,
                 eq,
@@ -729,19 +795,19 @@ fn main() {
                 between,
                 limit,
                 format,
-            } => number_search(&path, r#type, eq, gt, gte, lt, lte, between, limit, format),
+            } => number_filter(&path, r#type, eq, gt, gte, lt, lte, between, limit, format),
         },
         TopLevel::Geopoint { command } => {
             match command {
                 GeoCommands::Check { path, verbose } => geo_check(path, verbose),
                 GeoCommands::Info { path, format } => geo_info(path, format),
-                GeoCommands::Search {
+                GeoCommands::Filter {
                     path,
                     bbox,
                     radius,
                     limit,
                     format,
-                } => geo_search(path, bbox, radius, limit, format),
+                } => geo_filter(path, bbox, radius, limit, format),
             }
             return;
         }
@@ -802,6 +868,30 @@ mod tests_cli {
     fn test_bool_cmd_check_verbose() {
         let (_tmp, path) = create_test_bool_index();
         bool_check(&path, true).unwrap();
+    }
+
+    #[test]
+    fn test_bool_cmd_filter_true() {
+        let (_tmp, path) = create_test_bool_index();
+        bool_filter(&path, true, None, OutputFormat::Human).unwrap();
+    }
+
+    #[test]
+    fn test_bool_cmd_filter_false() {
+        let (_tmp, path) = create_test_bool_index();
+        bool_filter(&path, false, None, OutputFormat::Human).unwrap();
+    }
+
+    #[test]
+    fn test_bool_cmd_filter_with_limit() {
+        let (_tmp, path) = create_test_bool_index();
+        bool_filter(&path, true, Some(2), OutputFormat::Human).unwrap();
+    }
+
+    #[test]
+    fn test_bool_cmd_filter_json() {
+        let (_tmp, path) = create_test_bool_index();
+        bool_filter(&path, true, None, OutputFormat::Json).unwrap();
     }
 
     #[test]

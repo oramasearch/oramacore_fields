@@ -22,7 +22,7 @@ jobs:
       - name: Tests (default features)
         run: cargo test
       - name: Tests alloc
-        run: cargo test --features alloc-tests -j 1
+        run: cargo test --features alloc-tests -j 1 alloc
       - name: Tests cli
         run: cargo test --features cli cli
       - name: Build examples

@@ -9,7 +9,7 @@ use serde_json::Value;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use oramacore_fields::number::NumberIndexer;
 /// use serde_json::json;
 ///

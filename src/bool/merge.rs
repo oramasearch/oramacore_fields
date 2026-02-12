@@ -185,12 +185,15 @@ where
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust,ignore
 /// let left = [1, 3, 5].iter().copied();
 /// let right = [2, 3, 4].iter().copied();
 /// let merged: Vec<u64> = sorted_merge(left, right).collect();
 /// assert_eq!(merged, vec![1, 2, 3, 4, 5]);
 /// ```
+///
+/// Note: this function is in a private module, so the doc test cannot be
+/// compiled as external code. See the unit tests in this file for coverage.
 pub fn sorted_merge<L, R>(left: L, right: R) -> SortedMerge<L, R>
 where
     L: Iterator<Item = u64>,
@@ -205,12 +208,15 @@ where
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust,ignore
 /// let values = [1, 2, 3, 4, 5].iter().copied();
 /// let to_remove = [2, 4].iter().copied();
 /// let result: Vec<u64> = sorted_subtract(values, to_remove).collect();
 /// assert_eq!(result, vec![1, 3, 5]);
 /// ```
+///
+/// Note: this function is in a private module, so the doc test cannot be
+/// compiled as external code. See the unit tests in this file for coverage.
 pub fn sorted_subtract<L, R>(left: L, right: R) -> SortedSubtract<L, R>
 where
     L: Iterator<Item = u64>,
