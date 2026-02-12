@@ -67,7 +67,7 @@ impl<T: IndexableNumber> NumberIndexer<T> {
 
 /// A value extracted from JSON by [`NumberIndexer`], ready for indexing.
 ///
-/// - `Plain(T)`: A single value. Passed to [`NumberStorage::update`](super::NumberStorage::update),
+/// - `Plain(T)`: A single value. Passed to [`NumberStorage::insert`](super::NumberStorage::insert),
 ///   it creates one index entry.
 /// - `Array(Vec<T>)`: Multiple values. Creates one entry per element, so the document
 ///   is found when querying for any of them.

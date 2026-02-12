@@ -43,7 +43,7 @@ impl Iterator for FilterIterator<'_> {
     }
 }
 
-/// Handle returned by [`StringFilterStorage::filter`] that produces iterators over matching doc_ids.
+/// Handle returned by [`super::StringFilterStorage::filter`] that produces iterators over matching doc_ids.
 pub struct FilterData<'k> {
     version: Arc<CompactedVersion>,
     snapshot: Arc<LiveSnapshot>,
