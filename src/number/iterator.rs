@@ -1,7 +1,4 @@
 //! Query iterators for NumberStorage.
-//!
-//! This module provides FilterHandle and FilterIterator for iterating
-//! over query results while maintaining iterator stability.
 
 use super::compacted::CompactedVersion;
 use super::key::IndexableNumber;
@@ -77,10 +74,7 @@ impl<T: IndexableNumber> FilterOp<T> {
     }
 }
 
-/// Query result wrapper that maintains iterator stability.
-///
-/// Holds Arc references to the compacted version and live snapshot,
-/// ensuring they remain valid for the lifetime of iteration.
+/// Handle for a filter query result that can be iterated.
 pub struct FilterHandle<T: IndexableNumber> {
     version: Arc<CompactedVersion<T>>,
     snapshot: Arc<LiveSnapshot<T>>,
@@ -116,9 +110,7 @@ impl<'a, T: IndexableNumber> IntoIterator for &'a FilterHandle<T> {
     }
 }
 
-/// Iterator over query results.
-///
-/// Yields doc_ids that match the filter operation, excluding deleted entries.
+/// Iterator over matching doc_ids from a filter query.
 pub struct FilterIterator<'a, T: IndexableNumber> {
     inner: Box<dyn Iterator<Item = u64> + 'a>,
     _marker: std::marker::PhantomData<&'a T>,
@@ -170,10 +162,7 @@ impl<T: IndexableNumber> Iterator for FilterIterator<'_, T> {
     }
 }
 
-/// Sorted query result wrapper that maintains iterator stability.
-///
-/// Holds Arc references to the compacted version and live snapshot,
-/// ensuring they remain valid for the lifetime of iteration.
+/// Handle for a sort query result that can be iterated.
 pub struct SortHandle<T: IndexableNumber> {
     version: Arc<CompactedVersion<T>>,
     snapshot: Arc<LiveSnapshot<T>>,
@@ -210,8 +199,6 @@ impl<'a, T: IndexableNumber> IntoIterator for &'a SortHandle<T> {
 }
 
 /// Iterator over doc_ids sorted by their associated values.
-///
-/// Yields doc_ids in ascending or descending order by value, excluding deleted entries.
 pub struct SortIterator<'a, T: IndexableNumber> {
     inner: Box<dyn Iterator<Item = u64> + 'a>,
     _marker: std::marker::PhantomData<&'a T>,

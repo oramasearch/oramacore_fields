@@ -1,7 +1,4 @@
-//! Memory-mapped compacted index for efficient range queries.
-//!
-//! This module provides the persistent storage layer used by `NumberStorage`
-//! to store data on disk with memory-mapped access.
+//! On-disk persistent storage layer for the number index.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -18,10 +15,7 @@ use super::error::Error;
 use super::platform;
 use super::IndexableNumber;
 
-/// Compaction metadata stored in meta.bin.
-///
-/// Tracks the ratio of changes since the last full header rebuild,
-/// used to decide when a full rebuild is needed to normalize header spacing.
+/// Compaction metadata tracking changes since last full rebuild.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompactionMeta {
@@ -61,7 +55,7 @@ pub enum KeyTolerance {
     NextLower,
 }
 
-/// A memory-mapped compacted index using header + data file format.
+/// An on-disk compacted index loaded from a version directory.
 pub struct CompactedVersion<T: IndexableNumber> {
     /// Version offset (directory name).
     pub offset: u64,
@@ -71,7 +65,7 @@ pub struct CompactedVersion<T: IndexableNumber> {
     data: Vec<DataFile<T>>,
     /// Memory-mapped deleted file.
     deleted: Option<Mmap>,
-    /// Pre-computed deleted set for O(1) lookup.
+    /// Pre-computed deleted set for fast lookup.
     deleted_set: Arc<HashSet<u64>>,
     /// Compaction metadata for incremental compaction.
     pub meta: CompactionMeta,
@@ -223,13 +217,7 @@ impl<T: IndexableNumber> CompactedVersion<T> {
         }
     }
 
-    /// Validate the integrity of the compacted version.
-    ///
-    /// Checks:
-    /// - header.idx size is divisible by entry size (24 bytes)
-    /// - deleted.bin size is divisible by 8 bytes
-    ///
-    /// Returns a list of (check_name, passed, details) tuples.
+    /// Validate the integrity of the compacted version files.
     pub fn validate(&self) -> Vec<(String, bool, Option<String>)> {
         let mut results = Vec::new();
         let header_entry_size = size_of::<HeaderEntry<T>>();
@@ -323,7 +311,7 @@ impl<T: IndexableNumber> CompactedVersion<T> {
         }
     }
 
-    /// Get the deleted doc_ids as an Arc<HashSet> for O(1) lookups.
+    /// Get the deleted doc_ids as a shared set for fast lookups.
     pub fn deleted_set(&self) -> Arc<HashSet<u64>> {
         Arc::clone(&self.deleted_set)
     }
@@ -409,14 +397,14 @@ impl<T: IndexableNumber> CompactedVersion<T> {
     }
 }
 
-/// Memory-mapped data file containing entries.
+/// A data file containing index entries.
 pub struct DataFile<T: IndexableNumber> {
     mmap: Mmap,
     _marker: PhantomData<T>,
 }
 
 impl<T: IndexableNumber> DataFile<T> {
-    /// Create a DataFile from a memory-mapped region.
+    /// Create a DataFile from a mapped region.
     pub fn from_mmap(mmap: Mmap) -> Self {
         DataFile {
             mmap,
@@ -582,14 +570,14 @@ impl<T: IndexableNumber> DataFile<T> {
     }
 }
 
-/// Memory-mapped header file for binary search.
+/// Header file used for key lookups via binary search.
 pub struct HeaderFile<T: IndexableNumber> {
     mmap: Mmap,
     _marker: PhantomData<T>,
 }
 
 impl<T: IndexableNumber> HeaderFile<T> {
-    /// Create a HeaderFile from a memory-mapped region.
+    /// Create a HeaderFile from a mapped region.
     pub fn from_mmap(mmap: Mmap) -> Self {
         HeaderFile {
             mmap,
@@ -1155,9 +1143,7 @@ pub fn write_version_with_config<T: IndexableNumber>(
     Ok(total_entry_count)
 }
 
-/// Write data files from a raw (key, doc_id) iterator and return header entries + total entry count.
-///
-/// Groups consecutive equal keys inline, avoiding an O(N) pre-grouping allocation.
+/// Write data files from a (key, doc_id) iterator and return header entries + total entry count.
 fn write_data_files<T: IndexableNumber>(
     version_dir: &Path,
     entries: impl Iterator<Item = (T, u64)>,

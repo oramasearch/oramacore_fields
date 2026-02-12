@@ -144,7 +144,7 @@ pub fn ensure_segment_subdir(version_dir: &Path, index: usize) -> Result<PathBuf
     Ok(dir)
 }
 
-/// Copies inner.idx and leaves.dat from src_dir to dst_dir.
+/// Copies segment data files from one directory to another.
 pub fn copy_dir_contents(src_dir: &Path, dst_dir: &Path) -> Result<()> {
     for filename in &["inner.idx", "leaves.dat"] {
         let src = src_dir.join(filename);
@@ -160,7 +160,7 @@ pub fn copy_dir_contents(src_dir: &Path, dst_dir: &Path) -> Result<()> {
 
 // --- Manifest read/write ---
 
-/// Write manifest.bin: num_segments(u64) + [point_count(u64), ...]
+/// Writes the segment manifest file with per-segment point counts.
 pub fn write_manifest(version_dir: &Path, point_counts: &[u64]) -> Result<()> {
     let path = version_dir.join("manifest.bin");
     let file =
@@ -188,7 +188,7 @@ pub fn write_manifest(version_dir: &Path, point_counts: &[u64]) -> Result<()> {
     Ok(())
 }
 
-/// Read manifest.bin: returns point_counts per segment.
+/// Reads the segment manifest file and returns per-segment point counts.
 pub fn read_manifest(version_dir: &Path) -> Result<Vec<u64>> {
     let path = version_dir.join("manifest.bin");
     let data = fs::read(&path).with_context(|| format!("Failed to read manifest.bin: {path:?}"))?;

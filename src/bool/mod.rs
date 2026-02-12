@@ -1,12 +1,7 @@
-//! Boolean postings index with persistence, compaction, and concurrent access.
+//! Boolean index that maps documents to true/false values.
 //!
-//! This library provides a boolean postings index that stores doc_ids (u64)
-//! partitioned into TRUE and FALSE sets. It supports:
-//!
-//! - In-memory live layer for fast writes
-//! - Memory-mapped compacted versions for efficient reads
-//! - Concurrent access with RwLock-protected live layer and ArcSwap version
-//! - Periodic compaction that merges live data into disk-backed files
+//! Stores doc_ids (u64) partitioned into TRUE and FALSE sets, with full
+//! persistence and support for concurrent readers and writers.
 //!
 //! # Example
 //!

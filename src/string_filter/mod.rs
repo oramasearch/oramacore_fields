@@ -1,13 +1,7 @@
-//! String filter index with persistence, compaction, and concurrent access.
+//! Persistent string filter index with exact-match lookups.
 //!
-//! This library provides a string postings index that stores doc_ids (u64)
-//! mapped to string keys. It supports:
-//!
-//! - Exact-match string filtering
-//! - In-memory live layer for fast writes
-//! - FST-based memory-mapped compacted versions for efficient reads
-//! - Concurrent access with RwLock-protected live layer and ArcSwap version
-//! - Periodic compaction that merges live data into disk-backed FST + postings
+//! Maps string keys to sets of doc_ids (u64). Supports inserting, deleting,
+//! filtering by exact key, and compacting data to disk. Safe for concurrent use.
 //!
 //! # Example
 //!

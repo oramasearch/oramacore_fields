@@ -1,50 +1,23 @@
-//! Live layer for in-memory unsorted data and snapshot for sorted iteration.
-//!
-//! The live layer buffers recent writes in memory before they're compacted to disk.
-//! It provides two views of the data:
-//!
-//! - **Ordered operation log**: Fast O(1) appends for `insert()` and `delete()`
-//! - **Sorted snapshot**: Cached sorted+deduplicated view for `filter()` iteration
-//!
-//! # Snapshot Lifecycle
-//!
-//! The snapshot is lazily maintained via a dirty flag:
-//! 1. Any mutation (`insert`/`delete`) sets `snapshot_dirty = true`
-//! 2. `filter()` checks the dirty flag and refreshes if needed
-//! 3. `refresh_snapshot()` collapses the op log and clears the dirty flag
-//!
-//! This avoids sorting on every mutation while ensuring reads see consistent data.
-//! Multiple `filter()` calls without intervening mutations share the same `Arc<LiveSnapshot>`.
+//! In-memory buffer for recent writes, with a lazily refreshed sorted snapshot
+//! for read operations.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// A single operation in the live layer's ordered log.
+/// A single insert or delete operation.
 #[derive(Debug, Clone, Copy)]
 pub enum LiveOp {
     Insert(bool, u64),
     Delete(u64),
 }
 
-/// Live layer holding an ordered operation log in memory.
-///
-/// # Fields
-///
-/// The `pub` field (`ops`) is exposed for direct manipulation during compaction
-/// cleanup, but normal usage should go through the `insert()`, `delete()`, and
-/// `get_snapshot()` methods.
-///
-/// # Thread Safety
-///
-/// `LiveLayer` itself is not `Sync` - it must be protected by external synchronization
-/// (the `BoolStorage` uses `RwLock<LiveLayer>`). The `cached_snapshot` is shared via
-/// `Arc` and can be safely read from multiple threads after extraction.
+/// In-memory operation log with a cached sorted snapshot.
 pub struct LiveLayer {
-    /// Ordered log of insert/delete operations. Preserves temporal ordering.
+    /// Ordered log of insert/delete operations.
     pub ops: Vec<LiveOp>,
-    /// Cached sorted, deduplicated snapshot. Shared via Arc for cheap cloning.
+    /// Cached sorted, deduplicated snapshot.
     cached_snapshot: Arc<LiveSnapshot>,
-    /// True if ops have been modified since last `refresh_snapshot()`.
+    /// True if ops have changed since the last snapshot refresh.
     snapshot_dirty: bool,
 }
 
@@ -64,43 +37,20 @@ impl LiveLayer {
         Self::default()
     }
 
-    /// Get a cheap Arc clone of the cached snapshot.
-    ///
-    /// Returns the cached snapshot without modification. Caller should check
-    /// `is_snapshot_dirty()` and call `refresh_snapshot()` if needed.
-    ///
-    /// # Complexity
-    ///
-    /// O(1) - just an atomic reference count increment.
+    /// Get a reference-counted clone of the cached snapshot.
     pub fn get_snapshot(&self) -> Arc<LiveSnapshot> {
         Arc::clone(&self.cached_snapshot)
     }
 
-    /// Check if the snapshot needs refreshing.
-    ///
-    /// Returns `true` if any mutations have occurred since the last `refresh_snapshot()`.
+    /// Returns `true` if mutations have occurred since the last snapshot refresh.
     pub fn is_snapshot_dirty(&self) -> bool {
         self.snapshot_dirty
     }
 
-    /// Refresh the cached snapshot by collapsing the operation log.
+    /// Rebuild the cached snapshot from the operation log.
     ///
-    /// Replays the ordered ops to compute the final state, producing sorted,
-    /// deduplicated vectors for each category.
-    ///
-    /// Collapsing semantics (additive inserts):
-    /// - `Insert(value, id)` → add to target set, remove from delete_set
-    /// - `Delete(id)` → remove from both true/false sets, add to delete_set
-    ///
-    /// # Complexity
-    ///
-    /// O(n log n) where n is the number of ops (replay is O(n), sorting is O(m log m)
-    /// for each output set of size m).
-    ///
-    /// # Memory
-    ///
-    /// Allocates new vectors for the snapshot. The old snapshot is dropped when
-    /// all `Arc` references to it are released.
+    /// Replays all ops to produce sorted, deduplicated vectors of inserts
+    /// and deletes.
     pub fn refresh_snapshot(&mut self) {
         let mut true_set: HashSet<u64> = HashSet::new();
         let mut false_set: HashSet<u64> = HashSet::new();
@@ -156,15 +106,9 @@ impl LiveLayer {
     }
 }
 
-/// Sorted snapshot of live data for iteration.
+/// Point-in-time snapshot of the live layer data.
 ///
-/// Contains sorted, deduplicated copies of the live layer data at a point in time.
-/// Immutable after creation - shared via `Arc` for zero-copy access from multiple readers.
-///
-/// # Invariants
-///
-/// - All vectors are sorted in ascending order
-/// - All vectors are deduplicated (no repeated values)
+/// Contains sorted, deduplicated doc_id vectors. Immutable after creation.
 #[derive(Clone)]
 pub struct LiveSnapshot {
     /// Sorted, deduplicated doc_ids with value=true.

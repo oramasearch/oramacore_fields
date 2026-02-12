@@ -1,51 +1,26 @@
-//! Live layer for in-memory unsorted data and snapshot for sorted iteration.
+//! In-memory buffer for recent writes before they are compacted to disk.
 //!
-//! The live layer buffers recent writes in memory before they're compacted to disk.
-//! It provides two views of the data:
-//!
-//! - **Ordered operation log**: Fast O(1) appends for `insert()` and `delete()`
-//! - **Sorted snapshot**: Cached sorted+deduplicated view for `filter()` iteration
-//!
-//! # Snapshot Lifecycle
-//!
-//! The snapshot is lazily maintained via a dirty flag:
-//! 1. Any mutation (`insert`/`delete`) sets `snapshot_dirty = true`
-//! 2. `filter()` checks the dirty flag and refreshes if needed
-//! 3. `refresh_snapshot()` collapses the op log and clears the dirty flag
-//!
-//! This avoids sorting on every mutation while ensuring reads see consistent data.
-//! Multiple `filter()` calls without intervening mutations share the same `Arc<LiveSnapshot>`.
+//! Provides an operation log for inserts and deletes, and a lazily-refreshed
+//! sorted snapshot for filter queries.
 
 use super::point::GeoPoint;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// A single operation in the live layer's ordered log.
+/// A single insert or delete operation.
 #[derive(Debug, Clone, Copy)]
 pub enum LiveOp {
     Insert(GeoPoint, u64),
     Delete(u64),
 }
 
-/// Live layer holding an ordered operation log in memory.
-///
-/// # Fields
-///
-/// The `pub` field (`ops`) is exposed for direct manipulation during compaction
-/// cleanup, but normal usage should go through the `insert()`, `delete()`, and
-/// `get_snapshot()` methods.
-///
-/// # Thread Safety
-///
-/// `LiveLayer` itself is not `Sync` - it must be protected by external synchronization
-/// (the `GeoPointStorage` uses `RwLock<LiveLayer>`). The `cached_snapshot` is shared via
-/// `Arc` and can be safely read from multiple threads after extraction.
+/// In-memory buffer that records insert and delete operations and caches a sorted snapshot.
 pub struct LiveLayer {
-    /// Ordered log of insert/delete operations. Preserves temporal ordering.
+    /// Ordered log of insert/delete operations.
     pub ops: Vec<LiveOp>,
-    /// Cached sorted, deduplicated snapshot. Shared via Arc for cheap cloning.
+    /// Cached sorted snapshot of the current state.
     cached_snapshot: Arc<LiveSnapshot>,
-    /// True if ops have been modified since last `refresh_snapshot()`.
+    /// Whether ops have changed since the last snapshot refresh.
     snapshot_dirty: bool,
 }
 
@@ -60,48 +35,22 @@ impl Default for LiveLayer {
 }
 
 impl LiveLayer {
-    /// Create an empty live layer.
+    /// Creates an empty live layer.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Get a cheap Arc clone of the cached snapshot.
-    ///
-    /// Returns the cached snapshot without modification. Caller should check
-    /// `is_snapshot_dirty()` and call `refresh_snapshot()` if needed.
-    ///
-    /// # Complexity
-    ///
-    /// O(1) - just an atomic reference count increment.
+    /// Returns a shared reference to the cached snapshot.
     pub fn get_snapshot(&self) -> Arc<LiveSnapshot> {
         Arc::clone(&self.cached_snapshot)
     }
 
-    /// Check if the snapshot needs refreshing.
-    ///
-    /// Returns `true` if any mutations have occurred since the last `refresh_snapshot()`.
+    /// Returns `true` if mutations have occurred since the last snapshot refresh.
     pub fn is_snapshot_dirty(&self) -> bool {
         self.snapshot_dirty
     }
 
-    /// Refresh the cached snapshot by collapsing the operation log.
-    ///
-    /// Replays the ordered ops to compute the final state, producing sorted
-    /// inserts and a delete set.
-    ///
-    /// Collapsing semantics:
-    /// - `Insert(point, id)` → add to insert map (keyed by doc_id), remove from delete_set
-    /// - `Delete(id)` → remove from insert map, add to delete_set
-    ///
-    /// # Complexity
-    ///
-    /// O(n log n) where n is the number of ops (replay is O(n), sorting is O(m log m)
-    /// for inserts of size m).
-    ///
-    /// # Memory
-    ///
-    /// Allocates new collections for the snapshot. The old snapshot is dropped when
-    /// all `Arc` references to it are released.
+    /// Rebuilds the cached snapshot from the operation log.
     pub fn refresh_snapshot(&mut self) {
         let mut insert_map: HashMap<u64, Vec<GeoPoint>> = HashMap::new();
         let mut delete_set: HashSet<u64> = HashSet::new();
@@ -142,45 +91,32 @@ impl LiveLayer {
         self.snapshot_dirty = false;
     }
 
-    /// Insert a doc_id with the given point.
-    /// Invalidates the cached snapshot (will be refreshed lazily on next get_snapshot call).
+    /// Adds an insert operation for the given point and doc_id.
     pub fn insert(&mut self, point: GeoPoint, doc_id: u64) {
         self.ops.push(LiveOp::Insert(point, doc_id));
         self.snapshot_dirty = true;
     }
 
-    /// Mark a doc_id for deletion.
-    /// Invalidates the cached snapshot (will be refreshed lazily on next get_snapshot call).
+    /// Adds a delete operation for the given doc_id.
     pub fn delete(&mut self, doc_id: u64) {
         self.ops.push(LiveOp::Delete(doc_id));
         self.snapshot_dirty = true;
     }
 }
 
-/// Sorted snapshot of live data for iteration.
-///
-/// Contains sorted, deduplicated copies of the live layer data at a point in time.
-/// Immutable after creation - shared via `Arc` for zero-copy access from multiple readers.
-///
-/// # Invariants
-///
-/// - `inserts` is sorted by (encoded_lat, encoded_lon, doc_id)
-/// - A doc_id may appear multiple times in `inserts` (multi-point support)
-/// - `deletes` contains doc_ids that were deleted and NOT re-inserted
-/// - `deletes` and `inserts` doc_ids are disjoint
+/// Point-in-time view of live data, with sorted inserts and a set of deleted doc_ids.
 #[derive(Clone)]
 pub struct LiveSnapshot {
-    /// Sorted inserts as (point, doc_id) pairs. A doc_id may appear multiple times.
+    /// Sorted inserts as (point, doc_id) pairs.
     pub inserts: Vec<(GeoPoint, u64)>,
-    /// Doc_ids deleted from the compacted layer (not re-inserted in this batch).
+    /// Doc_ids marked for deletion.
     pub deletes: HashSet<u64>,
     /// Number of ops in the live layer when this snapshot was built.
-    /// Used by compaction to drain exactly the right number of ops.
     pub ops_len: usize,
 }
 
 impl LiveSnapshot {
-    /// Create an empty snapshot.
+    /// Creates an empty snapshot.
     pub fn empty() -> Self {
         Self {
             inserts: Vec::new(),

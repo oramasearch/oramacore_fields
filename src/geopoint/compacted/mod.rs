@@ -20,7 +20,7 @@ pub(crate) struct InnerNodesView<'a> {
 }
 
 impl InnerNodesView<'_> {
-    /// node_id is 1-indexed (BKD tree convention). Reads from mmap offset (node_id - 1) * 8.
+    /// Returns the split value and split dimension for the given node.
     #[inline]
     pub(crate) fn get(&self, node_id: usize) -> (i32, u8) {
         let pos = (node_id - 1) * 8;

@@ -1,12 +1,10 @@
 //! A number index supporting range queries over u64 and f64 values.
 //!
-//! This crate provides a thread-safe, concurrent number index with:
+//! This module provides a persistent, thread-safe number index with:
 //! - Support for both u64 and f64 value types
 //! - Range queries (eq, gt, gte, lt, lte, between)
 //! - JSON indexing via [`NumberIndexer`] (plain values and arrays)
-//! - Two-layer architecture (LiveLayer + CompactedVersion)
-//! - Lock-free reads during compaction
-//! - Memory-mapped disk storage
+//! - On-disk persistence with compaction
 //!
 //! # Example
 //!
@@ -73,22 +71,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! # Architecture
-//!
-//! The index uses a two-layer architecture:
-//!
-//! - **LiveLayer**: Fast in-memory storage for new inserts and deletes.
-//!   Uses lazy snapshot caching to amortize sorting costs.
-//!
-//! - **CompactedVersion**: Memory-mapped disk storage for efficient range
-//!   queries. Uses fixed 16-byte entries (8 bytes value + 8 bytes doc_id).
-//!
-//! # Thread Safety
-//!
-//! - Multiple threads can read (query) concurrently
-//! - Writes are serialized but don't block reads
-//! - Compaction runs without blocking reads or writes
 
 mod compacted;
 mod config;

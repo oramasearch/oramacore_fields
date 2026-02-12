@@ -1,20 +1,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// A single operation in the live layer's append-only log.
+/// A single insert or delete operation.
 #[derive(Debug, Clone)]
 pub enum LiveOp {
     Insert(String, u64), // (key, doc_id)
     Delete(u64),         // doc_id
 }
 
-/// Live layer holding an append-only operation log for string key -> doc_id mappings.
-///
-/// Fields are pub for direct manipulation during compaction cleanup.
+/// In-memory buffer of pending inserts and deletes, not yet persisted to disk.
 pub struct LiveLayer {
-    /// Append-only operation log. May contain interleaved inserts and deletes.
+    /// Ordered log of insert and delete operations.
     pub ops: Vec<LiveOp>,
-    /// Cached sorted, deduplicated snapshot.
+    /// Cached snapshot of the current state.
     cached_snapshot: Arc<LiveSnapshot>,
     snapshot_dirty: bool,
 }
@@ -42,13 +40,7 @@ impl LiveLayer {
         self.snapshot_dirty
     }
 
-    /// Refresh the cached snapshot by replaying ops in order.
-    ///
-    /// Replays operations so that temporal ordering is respected:
-    /// - Insert(key, id) removes id from delete_set, adds key to insert_map[id]
-    /// - Delete(id) removes id from insert_map, adds to delete_set
-    ///
-    /// Then flattens insert_map into sorted (key, doc_id) columnar format.
+    /// Rebuild the cached snapshot from the current operations log.
     pub fn refresh_snapshot(&mut self) {
         let mut insert_map: HashMap<u64, Vec<String>> = HashMap::new();
         let mut delete_set: HashSet<u64> = HashSet::new();
@@ -117,27 +109,20 @@ impl LiveLayer {
     }
 }
 
-/// Sorted snapshot of live data for iteration, stored in columnar format.
-///
-/// # Invariants
-///
-/// - `keys` is sorted lexicographically, deduplicated
-/// - `ranges` has length `keys.len() + 1`; `ranges[i]..ranges[i+1]` indexes into `doc_ids`
-/// - `doc_ids` within each key group are sorted ascending, deduplicated
-/// - `deletes_sorted` is sorted ascending, deduplicated
+/// A point-in-time, read-only view of the live layer's inserts and deletes.
 #[derive(Clone)]
 pub struct LiveSnapshot {
-    /// Unique keys, sorted lexicographically.
+    /// Unique keys in sorted order.
     keys: Vec<String>,
-    /// Ranges into `doc_ids`: key `i` owns `doc_ids[ranges[i]..ranges[i+1]]`.
+    /// Index boundaries into `doc_ids` for each key.
     ranges: Vec<usize>,
-    /// All doc_ids, contiguous by key group.
+    /// All doc_ids, grouped by key.
     doc_ids: Vec<u64>,
-    /// Set of deleted doc_ids for O(1) membership test.
+    /// Set of deleted doc_ids.
     pub deletes: Arc<HashSet<u64>>,
-    /// Sorted deleted doc_ids for merge operations.
+    /// Deleted doc_ids in sorted order.
     pub deletes_sorted: Vec<u64>,
-    /// Number of ops consumed to build this snapshot, used for drain during compaction.
+    /// Number of operations included in this snapshot.
     pub ops_len: usize,
 }
 
@@ -153,8 +138,7 @@ impl LiveSnapshot {
         }
     }
 
-    /// Get sorted doc_ids for a given key from the live snapshot.
-    /// Uses binary search on the keys array, returns a contiguous `&[u64]` slice.
+    /// Return the sorted doc_ids for a given key, or an empty slice if not found.
     pub fn doc_ids_for_key(&self, key: &str) -> &[u64] {
         match self.keys.binary_search_by(|k| k.as_str().cmp(key)) {
             Ok(idx) => &self.doc_ids[self.ranges[idx]..self.ranges[idx + 1]],
@@ -162,12 +146,12 @@ impl LiveSnapshot {
         }
     }
 
-    /// Total number of doc_ids across all keys.
+    /// Return the total number of doc_ids across all keys.
     pub fn total_doc_ids(&self) -> usize {
         self.doc_ids.len()
     }
 
-    /// Iterate over all (key, doc_ids_slice) entries.
+    /// Iterate over all entries as `(key, doc_ids)` pairs.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &[u64])> {
         self.keys.iter().enumerate().map(move |(i, key)| {
             (

@@ -1,7 +1,4 @@
-//! In-memory live layer for NumberStorage.
-//!
-//! The LiveLayer stores new inserts and deletes before compaction.
-//! It uses lazy snapshot caching to amortize sorting costs across queries.
+//! In-memory buffer for pending inserts and deletes before compaction.
 
 use super::error::Error;
 use super::key::IndexableNumber;
@@ -15,10 +12,7 @@ pub enum LiveOp<T: IndexableNumber> {
     Delete { doc_id: u64 },
 }
 
-/// Immutable snapshot of the live layer for query operations.
-///
-/// This is created by `LiveLayer::refresh_snapshot()` and is safe to
-/// share across threads via `Arc`.
+/// Immutable, shareable snapshot of pending inserts and deletes.
 #[derive(Debug, Clone)]
 pub struct LiveSnapshot<T: IndexableNumber> {
     /// Sorted (value, doc_id) pairs.
@@ -40,10 +34,7 @@ impl<T: IndexableNumber> Default for LiveSnapshot<T> {
     }
 }
 
-/// In-memory buffer for new inserts and deletes.
-///
-/// Uses lazy snapshot caching - data is kept unsorted during writes,
-/// and only sorted when a snapshot is needed for queries.
+/// In-memory buffer for new inserts and deletes before compaction.
 pub struct LiveLayer<T: IndexableNumber> {
     /// Chronologically ordered mutation operations.
     pub ops: Vec<LiveOp<T>>,
@@ -92,13 +83,7 @@ impl<T: IndexableNumber> LiveLayer<T> {
         Arc::clone(&self.cached_snapshot)
     }
 
-    /// Refresh the cached snapshot by replaying ops chronologically.
-    ///
-    /// Single forward pass over ops:
-    /// - Track latest insert index per (value_bytes, doc_id) pair
-    /// - Track latest delete index per doc_id
-    /// - Keep inserts where insert_idx > delete_idx (or no delete)
-    /// - Collect all ever-deleted doc_ids into snapshot.deletes
+    /// Rebuild the cached snapshot from the current operations.
     pub fn refresh_snapshot(&mut self) {
         // Forward pass: track latest op index for each insert key and delete key.
         let mut latest_insert: HashMap<([u8; 8], u64), usize> = HashMap::new();

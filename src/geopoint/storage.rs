@@ -51,8 +51,7 @@ fn merge_sorted_unique(a: &[u64], b: &[u64]) -> Vec<u64> {
     result
 }
 
-/// Select which segments to merge: picks the smallest ceil(len/2) segments (min 2).
-/// Returns sorted indices into the original slice.
+/// Selects which segments to merge by choosing the smallest ones.
 fn select_segments_to_merge(point_counts: &[u64]) -> Vec<usize> {
     let n = point_counts.len();
     if n <= 1 {
@@ -206,7 +205,7 @@ impl GeoPointStorage {
         Ok(())
     }
 
-    /// Hot compact: build BKD from live inserts only, hardlink old segments.
+    /// Compacts by writing only new inserts as a new segment, keeping existing segments.
     fn hot_compact(
         &self,
         version_id: u64,
@@ -286,8 +285,7 @@ impl GeoPointStorage {
         Ok(())
     }
 
-    /// Partial merge compact: merge the smallest segments together, copy the rest.
-    /// Deletes are carried forward, not applied.
+    /// Merges the smallest segments together while copying the rest unchanged.
     fn partial_merge_compact(
         &self,
         version_id: u64,
@@ -378,7 +376,7 @@ impl GeoPointStorage {
         Ok(())
     }
 
-    /// Full compact: read all segments + live, merge, dedup, rebuild single BKD.
+    /// Rebuilds all data into a single segment, optionally applying deletes.
     fn full_compact(
         &self,
         version_id: u64,

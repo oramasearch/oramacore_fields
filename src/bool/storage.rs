@@ -1,16 +1,7 @@
 //! Main BoolStorage implementation.
 //!
-//! The `BoolStorage` is a concurrent, persistent boolean postings index optimized for
-//! append-heavy workloads with occasional deletions. It uses a layered architecture:
-//!
-//! - **Live layer**: In-memory unsorted writes (fast inserts)
-//! - **Compacted layer**: On-disk sorted, memory-mapped data (efficient reads)
-//!
-//! # Concurrency Model
-//!
-//! - Reads (`filter()`) are mostly lock-free via `ArcSwap` for version access
-//! - Writes (`insert()`, `delete()`) acquire a write lock on the live layer
-//! - Compaction (`compact()`) is serialized via `compaction_lock`
+//! Provides a persistent boolean index optimized for append-heavy workloads
+//! with occasional deletions. Reads and writes can happen concurrently.
 
 use super::indexer::IndexedValue;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
@@ -29,23 +20,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-/// A threshold value between 0.0 and 1.0 (inclusive).
+/// Controls when deletions are physically applied during compaction.
 ///
-/// Used to control when deletions are physically applied vs carried forward
-/// during compaction. A threshold of 0.1 means deletions are applied when
-/// they exceed 10% of total postings.
+/// A value between 0.0 and 1.0 (inclusive). For example, 0.1 means deletions
+/// are applied when they exceed 10% of total postings.
 ///
-/// # Tuning Guidance
-///
-/// - **Lower values (e.g., 0.05)**: Apply deletions more aggressively. Better for
-///   workloads with steady deletion rates. Uses more CPU during compaction but
-///   keeps data files smaller.
-///
-/// - **Higher values (e.g., 0.3)**: Carry forward deletions longer. Better for
-///   burst deletion patterns or when compaction time is critical. Data files
-///   may grow larger between cleanup cycles.
-///
-/// The default value of 0.1 (10%) is a reasonable starting point for most workloads.
+/// Lower values apply deletions sooner (smaller files, more compaction work).
+/// Higher values defer deletions (faster compaction, larger files).
+/// The default is 0.1.
 #[derive(Debug, Clone, Copy)]
 pub struct DeletionThreshold(f64);
 
@@ -83,15 +65,9 @@ impl TryFrom<f32> for DeletionThreshold {
     }
 }
 
-/// Check if snapshot values can be safely appended (all > existing max).
+/// Check if new values can be appended without re-sorting.
 ///
-/// Returns `false` if there's overlap, indicating the merge strategy should be used
-/// instead of the fast append path. This happens when doc_ids are not monotonically
-/// increasing (e.g., reusing deleted doc_ids).
-///
-/// # Complexity
-///
-/// O(1) - only checks the first new value against the existing max.
+/// Returns `false` if new values overlap the existing range.
 fn can_append_safely(existing_max: Option<u64>, new_values: &[u64]) -> bool {
     match (existing_max, new_values.first()) {
         (Some(max), Some(&first)) => first > max,
@@ -99,28 +75,17 @@ fn can_append_safely(existing_max: Option<u64>, new_values: &[u64]) -> bool {
     }
 }
 
-/// Boolean postings index that stores doc_ids partitioned into TRUE and FALSE sets.
+/// Boolean index that maps documents to true/false values.
 ///
-/// # Thread Safety
-///
-/// `BoolStorage` is `Send + Sync` and designed for concurrent access:
-///
-/// - **`version`** (`ArcSwap<CompactedVersion>`): Lock-free reads via `load()`. Writers
-///   atomically swap in new versions. Readers holding old `Arc` continue safely.
-///
-/// - **`live`** (`RwLock<LiveLayer>`): Protects in-memory mutations. Readers get shared
-///   access; `insert()`/`delete()` take exclusive access. The `filter()` method uses
-///   double-check locking to minimize write lock contention.
-///
-/// - **`compaction_lock`** (`Mutex<()>`): Serializes compaction operations. Only one
-///   compaction can run at a time, but reads/writes continue concurrently.
+/// Supports concurrent reads and writes with persistence via compaction.
+/// Safe to share across threads (`Send + Sync`).
 pub struct BoolStorage {
     base_path: PathBuf,
-    /// The current compacted version (memory-mapped). Swapped atomically during compaction.
+    /// The current on-disk version.
     version: ArcSwap<CompactedVersion>,
-    /// In-memory layer for recent writes. Protected by RwLock for concurrent reads.
+    /// In-memory buffer for recent writes.
     live: RwLock<LiveLayer>,
-    /// Ensures only one compaction runs at a time.
+    /// Serializes compaction operations.
     compaction_lock: Mutex<()>,
     /// Threshold for applying vs carrying forward deletions.
     deletion_threshold: DeletionThreshold,
@@ -172,24 +137,13 @@ impl BoolStorage {
 
     /// Insert a doc_id with the given boolean value.
     ///
-    /// Insert a doc_id based on an IndexedValue extracted by BoolIndexer.
-    ///
     /// - `Plain(bool)`: inserts the doc_id into the TRUE or FALSE set.
     /// - `Array(bools)`: inserts into TRUE set if any element is true,
     ///   into FALSE set if any element is false. The doc_id may appear
     ///   in both sets.
     ///
-    /// The insert is recorded in the live layer and becomes visible to subsequent
-    /// `filter()` calls. Data is not persisted until `compact()` is called.
-    ///
-    /// # Concurrency
-    ///
-    /// Acquires a write lock on the live layer. Multiple concurrent inserts are
-    /// serialized. Consider batching if insert rate is very high.
-    ///
-    /// # Complexity
-    ///
-    /// O(1) amortized - appends to an unsorted vector.
+    /// The insert becomes visible to subsequent `filter()` calls.
+    /// Data is not persisted until `compact()` is called.
     pub fn insert(&self, indexed_value: &IndexedValue, doc_id: u64) {
         match indexed_value {
             IndexedValue::Plain(b) => {
@@ -214,53 +168,17 @@ impl BoolStorage {
 
     /// Delete a doc_id from both TRUE and FALSE sets.
     ///
-    /// Marks the doc_id for deletion. The deletion is applied lazily:
-    /// - Immediately visible to `filter()` (excluded from results)
-    /// - Physically removed during `compact()` based on threshold
+    /// Marks the doc_id for deletion. The deletion is immediately visible
+    /// to `filter()` and physically removed during `compact()` based on
+    /// the deletion threshold.
     ///
-    /// Deleting a non-existent doc_id is a no-op (no error).
-    ///
-    /// # Concurrency
-    ///
-    /// Acquires a write lock on the live layer.
-    ///
-    /// # Complexity
-    ///
-    /// O(1) amortized - appends to the deletes vector.
+    /// Deleting a non-existent doc_id is a no-op.
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
     }
 
-    /// Return filter data for zero-allocation iteration over doc_ids.
-    ///
-    /// Returns an iterator that yields doc_ids matching the given boolean value,
-    /// excluding any deleted doc_ids. Results are sorted in ascending order.
-    ///
-    /// # Snapshot Semantics
-    ///
-    /// The returned `FilterData` captures a consistent snapshot at call time.
-    /// Subsequent `insert()`/`delete()` calls do not affect the iteration.
-    ///
-    /// # Concurrency
-    ///
-    /// Uses double-check locking to minimize contention:
-    /// 1. First tries read lock - O(1) `Arc::clone` if snapshot is clean
-    /// 2. Only acquires write lock if snapshot needs refresh
-    /// 3. Re-checks dirty flag after write lock (another thread may have refreshed)
-    ///
-    /// In the common case (no recent mutations), this is nearly lock-free.
-    ///
-    /// # Complexity
-    ///
-    /// - Snapshot acquisition: O(1) if clean, O(n log n) if dirty (sorting)
-    /// - Iteration: O(n + m + d) where n=compacted postings, m=live inserts, d=deletes
-    ///
-    /// Obtain a fresh snapshot of the live layer using double-check locking.
-    ///
-    /// 1. Acquire read lock — if snapshot is clean, return `Arc::clone` (O(1)).
-    /// 2. If dirty, drop read lock, acquire write lock, re-check dirty flag
-    ///    (another thread may have refreshed), refresh if still dirty.
+    /// Get a snapshot of the live layer, refreshing it if needed.
     fn fresh_snapshot(&self) -> Arc<LiveSnapshot> {
         let live = self.live.read().unwrap();
         if !live.is_snapshot_dirty() {
@@ -282,28 +200,13 @@ impl BoolStorage {
 
     /// Compact the index at the given version number.
     ///
-    /// Merges the live layer into the compacted version and writes to disk. After
-    /// successful compaction, the new version becomes active and compacted items
+    /// Merges the live layer into the on-disk version and persists the result.
+    /// After compaction, the new version becomes active and compacted items
     /// are cleared from the live layer.
     ///
-    /// # Deletion Strategies
-    ///
-    /// Compaction uses one of two strategies based on `deletion_threshold`:
-    ///
-    /// - **Strategy A (Apply Deletions)**: When `deletes / total_postings > threshold`,
-    ///   deletions are physically applied. Results in smaller files but requires
-    ///   reading and rewriting all postings. O(n) where n = total postings.
-    ///
-    /// - **Strategy B (Carry Forward)**: When below threshold, deletions are merged
-    ///   into `deleted.bin` and postings are copied/appended. Faster compaction but
-    ///   deletion overhead during reads. Uses fast append path when possible.
-    ///
-    /// # Concurrency
-    ///
-    /// - Acquires `compaction_lock` to serialize compactions (only one at a time)
-    /// - Writes to a new version directory, then atomically swaps
-    /// - Readers continue using the old version until swap completes
-    /// - Operations during compaction are preserved (not lost)
+    /// Only one compaction runs at a time. Reads and writes continue
+    /// during compaction, and operations that arrive during compaction
+    /// are preserved.
     ///
     /// # Errors
     ///
@@ -311,19 +214,8 @@ impl BoolStorage {
     /// - Cannot create version directory (permission denied, disk full)
     /// - Cannot write postings files (I/O error, disk full)
     /// - Cannot update CURRENT file (I/O error)
-    /// - Cannot load the new version (shouldn't happen if writes succeeded)
     ///
-    /// # Recovery
-    ///
-    /// On error, the old version remains active. Partial writes may leave orphan
-    /// files in the new version directory; call `cleanup()` to remove them.
-    /// Retrying compaction with the same or different version number is safe.
-    ///
-    /// # Complexity
-    ///
-    /// - Strategy A: O(n) where n = total postings (must read and rewrite all)
-    /// - Strategy B fast path: O(m) where m = new inserts (copy existing + append)
-    /// - Strategy B merge path: O(n + m) when new doc_ids overlap existing range
+    /// On error, the old version remains active. Retrying is safe.
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let compaction_guard = self.compaction_lock.lock().unwrap();
 
@@ -396,20 +288,10 @@ impl BoolStorage {
         Ok(())
     }
 
-    /// Optimized compaction path when there are no new deletions.
+    /// Compaction path when there are no new deletions.
     ///
-    /// Copies existing postings files and appends new inserts (fast path).
-    /// Falls back to merge strategy if new doc_ids overlap with existing range.
-    ///
-    /// # Fast Path vs Merge Path
-    ///
-    /// - **Fast path**: When all new doc_ids > existing max, we can simply copy
-    ///   the existing file and append. This is O(m) where m = new inserts.
-    ///
-    /// - **Merge path**: When new doc_ids overlap (e.g., reused doc_ids), we must
-    ///   merge the two sorted sequences. This is O(n + m).
-    ///
-    /// The fast path is typical for monotonically increasing doc_ids.
+    /// Copies existing postings and appends new inserts when possible,
+    /// falling back to a full merge if new doc_ids overlap the existing range.
     fn compact_no_new_deletes(
         &self,
         snapshot: &LiveSnapshot,
@@ -472,35 +354,11 @@ impl BoolStorage {
         Ok(())
     }
 
-    /// Compaction path with new deletions - uses merge strategy with ratio check.
+    /// Compaction path with new deletions.
     ///
-    /// Chooses between two strategies based on the deletion ratio:
-    ///
-    /// # Strategy A: Apply Deletions (when `deletes/postings > threshold`)
-    ///
-    /// Physically removes deleted doc_ids from the postings files:
-    /// - `true.bin` = merge(existing_true, new_true) - merge(existing_deleted, new_deleted)
-    /// - `false.bin` = merge(existing_false, new_false) - merge(existing_deleted, new_deleted)
-    /// - `deleted.bin` = empty
-    ///
-    /// **Tradeoff**: Higher compaction cost (must read/write all postings), but smaller
-    /// files and faster subsequent reads (no deletion filtering needed).
-    ///
-    /// # Strategy B: Carry Forward Deletions (when `deletes/postings <= threshold`)
-    ///
-    /// Accumulates deletions without applying them:
-    /// - `true.bin` = copy or merge existing + new (same logic as no-delete path)
-    /// - `false.bin` = copy or merge existing + new
-    /// - `deleted.bin` = merge(existing_deleted, new_deleted)
-    ///
-    /// **Tradeoff**: Faster compaction (may use copy+append), but larger files and
-    /// deletion filtering overhead during reads.
-    ///
-    /// # Threshold Guidance
-    ///
-    /// The threshold balances compaction cost vs read cost. With threshold=0.1:
-    /// - Deletions < 10% of postings: carry forward (fast compaction)
-    /// - Deletions >= 10% of postings: apply (clean up disk space)
+    /// If the deletion ratio exceeds the threshold, deletions are physically
+    /// applied (smaller files, slower compaction). Otherwise, deletions are
+    /// carried forward (faster compaction, filtered at read time).
     fn compact_with_new_deletes(
         &self,
         snapshot: &LiveSnapshot,
@@ -620,30 +478,15 @@ impl BoolStorage {
 
     /// Get the current version number.
     ///
-    /// Returns the version number of the currently active compacted version.
     /// Returns 0 if no compaction has occurred yet.
-    ///
-    /// # Complexity
-    ///
-    /// O(1) - atomic load from `ArcSwap`.
     pub fn current_version_number(&self) -> u64 {
         self.version.load().version_number
     }
 
     /// Remove all old version directories except the current one.
     ///
-    /// Call this after compaction to reclaim disk space from old versions.
-    /// It's safe to call during normal operation - readers using old versions
-    /// will continue to work (files remain open).
-    ///
-    /// # Error Handling
-    ///
-    /// Errors are logged via `tracing::error!` but do not cause the method to fail.
-    /// Partial cleanup is acceptable; re-running cleanup will retry failed removals.
-    ///
-    /// # Complexity
-    ///
-    /// O(v) where v = number of old versions, each requiring a directory traversal.
+    /// Call this after compaction to reclaim disk space. Safe to call during
+    /// normal operation. Errors are logged but do not cause the method to fail.
     pub fn cleanup(&self) {
         let compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version = self.version.load().version_number;

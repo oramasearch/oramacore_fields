@@ -14,14 +14,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-/// String filter storage with exact-match filtering via FST-based compacted versions.
-///
-/// # Thread Safety
-///
-/// `StringFilterStorage` is `Send + Sync`:
-/// - `version` (`ArcSwap<CompactedVersion>`): Lock-free reads via `load()`.
-/// - `live` (`RwLock<LiveLayer>`): Protects in-memory mutations.
-/// - `compaction_lock` (`Mutex<()>`): Serializes compaction operations.
+/// Persistent string filter index supporting exact-match lookups, concurrent reads and writes,
+/// and compaction to disk.
 pub struct StringFilterStorage {
     base_path: PathBuf,
     version: ArcSwap<CompactedVersion>,
@@ -31,10 +25,9 @@ pub struct StringFilterStorage {
 }
 
 impl StringFilterStorage {
-    /// Create a new StringFilterStorage at the given path.
+    /// Open or create a string filter index at the given path.
     ///
-    /// If a previous version exists (detected via CURRENT file), it will be loaded.
-    /// Otherwise, starts with an empty index.
+    /// Loads an existing index if one is found, otherwise starts empty.
     pub fn new(path: impl Into<PathBuf>, threshold: Threshold) -> Result<Self> {
         let base_path = path.into();
         fs::create_dir_all(&base_path)
@@ -63,7 +56,7 @@ impl StringFilterStorage {
         })
     }
 
-    /// Insert a doc_id based on an IndexedValue extracted by StringIndexer.
+    /// Insert a doc_id for the given indexed string value(s).
     pub fn insert(&self, indexed_value: &super::indexer::IndexedValue, doc_id: u64) {
         match indexed_value {
             super::indexer::IndexedValue::Plain(s) => {
@@ -79,15 +72,13 @@ impl StringFilterStorage {
         }
     }
 
-    /// Delete a doc_id from all string value sets.
+    /// Mark a doc_id as deleted across all keys.
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
     }
 
-    /// Return filter data for zero-allocation iteration over doc_ids matching the exact string value.
-    ///
-    /// Uses double-check locking to minimize contention on the live layer.
+    /// Return filter data for iterating over doc_ids matching the exact string value.
     pub fn filter<'a>(&self, value: &'a str) -> FilterData<'a> {
         let snapshot = {
             let live = self.live.read().unwrap();
@@ -106,9 +97,7 @@ impl StringFilterStorage {
         FilterData::new(Arc::clone(&version), snapshot, value)
     }
 
-    /// Compact the index at the given version number.
-    ///
-    /// Merges the live layer into the compacted version, building a new FST + postings.
+    /// Persist pending changes to disk at the given version number.
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
 
@@ -148,7 +137,7 @@ impl StringFilterStorage {
         Ok(())
     }
 
-    /// Determine if deletions should be applied based on threshold.
+    /// Check whether deletions exceed the threshold for physical removal.
     fn should_apply_deletes(
         &self,
         snapshot: &LiveSnapshot,
@@ -172,7 +161,7 @@ impl StringFilterStorage {
         merged_deletes_count as f64 / total_postings as f64 > self.threshold.value()
     }
 
-    /// Strategy A: Apply deletions — rebuild FST + postings with deletions subtracted.
+    /// Compact by physically removing deleted doc_ids from the data.
     fn compact_apply_deletes(
         &self,
         snapshot: &LiveSnapshot,
@@ -199,7 +188,7 @@ impl StringFilterStorage {
         Ok(())
     }
 
-    /// Strategy B: Carry forward deletions — merge new data, carry forward deleted.bin.
+    /// Compact by merging new data while carrying deletions forward for later removal.
     fn compact_carry_forward(
         &self,
         snapshot: &LiveSnapshot,
@@ -225,12 +214,12 @@ impl StringFilterStorage {
         Ok(())
     }
 
-    /// Get the current version number.
+    /// Return the current compacted version number.
     pub fn current_version_number(&self) -> u64 {
         self.version.load().version_number
     }
 
-    /// Remove all old version directories except the current one.
+    /// Delete old version directories, keeping only the current one.
     pub fn cleanup(&self) {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version = self.version.load().version_number;
@@ -252,7 +241,7 @@ impl StringFilterStorage {
         }
     }
 
-    /// Get metadata and statistics about the index.
+    /// Return metadata and statistics about the index.
     pub fn info(&self) -> IndexInfo {
         let version = self.version.load();
         let live = self.live.read().unwrap();
@@ -274,7 +263,7 @@ impl StringFilterStorage {
         }
     }
 
-    /// Check the integrity of the index files.
+    /// Verify that the on-disk index files are valid and consistent.
     pub fn integrity_check(&self) -> IntegrityCheckResult {
         let mut checks = Vec::new();
 

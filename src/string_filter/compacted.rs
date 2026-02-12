@@ -10,19 +10,14 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
 
-/// A compacted version containing FST-based key lookup + memory-mapped postings.
-///
-/// On-disk format per version directory:
-/// - `keys.fst`: FST mapping string key -> byte offset in postings.dat
-/// - `postings.dat`: For each key: [count: u64 LE][doc_id_0: u64 LE]...[doc_id_{count-1}: u64 LE]
-/// - `deleted.bin`: Sorted u64 doc_ids
+/// An on-disk, read-only snapshot of the index at a specific version.
 pub struct CompactedVersion {
     pub version_number: u64,
-    /// FST mapping string keys to byte offsets in postings.dat.
+    /// Key-to-offset map for postings lookup.
     fst_map: Option<Map<Mmap>>,
-    /// Memory-mapped postings data.
+    /// Postings data mapped from disk.
     postings_mmap: Option<Mmap>,
-    /// Memory-mapped deleted doc_ids.
+    /// Deleted doc_ids mapped from disk.
     deleted_mmap: Option<Mmap>,
 }
 
@@ -104,7 +99,7 @@ impl CompactedVersion {
         Ok(Some(mmap))
     }
 
-    /// Lookup a key in the FST and return the posting list as a sorted slice of doc_ids.
+    /// Return the sorted doc_ids for a key, or `None` if the key is not present.
     pub fn lookup(&self, key: &str) -> Option<&[u64]> {
         let fst_map = self.fst_map.as_ref()?;
         let postings_mmap = self.postings_mmap.as_ref()?;
@@ -133,7 +128,7 @@ impl CompactedVersion {
         Some(unsafe { std::slice::from_raw_parts(ptr, count) })
     }
 
-    /// Get the deleted doc_ids as a sorted slice.
+    /// Return the deleted doc_ids as a sorted slice.
     pub fn deletes_slice(&self) -> &[u64] {
         Self::mmap_as_u64_slice(self.deleted_mmap.as_ref())
     }
@@ -149,8 +144,7 @@ impl CompactedVersion {
         }
     }
 
-    /// Iterate all keys and their posting lists. Used during compaction.
-    /// Returns (key, doc_ids_slice) pairs in FST iteration order (lexicographic).
+    /// Iterate all keys and their posting lists in lexicographic order.
     pub fn iter_all(&self) -> CompactedIterator<'_> {
         CompactedIterator {
             stream: self.fst_map.as_ref().map(|m| m.stream()),
@@ -158,7 +152,7 @@ impl CompactedVersion {
         }
     }
 
-    /// Get the number of unique keys in the FST.
+    /// Return the number of unique keys.
     pub fn key_count(&self) -> usize {
         self.fst_map.as_ref().map_or(0, |m| m.len())
     }

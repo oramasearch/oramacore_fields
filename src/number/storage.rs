@@ -1,7 +1,4 @@
 //! Main NumberStorage implementation.
-//!
-//! This module provides the thread-safe NumberStorage with concurrent
-//! read/write/compaction support.
 
 use super::compacted::{
     copy_bucket_file, copy_header_file, version_dir as compacted_version_dir, write_deleted_file,
@@ -24,8 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-/// Default dirty header threshold: when changes_since_rebuild / total exceeds this,
-/// trigger a full rebuild to normalize header spacing and bucket sizes.
+/// Default dirty header threshold for deciding when to do a full rebuild during compaction.
 const DEFAULT_DIRTY_HEADER_THRESHOLD: f64 = 0.1;
 
 /// Type alias for a NumberStorage over u64 values.
@@ -34,17 +30,10 @@ pub type U64Storage = NumberStorage<u64>;
 /// Type alias for a NumberStorage over f64 values.
 pub type F64Storage = NumberStorage<f64>;
 
-/// A thread-safe number index supporting range queries.
+/// A thread-safe, persistent number index supporting range queries.
 ///
-/// The index uses a two-layer architecture:
-/// - **LiveLayer**: Fast in-memory storage for new inserts and deletes
-/// - **CompactedVersion**: Memory-mapped disk storage for efficient range queries
-///
-/// # Thread Safety
-///
-/// - Multiple threads can read (query) concurrently
-/// - Writes are serialized but don't block reads
-/// - Compaction runs without blocking reads or writes
+/// Supports inserting, deleting, filtering, and sorting documents by numeric
+/// value. Data is persisted to disk through compaction.
 ///
 /// # Example
 ///
@@ -152,8 +141,8 @@ impl<T: IndexableNumber> NumberStorage<T> {
 
     /// Set the dirty header threshold for incremental compaction.
     ///
-    /// When changes_since_rebuild / total exceeds this threshold, a full
-    /// rebuild is triggered instead of incremental compaction.
+    /// When the ratio of changes to total entries exceeds this threshold,
+    /// a full rebuild is triggered instead of incremental compaction.
     pub fn set_dirty_header_threshold(&mut self, threshold: f64) {
         self.dirty_header_threshold = threshold;
     }
@@ -276,22 +265,10 @@ impl<T: IndexableNumber> NumberStorage<T> {
         self.version.load().offset
     }
 
-    /// Compact the index.
+    /// Compact the index by merging pending changes into a new on-disk version.
     ///
-    /// This merges the live layer into the compacted version and writes
-    /// a new version to disk.
-    ///
-    /// # Compaction Strategy
-    ///
-    /// The compaction uses the threshold to decide whether to apply deletions:
-    /// - If delete ratio > threshold: apply deletions (garbage collection)
-    /// - If delete ratio <= threshold: carry forward deletions
-    ///
-    /// # Concurrency
-    ///
-    /// - Only one compaction can run at a time (compaction_lock)
-    /// - Reads and writes continue during compaction
-    /// - Writes during compaction are preserved
+    /// The threshold controls whether deletions are applied immediately
+    /// or carried forward to the next compaction.
     pub fn compact(&self, offset: u64) -> Result<(), Error> {
         // Step 1: Acquire compaction lock
         let compaction_guard = self.compaction_lock.lock().unwrap();
