@@ -4,7 +4,7 @@ use oramacore_fields::bool::{
     BoolStorage, CheckStatus, DeletionThreshold, IndexedValue, SortOrder,
 };
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -1953,12 +1953,12 @@ fn test_randomized_operations() {
                 let base = (thread_id as u64) * (OPS_PER_THREAD as u64);
                 for i in 0..OPS_PER_THREAD {
                     let doc_id = base + (i as u64);
-                    let op: u8 = rng.gen_range(0..10);
+                    let op: u8 = rng.random_range(0..10);
 
                     match op {
                         0..=6 => {
                             // 70% insert
-                            let value = rng.gen_bool(0.5);
+                            let value = rng.random_bool(0.5);
                             idx.insert(&IndexedValue::Plain(value), doc_id);
                             ins.lock().unwrap().insert((doc_id, value));
                         }
@@ -1969,7 +1969,7 @@ fn test_randomized_operations() {
                         }
                         _ => {
                             // 10% filter
-                            let _: Vec<u64> = idx.filter(rng.gen_bool(0.5)).iter().collect();
+                            let _: Vec<u64> = idx.filter(rng.random_bool(0.5)).iter().collect();
                         }
                     }
                 }

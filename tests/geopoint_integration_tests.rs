@@ -420,15 +420,15 @@ fn test_iterator_stability_across_compaction() {
 
 #[test]
 fn test_stress_many_points() {
-    use rand::Rng;
+    use rand::RngExt;
 
     let (_tmp, index) = make_index();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Insert 10K random points
     for i in 0..10_000u64 {
-        let lat = rng.gen_range(-90.0..=90.0);
-        let lon = rng.gen_range(-180.0..=180.0);
+        let lat = rng.random_range(-90.0..=90.0);
+        let lon = rng.random_range(-180.0..=180.0);
         index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
     }
 
@@ -461,22 +461,22 @@ fn test_stress_many_points() {
 
 #[test]
 fn test_stress_compact_with_many_points() {
-    use rand::Rng;
+    use rand::RngExt;
 
     let (_tmp, index) = make_index();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Insert 5K points, compact, insert 5K more, compact
     for i in 0..5_000u64 {
-        let lat = rng.gen_range(-90.0..=90.0);
-        let lon = rng.gen_range(-180.0..=180.0);
+        let lat = rng.random_range(-90.0..=90.0);
+        let lon = rng.random_range(-180.0..=180.0);
         index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
     }
     index.compact(1).unwrap();
 
     for i in 5_000..10_000u64 {
-        let lat = rng.gen_range(-90.0..=90.0);
-        let lon = rng.gen_range(-180.0..=180.0);
+        let lat = rng.random_range(-90.0..=90.0);
+        let lon = rng.random_range(-180.0..=180.0);
         index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
     }
     index.compact(2).unwrap();

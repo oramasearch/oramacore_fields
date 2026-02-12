@@ -25,7 +25,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.10"
-rand = "0.8"
+rand = "0.10"
 
 [[bin]]
 name = "oramacore_fields"
