@@ -161,4 +161,106 @@ mod tests {
 
         assert_eq!(results, vec![1, 5]);
     }
+
+    #[test]
+    fn test_filter_all_deleted() {
+        let compacted = [1u64, 2, 3];
+        let live = [4u64, 5];
+        let deletes = [1u64, 2, 3, 4, 5];
+        let result: Vec<u64> = FilterIterator::new(&compacted, &live, &deletes, &[]).collect();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_overlapping_postings_dedup() {
+        // Same doc_id appears in both compacted and live
+        let compacted = [1u64, 3, 5];
+        let live = [3u64, 5, 7];
+        let result: Vec<u64> = FilterIterator::new(&compacted, &live, &[], &[]).collect();
+        assert_eq!(result, vec![1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn test_filter_deletes_for_nonexistent_ids() {
+        // Deletes target doc_ids that aren't in any posting list
+        let compacted = [1u64, 3, 5];
+        let deletes = [2u64, 4, 6]; // none of these are in postings
+        let result: Vec<u64> = FilterIterator::new(&compacted, &[], &deletes, &[]).collect();
+        assert_eq!(result, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn test_filter_mixed_deletes_from_both_sources() {
+        let compacted = [1u64, 2, 3, 4, 5];
+        let live = [6u64, 7, 8];
+        let compacted_deletes = [2u64, 6];
+        let live_deletes = [4u64, 8];
+        let result: Vec<u64> =
+            FilterIterator::new(&compacted, &live, &compacted_deletes, &live_deletes).collect();
+        assert_eq!(result, vec![1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn test_filter_single_element() {
+        let compacted = [42u64];
+        let result: Vec<u64> = FilterIterator::new(&compacted, &[], &[], &[]).collect();
+        assert_eq!(result, vec![42]);
+    }
+
+    #[test]
+    fn test_filter_single_element_deleted() {
+        let compacted = [42u64];
+        let deletes = [42u64];
+        let result: Vec<u64> = FilterIterator::new(&compacted, &[], &deletes, &[]).collect();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_large_postings() {
+        let compacted: Vec<u64> = (0..1000).step_by(2).collect();
+        let live: Vec<u64> = (1..1000).step_by(2).collect();
+        let deletes: Vec<u64> = (0..1000).step_by(3).collect();
+
+        let result: Vec<u64> = FilterIterator::new(&compacted, &live, &deletes, &[]).collect();
+
+        let expected: Vec<u64> = (0..1000u64).filter(|x| x % 3 != 0).collect();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_filter_data_missing_key() {
+        use super::super::live::LiveLayer;
+
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert("hello", 1);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let filter_data = FilterData::new(version, snapshot, "missing");
+        let results: Vec<u64> = filter_data.iter().collect();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filter_iterator_can_be_called_multiple_times() {
+        use super::super::live::LiveLayer;
+
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert("hello", 1);
+        layer.insert("hello", 2);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let filter_data = FilterData::new(version, snapshot, "hello");
+
+        // Call iter() multiple times - should produce same results
+        let r1: Vec<u64> = filter_data.iter().collect();
+        let r2: Vec<u64> = filter_data.iter().collect();
+        assert_eq!(r1, r2);
+        assert_eq!(r1, vec![1, 2]);
+    }
 }

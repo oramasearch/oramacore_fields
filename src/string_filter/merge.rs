@@ -317,4 +317,80 @@ mod tests {
         merge_sorted_u64_into(&[10], &[20], &mut out);
         assert_eq!(out, vec![10, 20]);
     }
+
+    #[test]
+    fn test_merge_large_sequences() {
+        let left: Vec<u64> = (0..1000).step_by(2).collect();
+        let right: Vec<u64> = (1..1000).step_by(2).collect();
+        let result: Vec<u64> = sorted_merge(left.into_iter(), right.into_iter()).collect();
+        let expected: Vec<u64> = (0..1000).collect();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_subtract_right_larger_than_left() {
+        let left = vec![5u64, 10];
+        let right = vec![1u64, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let result: Vec<u64> = sorted_subtract(left.into_iter(), right.into_iter()).collect();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_merge_single_element_each() {
+        let result: Vec<u64> =
+            sorted_merge(vec![1u64].into_iter(), vec![2u64].into_iter()).collect();
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_merge_single_element_same() {
+        let result: Vec<u64> =
+            sorted_merge(vec![1u64].into_iter(), vec![1u64].into_iter()).collect();
+        assert_eq!(result, vec![1]);
+    }
+
+    #[test]
+    fn test_subtract_interleaved() {
+        let left = vec![1u64, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let right = vec![2u64, 4, 6, 8, 10];
+        let result: Vec<u64> = sorted_subtract(left.into_iter(), right.into_iter()).collect();
+        assert_eq!(result, vec![1, 3, 5, 7, 9]);
+    }
+
+    #[test]
+    fn test_subtract_single_element() {
+        let result: Vec<u64> =
+            sorted_subtract(vec![5u64].into_iter(), vec![5u64].into_iter()).collect();
+        assert!(result.is_empty());
+
+        let result: Vec<u64> =
+            sorted_subtract(vec![5u64].into_iter(), vec![3u64].into_iter()).collect();
+        assert_eq!(result, vec![5]);
+    }
+
+    #[test]
+    fn test_merge_into_large_sequences() {
+        let a: Vec<u64> = (0..500).step_by(2).collect();
+        let b: Vec<u64> = (1..500).step_by(2).collect();
+        let mut out = Vec::new();
+        merge_sorted_u64_into(&a, &b, &mut out);
+        let expected: Vec<u64> = (0..500).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_merge_with_duplicates_within_same_side() {
+        // Both sides have same values
+        let left = vec![1u64, 1, 2, 3, 3];
+        let right = vec![2u64, 3, 4, 4];
+        let result: Vec<u64> = sorted_merge(left.into_iter(), right.into_iter()).collect();
+        assert_eq!(result, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_merge_into_with_duplicates_within_same_side() {
+        let mut out = Vec::new();
+        merge_sorted_u64_into(&[1, 1, 2, 3, 3], &[2, 3, 4, 4], &mut out);
+        assert_eq!(out, vec![1, 2, 3, 4]);
+    }
 }

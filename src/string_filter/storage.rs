@@ -804,4 +804,861 @@ mod tests {
 
         assert_eq!(results, vec![1, 5, 10]);
     }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Array values
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_array_values() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        let arr = IndexedValue::Array(vec!["red".into(), "blue".into(), "green".into()]);
+        index.insert(&arr, 1);
+        index.insert(&IndexedValue::Array(vec!["red".into(), "yellow".into()]), 2);
+
+        let red: Vec<u64> = index.filter("red").iter().collect();
+        let blue: Vec<u64> = index.filter("blue").iter().collect();
+        let yellow: Vec<u64> = index.filter("yellow").iter().collect();
+        let green: Vec<u64> = index.filter("green").iter().collect();
+
+        assert_eq!(red, vec![1, 2]);
+        assert_eq!(blue, vec![1]);
+        assert_eq!(yellow, vec![2]);
+        assert_eq!(green, vec![1]);
+    }
+
+    #[test]
+    fn test_insert_array_values_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        let arr = IndexedValue::Array(vec!["red".into(), "blue".into()]);
+        index.insert(&arr, 1);
+        index.compact(1).unwrap();
+
+        let red: Vec<u64> = index.filter("red").iter().collect();
+        let blue: Vec<u64> = index.filter("blue").iter().collect();
+        assert_eq!(red, vec![1]);
+        assert_eq!(blue, vec![1]);
+
+        // Add more after compaction
+        index.insert(&IndexedValue::Array(vec!["red".into(), "green".into()]), 2);
+        let red: Vec<u64> = index.filter("red").iter().collect();
+        assert_eq!(red, vec![1, 2]);
+
+        index.compact(2).unwrap();
+        let red: Vec<u64> = index.filter("red").iter().collect();
+        assert_eq!(red, vec![1, 2]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Delete-then-reinsert to different key
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_then_reinsert_different_key_separate_batches() {
+        // When delete and re-insert happen in separate compaction rounds,
+        // the old key is properly cleaned up.
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("color_red"), 1);
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.compact(2).unwrap();
+
+        index.insert(&p("color_blue"), 1);
+        index.compact(3).unwrap();
+
+        let red: Vec<u64> = index.filter("color_red").iter().collect();
+        let blue: Vec<u64> = index.filter("color_blue").iter().collect();
+        assert!(red.is_empty(), "doc 1 should no longer be under color_red");
+        assert_eq!(blue, vec![1], "doc 1 should now be under color_blue");
+    }
+
+    #[test]
+    fn test_delete_then_reinsert_different_key_same_batch() {
+        // When delete + re-insert happen in the same live batch, the live
+        // layer's replay consumes the delete (since the re-insert brings the
+        // doc_id back). This means the old compacted key entry is preserved.
+        // This is a known characteristic of the architecture.
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("color_red"), 1);
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.insert(&p("color_blue"), 1);
+        index.compact(2).unwrap();
+
+        let red: Vec<u64> = index.filter("color_red").iter().collect();
+        let blue: Vec<u64> = index.filter("color_blue").iter().collect();
+        // Doc 1 appears under both keys because the delete was consumed by re-insert
+        assert_eq!(red, vec![1]);
+        assert_eq!(blue, vec![1]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact with only deletes (no inserts in live layer)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_only_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.insert(&p("hello"), 3);
+        index.compact(1).unwrap();
+
+        // Only deletes in the live layer
+        index.delete(2);
+        index.compact(2).unwrap();
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1, 3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Multiple keys across multiple compaction rounds
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_multiple_keys_across_compaction_rounds() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Round 1: insert into "alpha" and "beta"
+        index.insert(&p("alpha"), 1);
+        index.insert(&p("beta"), 2);
+        index.compact(1).unwrap();
+
+        // Round 2: add more to "alpha", introduce "gamma"
+        index.insert(&p("alpha"), 3);
+        index.insert(&p("gamma"), 4);
+        index.compact(2).unwrap();
+
+        // Round 3: add to "beta" and "gamma"
+        index.insert(&p("beta"), 5);
+        index.insert(&p("gamma"), 6);
+        index.compact(3).unwrap();
+
+        let alpha: Vec<u64> = index.filter("alpha").iter().collect();
+        let beta: Vec<u64> = index.filter("beta").iter().collect();
+        let gamma: Vec<u64> = index.filter("gamma").iter().collect();
+
+        assert_eq!(alpha, vec![1, 3]);
+        assert_eq!(beta, vec![2, 5]);
+        assert_eq!(gamma, vec![4, 6]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Delete doc_id that was already compacted
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_compacted_doc_id() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.insert(&p("hello"), 3);
+        index.compact(1).unwrap();
+
+        // Delete a compacted doc_id, verify it's filtered before re-compaction
+        index.delete(2);
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1, 3]);
+
+        // Now compact and verify it persists
+        index.compact(2).unwrap();
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1, 3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Delete non-existent doc_id
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_nonexistent_doc_id() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.delete(999); // doesn't exist
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1]);
+
+        index.compact(1).unwrap();
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Interleaved insert/delete/compact
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_interleaved_insert_delete_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("a"), 1);
+        index.insert(&p("a"), 2);
+        index.insert(&p("b"), 3);
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.insert(&p("a"), 4);
+        index.insert(&p("c"), 5);
+        index.compact(2).unwrap();
+
+        index.delete(3);
+        index.delete(5);
+        index.insert(&p("a"), 6);
+        index.compact(3).unwrap();
+
+        let a: Vec<u64> = index.filter("a").iter().collect();
+        let b: Vec<u64> = index.filter("b").iter().collect();
+        let c: Vec<u64> = index.filter("c").iter().collect();
+
+        assert_eq!(a, vec![2, 4, 6]);
+        assert!(b.is_empty());
+        assert!(c.is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Same doc_id under multiple keys
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_same_doc_id_multiple_keys() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("color"), 1);
+        index.insert(&p("shape"), 1);
+        index.insert(&p("size"), 1);
+        index.compact(1).unwrap();
+
+        let color: Vec<u64> = index.filter("color").iter().collect();
+        let shape: Vec<u64> = index.filter("shape").iter().collect();
+        let size: Vec<u64> = index.filter("size").iter().collect();
+
+        assert_eq!(color, vec![1]);
+        assert_eq!(shape, vec![1]);
+        assert_eq!(size, vec![1]);
+
+        // Delete should remove from all keys
+        index.delete(1);
+        let color: Vec<u64> = index.filter("color").iter().collect();
+        let shape: Vec<u64> = index.filter("shape").iter().collect();
+        assert!(color.is_empty());
+        assert!(shape.is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact when everything is deleted
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_all_deleted() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.delete(1);
+        index.delete(2);
+        index.compact(1).unwrap();
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert!(results.is_empty());
+
+        // Re-insert after all deleted
+        index.insert(&p("hello"), 3);
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![3]);
+
+        index.compact(2).unwrap();
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Threshold: apply-deletes strategy (low threshold)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_apply_deletes_low_threshold() {
+        let tmp = TempDir::new().unwrap();
+        // threshold = 0.0 means always apply deletes
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), 0.0f64.try_into().unwrap()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.insert(&p("hello"), 3);
+        index.delete(2);
+        index.compact(1).unwrap();
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1, 3]);
+
+        // After apply-deletes, deleted.bin should be empty
+        let info = index.info();
+        assert_eq!(
+            info.deleted_count, 0,
+            "deletes should be applied, not carried"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Threshold: carry-forward strategy (high threshold)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_carry_forward_high_threshold() {
+        let tmp = TempDir::new().unwrap();
+        // threshold = 1.0 means never apply deletes (always carry forward)
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), 1.0f64.try_into().unwrap()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.insert(&p("hello"), 3);
+        index.delete(2);
+        index.compact(1).unwrap();
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1, 3]);
+
+        // Deletes should be carried forward
+        let info = index.info();
+        assert!(
+            info.deleted_count > 0,
+            "deletes should be carried forward, not applied"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Multiple compaction rounds with deletes
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_multiple_compaction_rounds_with_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("x"), 1);
+        index.insert(&p("x"), 2);
+        index.insert(&p("x"), 3);
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.insert(&p("x"), 4);
+        index.compact(2).unwrap();
+
+        index.delete(3);
+        index.insert(&p("x"), 5);
+        index.compact(3).unwrap();
+
+        let results: Vec<u64> = index.filter("x").iter().collect();
+        assert_eq!(results, vec![2, 4, 5]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Persistence with deletes
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_persistence_with_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path().to_path_buf();
+
+        {
+            let index = StringFilterStorage::new(base_path.clone(), Threshold::default()).unwrap();
+            index.insert(&p("hello"), 1);
+            index.insert(&p("hello"), 2);
+            index.insert(&p("hello"), 3);
+            index.delete(2);
+            index.compact(1).unwrap();
+        }
+
+        {
+            let index = StringFilterStorage::new(base_path, Threshold::default()).unwrap();
+            let results: Vec<u64> = index.filter("hello").iter().collect();
+            assert_eq!(results, vec![1, 3]);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Persistence with carry-forward deletes
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_persistence_carry_forward_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path().to_path_buf();
+
+        {
+            // Use high threshold so deletes are carried forward
+            let index =
+                StringFilterStorage::new(base_path.clone(), 0.9f64.try_into().unwrap()).unwrap();
+            index.insert(&p("hello"), 1);
+            index.insert(&p("hello"), 2);
+            index.insert(&p("hello"), 3);
+            index.delete(2);
+            index.compact(1).unwrap();
+        }
+
+        {
+            // Reopen and verify deletes are still effective
+            let index = StringFilterStorage::new(base_path, 0.9f64.try_into().unwrap()).unwrap();
+            let results: Vec<u64> = index.filter("hello").iter().collect();
+            assert_eq!(results, vec![1, 3]);
+
+            // Add more and compact again - carried deletes should merge correctly
+            index.insert(&p("hello"), 4);
+            index.compact(2).unwrap();
+            let results: Vec<u64> = index.filter("hello").iter().collect();
+            assert_eq!(results, vec![1, 3, 4]);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  info() correctness
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_info_after_operations() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        let info = index.info();
+        assert_eq!(info.current_version_number, 0);
+        assert_eq!(info.unique_keys_count, 0);
+        assert_eq!(info.total_postings_count, 0);
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 2);
+        index.insert(&p("world"), 3);
+        index.compact(1).unwrap();
+
+        let info = index.info();
+        assert_eq!(info.current_version_number, 1);
+        assert_eq!(info.unique_keys_count, 2);
+        assert_eq!(info.total_postings_count, 3);
+        assert_eq!(info.pending_ops, 0);
+        assert!(info.fst_size_bytes > 0);
+        assert!(info.postings_size_bytes > 0);
+
+        index.insert(&p("hello"), 4);
+        let info = index.info();
+        assert_eq!(info.pending_ops, 1);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  integrity_check()
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_integrity_check_valid() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.compact(1).unwrap();
+
+        let result = index.integrity_check();
+        assert!(
+            result.passed,
+            "integrity check should pass: {:?}",
+            result.checks
+        );
+    }
+
+    #[test]
+    fn test_integrity_check_missing_files() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.compact(1).unwrap();
+
+        // Remove a required file
+        fs::remove_file(tmp.path().join("versions/1/postings.dat")).unwrap();
+
+        let result = index.integrity_check();
+        assert!(
+            !result.passed,
+            "integrity check should fail with missing file"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Filter results are always sorted
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_filter_results_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Insert in non-sequential order across compaction rounds
+        index.insert(&p("key"), 10);
+        index.insert(&p("key"), 3);
+        index.insert(&p("key"), 7);
+        index.compact(1).unwrap();
+
+        index.insert(&p("key"), 1);
+        index.insert(&p("key"), 15);
+        index.insert(&p("key"), 5);
+
+        let results: Vec<u64> = index.filter("key").iter().collect();
+        let mut sorted = results.clone();
+        sorted.sort();
+        assert_eq!(results, sorted, "filter results must be sorted");
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact merges live and compacted same key
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_merges_live_and_compacted_same_key() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("shared"), 1);
+        index.insert(&p("shared"), 3);
+        index.compact(1).unwrap();
+
+        index.insert(&p("shared"), 2);
+        index.insert(&p("shared"), 4);
+        index.compact(2).unwrap();
+
+        let results: Vec<u64> = index.filter("shared").iter().collect();
+        assert_eq!(results, vec![1, 2, 3, 4]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Large scale
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_large_scale_insert_delete_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Insert 500 docs across 50 keys
+        for i in 0u64..500 {
+            let key = format!("key_{:03}", i % 50);
+            index.insert(&p(&key), i);
+        }
+        index.compact(1).unwrap();
+
+        // Delete even doc_ids
+        for i in (0u64..500).step_by(2) {
+            index.delete(i);
+        }
+        index.compact(2).unwrap();
+
+        // Verify only odd doc_ids remain
+        for key_idx in 0..50u64 {
+            let key = format!("key_{key_idx:03}");
+            let results: Vec<u64> = index.filter(&key).iter().collect();
+            let expected: Vec<u64> = (0..500u64)
+                .filter(|i| i % 50 == key_idx && i % 2 != 0)
+                .collect();
+            assert_eq!(results, expected, "mismatch for {key}");
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Duplicate insert same key+doc_id
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_duplicate_insert_same_key_doc() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 1);
+        index.insert(&p("hello"), 1);
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1], "duplicates should be deduplicated");
+
+        index.compact(1).unwrap();
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact empty live layer
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_empty_live_layer() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.compact(1).unwrap();
+
+        // Compact again with no changes in live layer
+        index.compact(2).unwrap();
+
+        let results: Vec<u64> = index.filter("hello").iter().collect();
+        assert_eq!(results, vec![1]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Multi-threaded reads while inserting
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_concurrent_reads_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tmp = TempDir::new().unwrap();
+        let index = Arc::new(
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap(),
+        );
+
+        // Pre-populate
+        for i in 0..100u64 {
+            index.insert(&p("concurrent"), i);
+        }
+
+        let index_clone = Arc::clone(&index);
+        let writer = thread::spawn(move || {
+            for i in 100..200u64 {
+                index_clone.insert(&p("concurrent"), i);
+            }
+        });
+
+        let index_clone = Arc::clone(&index);
+        let reader = thread::spawn(move || {
+            for _ in 0..50 {
+                let results: Vec<u64> = index_clone.filter("concurrent").iter().collect();
+                // Should always get at least the initial 100
+                assert!(results.len() >= 100);
+                // Results should always be sorted
+                for w in results.windows(2) {
+                    assert!(w[0] < w[1], "results not sorted");
+                }
+            }
+        });
+
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        let final_results: Vec<u64> = index.filter("concurrent").iter().collect();
+        assert_eq!(final_results.len(), 200);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Delete before any compaction, then compact
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_before_first_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("a"), 1);
+        index.insert(&p("a"), 2);
+        index.insert(&p("b"), 3);
+        index.delete(1);
+        index.delete(3);
+
+        let a: Vec<u64> = index.filter("a").iter().collect();
+        let b: Vec<u64> = index.filter("b").iter().collect();
+        assert_eq!(a, vec![2]);
+        assert!(b.is_empty());
+
+        index.compact(1).unwrap();
+        let a: Vec<u64> = index.filter("a").iter().collect();
+        let b: Vec<u64> = index.filter("b").iter().collect();
+        assert_eq!(a, vec![2]);
+        assert!(b.is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact with new key not in compacted version
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_introduces_new_keys() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("first"), 1);
+        index.compact(1).unwrap();
+
+        // "second" is a brand new key
+        index.insert(&p("second"), 2);
+        index.compact(2).unwrap();
+
+        let first: Vec<u64> = index.filter("first").iter().collect();
+        let second: Vec<u64> = index.filter("second").iter().collect();
+        assert_eq!(first, vec![1]);
+        assert_eq!(second, vec![2]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Compact where a key exists only in compacted (no live data for it)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_key_only_in_compacted() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("old_key"), 1);
+        index.insert(&p("old_key"), 2);
+        index.compact(1).unwrap();
+
+        // Live layer only has a different key
+        index.insert(&p("new_key"), 3);
+        index.compact(2).unwrap();
+
+        let old: Vec<u64> = index.filter("old_key").iter().collect();
+        let new: Vec<u64> = index.filter("new_key").iter().collect();
+        assert_eq!(old, vec![1, 2]);
+        assert_eq!(new, vec![3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Lexicographic key ordering in compacted version
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_keys_stored_in_lexicographic_order() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Insert in reverse lexicographic order
+        index.insert(&p("zebra"), 1);
+        index.insert(&p("apple"), 2);
+        index.insert(&p("mango"), 3);
+        index.compact(1).unwrap();
+
+        // All should still be found
+        assert_eq!(index.filter("zebra").iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(index.filter("apple").iter().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(index.filter("mango").iter().collect::<Vec<_>>(), vec![3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Delete doc_id shared across keys after compaction
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_shared_doc_id_across_keys_after_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("key_a"), 1);
+        index.insert(&p("key_b"), 1);
+        index.insert(&p("key_a"), 2);
+        index.insert(&p("key_b"), 3);
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.compact(2).unwrap();
+
+        let a: Vec<u64> = index.filter("key_a").iter().collect();
+        let b: Vec<u64> = index.filter("key_b").iter().collect();
+        assert_eq!(a, vec![2]);
+        assert_eq!(b, vec![3]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Insert after compact, delete, compact again
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_compact_delete_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("k"), 1);
+        index.compact(1).unwrap();
+
+        index.insert(&p("k"), 2);
+        index.compact(2).unwrap();
+
+        index.delete(1);
+        index.compact(3).unwrap();
+
+        let results: Vec<u64> = index.filter("k").iter().collect();
+        assert_eq!(results, vec![2]);
+
+        // Persistence check
+        drop(index);
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let results: Vec<u64> = index.filter("k").iter().collect();
+        assert_eq!(results, vec![2]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Verify total_size_bytes in info
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_info_total_size() {
+        let tmp = TempDir::new().unwrap();
+        let index =
+            StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&p("hello"), 1);
+        index.compact(1).unwrap();
+
+        let info = index.info();
+        assert_eq!(
+            info.total_size_bytes(),
+            info.fst_size_bytes + info.postings_size_bytes + info.deleted_size_bytes
+        );
+        assert!(info.total_size_bytes() > 0);
+    }
 }

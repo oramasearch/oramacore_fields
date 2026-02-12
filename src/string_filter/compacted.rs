@@ -584,4 +584,218 @@ mod tests {
             assert_eq!(version.lookup(key), Some(doc_ids));
         }
     }
+
+    // ──────────────────────────────────────────────────────────────
+    //  build_from_sorted_sources with both compacted + live
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_merge_compacted_and_live() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+
+        // Build initial compacted version
+        let v1_path = ensure_version_dir(base_path, 1).unwrap();
+        build_from_entries(&[("apple", &[1u64, 3]), ("cherry", &[5u64])], &[], &v1_path);
+        let v1 = CompactedVersion::load(base_path, 1).unwrap();
+
+        // Merge with live entries (banana is new, apple overlaps)
+        let v2_path = ensure_version_dir(base_path, 2).unwrap();
+        let live_entries: Vec<(&str, &[u64])> = vec![("apple", &[2u64, 4]), ("banana", &[6u64, 7])];
+        let mut compacted_iter = v1.iter_all();
+        let mut live_iter = live_entries.into_iter().peekable();
+        CompactedVersion::build_from_sorted_sources(
+            &mut compacted_iter,
+            &mut live_iter,
+            None,
+            std::iter::empty(),
+            &v2_path,
+        )
+        .unwrap();
+
+        let v2 = CompactedVersion::load(base_path, 2).unwrap();
+
+        // apple: merged [1,2,3,4]
+        assert_eq!(v2.lookup("apple"), Some([1u64, 2, 3, 4].as_slice()));
+        // banana: only from live
+        assert_eq!(v2.lookup("banana"), Some([6u64, 7].as_slice()));
+        // cherry: only from compacted
+        assert_eq!(v2.lookup("cherry"), Some([5u64].as_slice()));
+        assert_eq!(v2.key_count(), 3);
+        assert_eq!(v2.total_postings(), 7);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  build_from_sorted_sources with apply-deletes
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_with_apply_deletes_filtering() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+
+        // Build initial
+        let v1_path = ensure_version_dir(base_path, 1).unwrap();
+        build_from_entries(&[("x", &[1u64, 2, 3, 4, 5])], &[], &v1_path);
+        let v1 = CompactedVersion::load(base_path, 1).unwrap();
+
+        // Rebuild with deletes applied
+        let v2_path = ensure_version_dir(base_path, 2).unwrap();
+        let deleted: HashSet<u64> = [2, 4].into_iter().collect();
+        let mut compacted_iter = v1.iter_all();
+        let empty: Vec<(&str, &[u64])> = vec![];
+        let mut live_iter = empty.into_iter().peekable();
+        CompactedVersion::build_from_sorted_sources(
+            &mut compacted_iter,
+            &mut live_iter,
+            Some(&deleted),
+            std::iter::empty(),
+            &v2_path,
+        )
+        .unwrap();
+
+        let v2 = CompactedVersion::load(base_path, 2).unwrap();
+        assert_eq!(v2.lookup("x"), Some([1u64, 3, 5].as_slice()));
+        assert!(v2.deletes_slice().is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  build_from_sorted_sources: apply-deletes removes entire key
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_apply_deletes_removes_entire_key() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+
+        let v1_path = ensure_version_dir(base_path, 1).unwrap();
+        build_from_entries(&[("a", &[1u64, 2]), ("b", &[3u64])], &[], &v1_path);
+        let v1 = CompactedVersion::load(base_path, 1).unwrap();
+
+        // Delete all doc_ids for key "b"
+        let v2_path = ensure_version_dir(base_path, 2).unwrap();
+        let deleted: HashSet<u64> = [3].into_iter().collect();
+        let mut compacted_iter = v1.iter_all();
+        let empty: Vec<(&str, &[u64])> = vec![];
+        let mut live_iter = empty.into_iter().peekable();
+        CompactedVersion::build_from_sorted_sources(
+            &mut compacted_iter,
+            &mut live_iter,
+            Some(&deleted),
+            std::iter::empty(),
+            &v2_path,
+        )
+        .unwrap();
+
+        let v2 = CompactedVersion::load(base_path, 2).unwrap();
+        assert_eq!(v2.lookup("a"), Some([1u64, 2].as_slice()));
+        assert_eq!(v2.lookup("b"), None); // entire key removed
+        assert_eq!(v2.key_count(), 1);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Single key single doc_id
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_single_entry() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        build_from_entries(&[("only", &[42u64])], &[], &version_path);
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(version.lookup("only"), Some([42u64].as_slice()));
+        assert_eq!(version.key_count(), 1);
+        assert_eq!(version.total_postings(), 1);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Unicode keys in compacted version
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_unicode_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        // Note: entries must be in lexicographic byte order
+        let mut entries: Vec<(&str, &[u64])> =
+            vec![("日本語", &[1u64]), ("中文", &[2u64]), ("emoji🎉", &[3u64])];
+        entries.sort_by_key(|e| e.0);
+
+        build_from_entries(&entries, &[], &version_path);
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(version.lookup("日本語"), Some([1u64].as_slice()));
+        assert_eq!(version.lookup("中文"), Some([2u64].as_slice()));
+        assert_eq!(version.lookup("emoji🎉"), Some([3u64].as_slice()));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Build with carry-forward deletes
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_with_carry_forward_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        build_from_entries(&[("hello", &[1u64, 2, 3])], &[10u64, 20], &version_path);
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(version.lookup("hello"), Some([1u64, 2, 3].as_slice()));
+        assert_eq!(version.deletes_slice(), &[10, 20]);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Empty build (no entries, no deletes)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_empty() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        build_from_entries(&[], &[], &version_path);
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(version.key_count(), 0);
+        assert_eq!(version.total_postings(), 0);
+        assert!(version.deletes_slice().is_empty());
+        assert!(version.lookup("anything").is_none());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Many keys
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_many_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        let owned: Vec<(String, Vec<u64>)> = (0..200u64)
+            .map(|i| (format!("key_{i:04}"), vec![i, i + 1000]))
+            .collect();
+        let entries: Vec<(&str, &[u64])> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+
+        build_from_entries(&entries, &[], &version_path);
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(version.key_count(), 200);
+        assert_eq!(version.total_postings(), 400);
+
+        assert_eq!(version.lookup("key_0000"), Some([0u64, 1000].as_slice()));
+        assert_eq!(version.lookup("key_0199"), Some([199u64, 1199].as_slice()));
+        assert_eq!(version.lookup("key_0200"), None);
+    }
 }

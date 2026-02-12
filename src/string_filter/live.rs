@@ -294,4 +294,141 @@ mod tests {
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.ops_len, 4);
     }
+
+    #[test]
+    fn test_multiple_keys_for_same_doc_id() {
+        let mut layer = LiveLayer::new();
+
+        layer.insert("color", 1);
+        layer.insert("shape", 1);
+        layer.insert("size", 1);
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        assert_eq!(snapshot.doc_ids_for_key("color"), &[1]);
+        assert_eq!(snapshot.doc_ids_for_key("shape"), &[1]);
+        assert_eq!(snapshot.doc_ids_for_key("size"), &[1]);
+        assert_eq!(snapshot.total_doc_ids(), 3);
+    }
+
+    #[test]
+    fn test_delete_removes_from_all_keys() {
+        let mut layer = LiveLayer::new();
+
+        layer.insert("color", 1);
+        layer.insert("shape", 1);
+        layer.insert("color", 2);
+        layer.delete(1);
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        assert_eq!(snapshot.doc_ids_for_key("color"), &[2]);
+        assert!(snapshot.doc_ids_for_key("shape").is_empty());
+        assert_eq!(snapshot.deletes_sorted, vec![1]);
+    }
+
+    #[test]
+    fn test_empty_snapshot() {
+        let layer = LiveLayer::new();
+        let snapshot = layer.get_snapshot();
+
+        assert!(snapshot.doc_ids_for_key("anything").is_empty());
+        assert_eq!(snapshot.total_doc_ids(), 0);
+        assert!(snapshot.deletes.is_empty());
+        assert!(snapshot.deletes_sorted.is_empty());
+        assert_eq!(snapshot.ops_len, 0);
+    }
+
+    #[test]
+    fn test_snapshot_dirty_flag() {
+        let mut layer = LiveLayer::new();
+        assert!(!layer.is_snapshot_dirty());
+
+        layer.insert("hello", 1);
+        assert!(layer.is_snapshot_dirty());
+
+        layer.refresh_snapshot();
+        assert!(!layer.is_snapshot_dirty());
+
+        layer.delete(1);
+        assert!(layer.is_snapshot_dirty());
+
+        layer.refresh_snapshot();
+        assert!(!layer.is_snapshot_dirty());
+    }
+
+    #[test]
+    fn test_delete_all_then_reinsert() {
+        let mut layer = LiveLayer::new();
+
+        layer.insert("hello", 1);
+        layer.insert("hello", 2);
+        layer.delete(1);
+        layer.delete(2);
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+        assert!(snapshot.doc_ids_for_key("hello").is_empty());
+        assert_eq!(snapshot.total_doc_ids(), 0);
+        assert_eq!(snapshot.deletes_sorted, vec![1, 2]);
+
+        layer.insert("hello", 3);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+        assert_eq!(snapshot.doc_ids_for_key("hello"), &[3]);
+    }
+
+    #[test]
+    fn test_iter_entries_empty() {
+        let layer = LiveLayer::new();
+        let snapshot = layer.get_snapshot();
+        let entries: Vec<_> = snapshot.iter_entries().collect();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_many_operations() {
+        let mut layer = LiveLayer::new();
+
+        for i in 0..100u64 {
+            layer.insert(&format!("key_{:03}", i % 10), i);
+        }
+        // Delete every third
+        for i in (0..100u64).step_by(3) {
+            layer.delete(i);
+        }
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        // Verify keys are sorted
+        let entries: Vec<_> = snapshot.iter_entries().collect();
+        for w in entries.windows(2) {
+            assert!(w[0].0 < w[1].0, "keys not sorted");
+        }
+
+        // Verify total: 100 inserts - 34 deletes = 66 remaining
+        // But delete removes the doc from inserts entirely, so count the inserts
+        let expected_inserts: usize = (0..100u64).filter(|i| i % 3 != 0).count();
+        assert_eq!(snapshot.total_doc_ids(), expected_inserts);
+    }
+
+    #[test]
+    fn test_snapshot_doc_ids_sorted_within_key() {
+        let mut layer = LiveLayer::new();
+
+        // Insert doc_ids in reverse order
+        layer.insert("hello", 10);
+        layer.insert("hello", 5);
+        layer.insert("hello", 1);
+        layer.insert("hello", 8);
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let ids = snapshot.doc_ids_for_key("hello");
+        assert_eq!(ids, &[1, 5, 8, 10], "doc_ids should be sorted ascending");
+    }
 }
