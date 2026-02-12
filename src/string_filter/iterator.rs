@@ -9,8 +9,7 @@ type SliceIter<'a> = Copied<Iter<'a, u64>>;
 type MergeIter<'a> = SortedMerge<SliceIter<'a>, SliceIter<'a>>;
 type SubtractIter<'a> = SortedSubtract<MergeIter<'a>, MergeIter<'a>>;
 
-/// Iterator that yields doc_ids matching an exact string filter.
-/// Merges compacted postings with live inserts, then subtracts deletes.
+/// Iterator that yields sorted doc_ids matching an exact string key.
 pub struct FilterIterator<'a> {
     iter: SubtractIter<'a>,
 }
@@ -44,10 +43,7 @@ impl Iterator for FilterIterator<'_> {
     }
 }
 
-/// Zero-allocation filter data that produces iterators.
-///
-/// Holds Arc references to the compacted version and live snapshot,
-/// plus a borrowed key. No heap allocations are performed.
+/// Handle returned by [`StringFilterStorage::filter`] that produces iterators over matching doc_ids.
 pub struct FilterData<'k> {
     version: Arc<CompactedVersion>,
     snapshot: Arc<LiveSnapshot>,
@@ -67,7 +63,7 @@ impl<'k> FilterData<'k> {
         }
     }
 
-    /// Create an iterator over matching doc_ids (ascending order).
+    /// Create an iterator over matching doc_ids in ascending order.
     pub fn iter(&self) -> FilterIterator<'_> {
         let compacted_postings = self.version.lookup(self.key).unwrap_or(&[]);
         let live_doc_ids = self.snapshot.doc_ids_for_key(self.key);

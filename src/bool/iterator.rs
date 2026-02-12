@@ -1,4 +1,4 @@
-//! Filter iterator for streaming merge-subtract results.
+//! Iterators for streaming boolean filter results.
 
 use super::live::LiveSnapshot;
 use super::merge::{
@@ -26,9 +26,7 @@ pub enum SortOrder {
     Descending,
 }
 
-/// Iterator that yields doc_ids matching a boolean filter.
-/// Merges compacted postings with live inserts, then subtracts deletes.
-/// Zero-allocation: borrows directly from source slices.
+/// Iterator that yields doc_ids matching a boolean filter in ascending order.
 pub struct FilterIterator<'a> {
     iter: SubtractIter<'a>,
 }
@@ -63,8 +61,7 @@ impl Iterator for FilterIterator<'_> {
     }
 }
 
-/// Iterator that yields doc_ids in descending order.
-/// Zero-allocation: uses reversed slice iterators with descending merge/subtract.
+/// Iterator that yields doc_ids matching a boolean filter in descending order.
 pub struct DescendingIterator<'a> {
     iter: SubtractIterDesc<'a>,
 }
@@ -100,7 +97,6 @@ impl Iterator for DescendingIterator<'_> {
 }
 
 /// Iterator that yields doc_ids in either ascending or descending order.
-/// Both directions are zero-allocation.
 pub enum SortedIterator<'a> {
     Ascending(FilterIterator<'a>),
     Descending(DescendingIterator<'a>),
@@ -117,7 +113,7 @@ impl Iterator for SortedIterator<'_> {
     }
 }
 
-/// Owned filter data that produces zero-allocation iterators.
+/// Holds a snapshot of the index state and produces iterators over matching doc_ids.
 pub struct FilterData {
     version: Arc<CompactedVersion>,
     snapshot: Arc<LiveSnapshot>,
@@ -137,7 +133,7 @@ impl FilterData {
         }
     }
 
-    /// Create a zero-allocation iterator over matching doc_ids.
+    /// Create an iterator over matching doc_ids in ascending order.
     pub fn iter(&self) -> FilterIterator<'_> {
         FilterIterator::new(
             self.version.postings_slice(self.value),
@@ -147,7 +143,7 @@ impl FilterData {
         )
     }
 
-    /// Create a zero-allocation iterator that yields doc_ids in the specified order.
+    /// Create an iterator that yields doc_ids in the specified order.
     pub fn sorted(&self, order: SortOrder) -> SortedIterator<'_> {
         match order {
             SortOrder::Ascending => SortedIterator::Ascending(self.iter()),

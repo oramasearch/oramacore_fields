@@ -157,10 +157,7 @@ impl CompactedVersion {
         self.fst_map.as_ref().map_or(0, |m| m.len())
     }
 
-    /// Get the total number of doc_id entries across all posting lists, O(1).
-    ///
-    /// Derived from the postings format: each key contributes 8 bytes (count) plus
-    /// count×8 bytes (doc_ids), so `total_postings = postings_bytes / 8 - key_count`.
+    /// Return the total number of doc_id entries across all posting lists.
     pub fn total_postings(&self) -> usize {
         let postings_bytes = self.postings_mmap.as_ref().map_or(0, |m| m.len());
         let key_count = self.key_count();
@@ -170,13 +167,12 @@ impl CompactedVersion {
         postings_bytes / 8 - key_count
     }
 
-    /// Build a new compacted version by streaming a sorted merge of compacted + live entries
-    /// directly into FST builder + postings writer, avoiding O(K) heap allocations.
+    /// Build a new compacted version on disk by merging existing and new entries.
     ///
-    /// - `compacted_iter`: iterator over the existing compacted version's entries (lexicographic order)
-    /// - `live_iter`: iterator over the live snapshot's entries (lexicographic order)
-    /// - `deleted_set`: if `Some`, filter out these doc_ids from every posting list (apply-deletes strategy)
-    /// - `deletes_iter`: iterator of doc_ids to write to `deleted.bin` (carry-forward strategy passes merged deletes here)
+    /// - `compacted_iter`: entries from the previous compacted version
+    /// - `live_iter`: entries from the live snapshot
+    /// - `deleted_set`: if `Some`, these doc_ids are excluded from the output
+    /// - `deletes_iter`: doc_ids to write as carried-forward deletions
     /// - `path`: the version directory to write into
     pub fn build_from_sorted_sources<'a, 'b, L, D>(
         compacted_iter: &mut CompactedIterator<'a>,
@@ -300,8 +296,7 @@ impl CompactedVersion {
     }
 }
 
-/// Write a single entry (key + doc_ids) to the FST builder and postings writer,
-/// optionally filtering out deleted doc_ids.
+/// Write a single key and its doc_ids to disk, optionally filtering out deleted doc_ids.
 fn write_entry(
     key: &[u8],
     doc_ids: &[u64],
@@ -343,15 +338,14 @@ fn write_entry(
     Ok(())
 }
 
-/// Iterator over all keys and posting lists in a compacted version.
+/// Iterator over all keys and their posting lists in a compacted version.
 pub struct CompactedIterator<'a> {
     stream: Option<fst::map::Stream<'a>>,
     postings_mmap: Option<&'a Mmap>,
 }
 
 impl<'a> CompactedIterator<'a> {
-    /// Get the next entry, writing the key bytes into the provided buffer to avoid allocation.
-    /// Returns the doc_ids slice from the mmap.
+    /// Advance to the next entry, writing the key into `key_buf` and returning its doc_ids.
     pub fn next_entry_into(&mut self, key_buf: &mut Vec<u8>) -> Option<&'a [u64]> {
         use fst::Streamer;
         let stream = self.stream.as_mut()?;

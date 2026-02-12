@@ -1,13 +1,4 @@
-//! Disk I/O operations for reading/writing postings and version management.
-//!
-//! This module provides low-level file operations for the index, including:
-//! - Writing postings lists to disk in native-endian u64 format
-//! - Atomic updates to the CURRENT file (version pointer)
-//! - Version directory management
-//!
-//! All write operations use fsync for durability. File formats are simple:
-//! - Postings files: sequence of native-endian u64 values
-//! - CURRENT file: two lines of ASCII text (format version, then version number)
+//! File I/O for reading and writing postings files and managing versions.
 
 use anyhow::{anyhow, Context, Result};
 
@@ -18,32 +9,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-/// Copy a postings file and optionally append new values.
+/// Copy a postings file and optionally append new sorted values.
 ///
-/// This is the fast-path for compaction when new inserts can be appended without
-/// re-sorting. Used when all new values are strictly greater than existing values.
-///
-/// # Preconditions
-///
-/// - `new_values` must be sorted in ascending order
-/// - All values in `new_values` must be strictly greater than `existing_max` (if provided)
-/// - This invariant is checked via `debug_assert!` in debug builds
+/// All values in `new_values` must be strictly greater than `existing_max`.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The source file exists but cannot be read (I/O error, permission denied)
-/// - The destination file cannot be created or written to
-/// - Disk is full or write fails
-/// - fsync fails (data may not be durable)
-///
-/// On error, the destination file may be partially written. The caller should
-/// treat failed compaction as non-atomic and retry or recover appropriately.
-///
-/// # Complexity
-///
-/// O(n) where n is the size of the source file plus new_values length.
-/// Uses sequential I/O for optimal disk throughput.
+/// Returns an error on I/O failure (read, write, or sync).
 pub fn copy_and_append_postings(
     src: &Path,
     dst: &Path,
@@ -104,19 +76,7 @@ pub fn copy_and_append_postings(
 
 /// Write u64 values from an iterator to a file in native-endian format.
 ///
-/// Used for streaming writes during compaction when merge or subtract operations
-/// produce values lazily. Creates the file if it doesn't exist, truncates if it does.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - File cannot be created (permission denied, path doesn't exist)
-/// - Write fails (disk full, I/O error)
-/// - fsync fails (data may not be durable)
-///
-/// # Complexity
-///
-/// O(n) where n is the number of values yielded by the iterator.
+/// Creates or truncates the file. Returns an error on I/O failure.
 pub fn write_postings_from_iter<I>(path: &Path, iter: I) -> Result<()>
 where
     I: Iterator<Item = u64>,
@@ -143,19 +103,7 @@ where
 
 /// Write a slice of u64 values to a file in native-endian format.
 ///
-/// Creates the file if it doesn't exist, truncates if it does.
-/// All writes are followed by fsync for durability.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - File cannot be created (permission denied, path doesn't exist)
-/// - Write fails (disk full, I/O error)
-/// - fsync fails (data may not be durable)
-///
-/// # Complexity
-///
-/// O(n) where n is the length of `postings`.
+/// Creates or truncates the file. Returns an error on I/O failure.
 pub fn write_postings(path: &Path, postings: &[u64]) -> Result<()> {
     let file =
         File::create(path).with_context(|| format!("Failed to create postings file: {path:?}"))?;
@@ -177,23 +125,10 @@ pub fn write_postings(path: &Path, postings: &[u64]) -> Result<()> {
     Ok(())
 }
 
-/// Read the CURRENT file to get the format version and current version number.
-///
-/// The CURRENT file is a simple two-line ASCII file:
-/// - Line 1: Format version (u32)
-/// - Line 2: Version number (u64)
+/// Read the CURRENT file to get the format version and version number.
 ///
 /// Returns `Ok(None)` if the file doesn't exist (new index).
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - File exists but cannot be read (permission denied, I/O error)
-/// - File is malformed (missing lines, invalid numbers)
-///
-/// # Complexity
-///
-/// O(1) - reads a small fixed-size file.
+/// Returns an error if the file exists but is malformed or unreadable.
 pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>> {
     let current_path = base_path.join("CURRENT");
 
@@ -229,28 +164,8 @@ pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>> {
 
 /// Atomically write the CURRENT file with format version and version number.
 ///
-/// Uses write-to-temp-then-rename pattern for atomicity:
-/// 1. Write to CURRENT.tmp
-/// 2. fsync the temp file
-/// 3. Rename CURRENT.tmp -> CURRENT (atomic on POSIX)
-/// 4. fsync the parent directory for rename durability
-///
-/// This ensures that readers always see either the old or new version,
-/// never a partial write.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - Cannot create temp file (permission denied, disk full)
-/// - Write or fsync fails
-/// - Rename fails (shouldn't happen on POSIX if write succeeds)
-///
-/// On error, the CURRENT file is unchanged (atomicity preserved).
-/// CURRENT.tmp may be left behind and will be overwritten on next attempt.
-///
-/// # Complexity
-///
-/// O(1) - writes a small fixed-size file.
+/// Uses write-to-temp-then-rename for atomicity. On error, the CURRENT
+/// file is unchanged.
 pub fn write_current_atomic(base_path: &Path, version_number: u64) -> Result<()> {
     let current_path = base_path.join("CURRENT");
     let tmp_path = base_path.join("CURRENT.tmp");
@@ -304,15 +219,7 @@ pub fn ensure_version_dir(base_path: &Path, version_number: u64) -> Result<std::
     Ok(dir)
 }
 
-/// Sync a directory to ensure all file operations are durable.
-///
-/// Opens the directory and calls fsync to flush filesystem metadata.
-/// This is necessary after creating/renaming files to ensure durability
-/// on systems where file data and directory entries are cached separately.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be opened or synced.
+/// Sync a directory to ensure file operations are durable.
 pub fn sync_dir(path: &Path) -> Result<()> {
     let dir = OpenOptions::new()
         .read(true)
@@ -325,15 +232,7 @@ pub fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// List all version directories (as version numbers) in the versions folder.
-///
-/// Returns an iterator over version numbers found in `{base_path}/versions/`.
-/// Non-numeric directory names are silently ignored.
-///
-/// # Errors
-///
-/// Returns an error if the versions directory cannot be read.
-/// Does not fail if individual entries cannot be parsed.
+/// List all version numbers found in the versions directory.
 pub fn list_version_dirs(base_path: &Path) -> Result<impl Iterator<Item = u64> + '_> {
     let versions_dir = base_path.join("versions");
 
@@ -355,14 +254,6 @@ pub fn list_version_dirs(base_path: &Path) -> Result<impl Iterator<Item = u64> +
 }
 
 /// Remove a version directory and all its contents.
-///
-/// Used during cleanup to remove old versions. Recursively deletes
-/// all files within the version directory.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be removed (permission denied,
-/// files in use, doesn't exist).
 pub fn remove_version_dir(base_path: &Path, version_number: u64) -> Result<()> {
     let dir = version_dir(base_path, version_number);
     fs::remove_dir_all(&dir).with_context(|| format!("Failed to remove version directory: {dir:?}"))

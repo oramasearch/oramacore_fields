@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// Metadata and statistics about a string filter index.
+/// Metadata and size statistics about a string filter index.
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
     pub format_version: u32,

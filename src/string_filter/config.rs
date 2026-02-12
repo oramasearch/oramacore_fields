@@ -1,7 +1,6 @@
-/// A threshold value between 0.0 and 1.0 (inclusive).
+/// Controls when deletions are physically removed during compaction (value between 0.0 and 1.0).
 ///
-/// Controls when deletions are physically applied vs carried forward during compaction.
-/// A threshold of 0.1 means deletions are applied when they exceed 10% of total postings.
+/// For example, a threshold of 0.1 triggers removal when deletions exceed 10% of total entries.
 #[derive(Debug, Clone, Copy)]
 pub struct Threshold(f64);
 

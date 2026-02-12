@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub const FORMAT_VERSION: u32 = 1;
 
-/// Write a slice of u64 values to a file in little-endian format.
+/// Write a slice of u64 values to a file.
 pub fn write_postings(path: &Path, postings: &[u64]) -> Result<()> {
     let file =
         File::create(path).with_context(|| format!("Failed to create postings file: {path:?}"))?;
@@ -27,7 +27,7 @@ pub fn write_postings(path: &Path, postings: &[u64]) -> Result<()> {
     Ok(())
 }
 
-/// Write u64 values from an iterator to a file in little-endian format.
+/// Write u64 values from an iterator to a file.
 pub fn write_postings_from_iter<I>(path: &Path, iter: I) -> Result<()>
 where
     I: Iterator<Item = u64>,
@@ -52,7 +52,7 @@ where
     Ok(())
 }
 
-/// Read the CURRENT file to get the format version and current version number.
+/// Read the format version and version number from the CURRENT file.
 pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>> {
     let current_path = base_path.join("CURRENT");
 
@@ -86,7 +86,7 @@ pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>> {
     Ok(Some((format_version, version_number)))
 }
 
-/// Atomically write the CURRENT file with format version and version number.
+/// Write the CURRENT file atomically with the format version and version number.
 pub fn write_current_atomic(base_path: &Path, version_number: u64) -> Result<()> {
     let current_path = base_path.join("CURRENT");
     let tmp_path = base_path.join("CURRENT.tmp");

@@ -3,7 +3,7 @@ mod config;
 mod error;
 mod indexer;
 mod info;
-pub mod io;
+mod io;
 mod iterator;
 mod live;
 mod mmap_vec;

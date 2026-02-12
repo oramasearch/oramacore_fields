@@ -1,8 +1,4 @@
 //! Index information and integrity check types.
-//!
-//! This module provides structured types for index metadata and integrity
-//! checking, allowing the CLI to access this information without directly
-//! inspecting the filesystem.
 
 use std::path::PathBuf;
 

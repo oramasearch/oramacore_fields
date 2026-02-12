@@ -1,12 +1,8 @@
-//! Platform-specific optimizations.
-//!
-//! This module provides memory mapping hints for better I/O performance.
+//! Platform-specific I/O hints for memory-mapped files.
 
 use memmap2::Mmap;
 
-/// Advise the kernel that the memory region will be accessed sequentially.
-///
-/// This enables read-ahead optimization on Unix systems.
+/// Hint that the region will be accessed sequentially.
 #[cfg(unix)]
 pub fn advise_sequential(mmap: &Mmap) {
     unsafe {
@@ -30,9 +26,7 @@ pub fn advise_sequential(_mmap: &Mmap) {
     // No-op
 }
 
-/// Advise the kernel that the memory region will be accessed randomly.
-///
-/// This disables read-ahead on Unix systems.
+/// Hint that the region will be accessed randomly.
 #[cfg(unix)]
 pub fn advise_random(mmap: &Mmap) {
     unsafe {

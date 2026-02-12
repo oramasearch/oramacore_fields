@@ -1,15 +1,10 @@
-//! Sorted merge algorithms.
-//!
-//! These algorithms are used to efficiently combine live layer data
-//! with compacted version data during queries and compaction.
+//! Sorted merge algorithms for combining data from multiple sources.
 
 use super::key::IndexableNumber;
 use std::cmp::Ordering;
 use std::iter::Peekable;
 
-/// A two-pointer merge iterator that combines two sorted iterators.
-///
-/// Yields items from both iterators in sorted order, with deduplication.
+/// Merge iterator that combines two ascending-sorted iterators with deduplication.
 pub struct SortedMerge<L, R, T>
 where
     L: Iterator<Item = (T, u64)>,
@@ -96,9 +91,7 @@ where
     SortedMerge::new(left, right)
 }
 
-/// A two-pointer merge iterator for descending order.
-///
-/// Yields items from both iterators in descending order, with deduplication.
+/// Merge iterator that combines two descending-sorted iterators with deduplication.
 pub struct SortedMergeDescending<L, R, T>
 where
     L: Iterator<Item = (T, u64)>,

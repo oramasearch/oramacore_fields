@@ -1,13 +1,4 @@
-//! Compacted version with memory-mapped file handles.
-//!
-//! This module provides read-only access to compacted index versions stored on disk.
-//! Each version is a snapshot of the index at a particular point in time, containing:
-//! - `true.bin`: sorted doc_ids where the boolean value is true
-//! - `false.bin`: sorted doc_ids where the boolean value is false
-//! - `deleted.bin`: doc_ids that should be excluded from both sets
-//!
-//! Files are memory-mapped for efficient random access without loading into heap.
-//! The kernel manages paging data in/out as needed.
+//! Read-only access to a persisted index version on disk.
 
 use super::io::version_dir;
 use super::platform::advise_sequential;
@@ -16,26 +7,15 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
 
-/// A compacted version containing memory-mapped postings files.
-///
-/// This struct holds memory-mapped views of the three postings files that make up
-/// a compacted version. The `Mmap` handles keep the files mapped for the lifetime
-/// of this struct.
-///
-/// # Thread Safety
-///
-/// `CompactedVersion` is `Send` and `Sync` because `Mmap` is read-only after creation.
-/// Multiple threads can safely read from the same mapped regions concurrently.
-/// The index uses `ArcSwap<CompactedVersion>` to allow lock-free version swaps
-/// during compaction while readers continue using the old version.
+/// A persisted index version backed by memory-mapped files.
 pub struct CompactedVersion {
-    /// The version number of this compacted version.
+    /// The version number.
     pub version_number: u64,
-    /// Memory-mapped file containing sorted doc_ids with value=true.
+    /// Sorted doc_ids with value=true.
     pub true_postings: Option<Mmap>,
-    /// Memory-mapped file containing sorted doc_ids with value=false.
+    /// Sorted doc_ids with value=false.
     pub false_postings: Option<Mmap>,
-    /// Memory-mapped file containing doc_ids to exclude from results.
+    /// Doc_ids to exclude from results.
     pub deletes: Option<Mmap>,
 }
 
@@ -52,18 +32,8 @@ impl CompactedVersion {
 
     /// Load a compacted version from disk.
     ///
-    /// Memory-maps the postings files in the version directory. Missing files
-    /// are treated as empty (returns `None` for that field).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Files exist but cannot be opened (permission denied)
-    /// - Memory mapping fails (out of address space, file too large)
-    ///
-    /// # Complexity
-    ///
-    /// O(1) - memory mapping is lazy, actual I/O happens on access.
+    /// Missing files are treated as empty. Returns an error if files exist
+    /// but cannot be opened or mapped.
     pub fn load(base_path: &Path, version_number: u64) -> Result<Self> {
         let dir = version_dir(base_path, version_number);
 
@@ -111,18 +81,12 @@ impl CompactedVersion {
         Ok(Some(mmap))
     }
 
-    /// Get the true postings as a slice of u64.
-    ///
-    /// Returns an empty slice if the true.bin file was missing or empty.
-    /// The returned slice is valid for the lifetime of this `CompactedVersion`.
+    /// Get the true postings as a slice of u64. Empty if no data.
     pub fn true_postings_slice(&self) -> &[u64] {
         Self::mmap_as_u64_slice(self.true_postings.as_ref())
     }
 
-    /// Get the false postings as a slice of u64.
-    ///
-    /// Returns an empty slice if the false.bin file was missing or empty.
-    /// The returned slice is valid for the lifetime of this `CompactedVersion`.
+    /// Get the false postings as a slice of u64. Empty if no data.
     pub fn false_postings_slice(&self) -> &[u64] {
         Self::mmap_as_u64_slice(self.false_postings.as_ref())
     }
@@ -136,7 +100,7 @@ impl CompactedVersion {
         }
     }
 
-    /// Get the deletes entries as a slice of u64 (doc_ids to delete from both sets).
+    /// Get the deleted doc_ids as a slice of u64.
     pub fn deletes_slice(&self) -> &[u64] {
         Self::mmap_as_u64_slice(self.deletes.as_ref())
     }

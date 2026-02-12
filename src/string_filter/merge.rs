@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 
-/// Iterator that merges two sorted iterators into a single sorted sequence,
-/// removing duplicates.
+/// Iterator that produces the sorted, deduplicated union of two sorted iterators.
 pub struct SortedMerge<L, R>
 where
     L: Iterator<Item = u64>,
@@ -59,7 +58,7 @@ where
     }
 }
 
-/// Iterator that yields elements from the left iterator that are not in the right iterator.
+/// Iterator that yields elements from the first sorted iterator that are absent from the second.
 pub struct SortedSubtract<L, R>
 where
     L: Iterator<Item = u64>,
@@ -122,8 +121,8 @@ where
     SortedMerge::new(left, right)
 }
 
-/// Merge two sorted `&[u64]` slices into a reusable buffer with dedup.
-/// Clears `out` before writing. After the call, `out` contains the sorted union.
+/// Merge two sorted slices into `out`, producing a sorted, deduplicated union.
+/// Clears `out` before writing.
 pub fn merge_sorted_u64_into(a: &[u64], b: &[u64], out: &mut Vec<u64>) {
     out.clear();
     let mut i = 0;

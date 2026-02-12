@@ -4,10 +4,7 @@ use super::error::Error;
 use serde_json::Value;
 use std::cmp::Ordering;
 
-/// A trait for numeric types that can be indexed.
-///
-/// This trait provides the interface for encoding/decoding values
-/// to/from bytes, comparing values, and validating inputs.
+/// A numeric type that can be stored in a number index.
 pub trait IndexableNumber: Copy + Clone + Send + Sync + PartialOrd + 'static {
     /// Convert the value to 8 bytes (native-endian).
     fn to_bytes(self) -> [u8; 8];

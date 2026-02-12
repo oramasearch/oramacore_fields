@@ -111,14 +111,13 @@ impl LiveLayer {
 /// Contains sorted, deduplicated doc_id vectors. Immutable after creation.
 #[derive(Clone)]
 pub struct LiveSnapshot {
-    /// Sorted, deduplicated doc_ids with value=true.
+    /// Doc_ids with value=true.
     pub true_inserts: Vec<u64>,
-    /// Sorted, deduplicated doc_ids with value=false.
+    /// Doc_ids with value=false.
     pub false_inserts: Vec<u64>,
-    /// Sorted, deduplicated doc_ids to delete from both sets.
+    /// Doc_ids marked for deletion.
     pub deletes: Vec<u64>,
-    /// Number of ops in the live layer when this snapshot was built.
-    /// Used by compaction to drain exactly the right number of ops.
+    /// Number of ops when this snapshot was built (used by compaction).
     pub ops_len: usize,
 }
 
