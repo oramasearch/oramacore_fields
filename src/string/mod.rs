@@ -29,7 +29,7 @@
 //! index.search::<oramacore_fields::string::NoFilter>(&SearchParams {
 //!     tokens: &tokens,
 //!     ..Default::default()
-//! }, None, &mut scorer);
+//! }, None, &mut scorer).unwrap();
 //! let result = scorer.into_search_result();
 //! assert_eq!(result.docs.len(), 1);
 //! ```

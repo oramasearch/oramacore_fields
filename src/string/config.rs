@@ -44,11 +44,17 @@ pub struct Bm25Params {
     pub k: f32,
     /// Field length normalization parameter.
     pub b: f32,
+    /// Score multiplier applied to exact matches when fuzzy/prefix mode is active.
+    pub exact_match_boost: f32,
 }
 
 impl Default for Bm25Params {
     fn default() -> Self {
-        Bm25Params { k: 1.2, b: 0.75 }
+        Bm25Params {
+            k: 1.2,
+            b: 0.75,
+            exact_match_boost: 3.0,
+        }
     }
 }
 

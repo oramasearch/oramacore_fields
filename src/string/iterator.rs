@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::compacted::{CompactedVersion, PostingEntry};
+use anyhow::Result;
+
+use super::compacted::CompactedVersion;
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
 use super::scorer::BM25Scorer;
@@ -26,8 +28,6 @@ pub struct SearchParams<'a> {
     pub tolerance: Option<u8>,
     /// Score multiplier per consecutive token pair. None = disabled.
     pub phrase_boost: Option<f32>,
-    /// Exact-match boost in fuzzy/prefix mode. None = default 3.0.
-    pub exact_match_boost: Option<f32>,
 }
 
 impl Default for SearchParams<'_> {
@@ -39,13 +39,9 @@ impl Default for SearchParams<'_> {
             bm25_params: Bm25Params::default(),
             tolerance: Some(0),
             phrase_boost: None,
-            exact_match_boost: None,
         }
     }
 }
-
-/// Score multiplier applied to exact matches when fuzzy/prefix mode is active.
-const EXACT_MATCH_BOOST_MULTIPLIER: f32 = 3.0;
 
 /// A document with its BM25 relevance score.
 #[derive(Debug, Clone)]
@@ -88,8 +84,25 @@ impl SearchHandle {
         params: &SearchParams<'_>,
         filter: Option<&F>,
         scorer: &mut BM25Scorer,
-    ) {
-        // Compute global stats by combining compacted + live
+    ) -> Result<()> {
+        let collect_positions =
+            params.phrase_boost.is_some_and(|b| b > 0.0) && params.tokens.len() >= 2;
+
+        if collect_positions {
+            self.execute_with_phrase_boost(params, filter, scorer)
+        } else {
+            self.execute_simple(params, filter, scorer)
+        }
+    }
+
+    /// Fast path: no phrase boost needed. Feeds scores directly into scorer,
+    /// reusing a single `per_doc_ntf` HashMap across tokens.
+    fn execute_simple<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        scorer: &mut BM25Scorer,
+    ) -> Result<()> {
         let total_documents = self.version.total_documents + self.snapshot.total_documents;
         let total_document_length =
             self.version.total_document_length + self.snapshot.total_field_length;
@@ -103,36 +116,25 @@ impl SearchHandle {
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
 
-        let exact_match_boost_multiplier = params
-            .exact_match_boost
-            .unwrap_or(EXACT_MATCH_BOOST_MULTIPLIER);
+        let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
-        // Whether to collect positions for phrase matching
-        let collect_positions =
-            params.phrase_boost.is_some_and(|b| b > 0.0) && params.tokens.len() >= 2;
-
-        // Per-doc accumulator: doc_id -> (score, token_mask)
-        let mut field_scores: HashMap<u64, (f32, u32)> = HashMap::new();
-
-        // Per-token per-doc positions (only allocated when phrase boost is active)
-        let mut token_doc_positions: Vec<HashMap<u64, Vec<u32>>> = Vec::new();
+        let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
             let token_bit = 1u32 << (token_idx as u32);
-            let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
+            per_doc_ntf.clear();
             let mut corpus_df: u64 = 0;
-            let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
 
-            // Search compacted layer
-            let compacted_matches = self.version.search_terms(token, params.tolerance);
-            for (_term, is_exact, reader) in compacted_matches {
+            // Search compacted layer (zero-copy)
+            let version = &self.version;
+            version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
                     1.0
                 };
 
-                for entry in reader {
+                while let Some(entry) = reader.next_ref() {
                     if is_deleted(entry.doc_id, deletes, compacted_deletes) {
                         continue;
                     }
@@ -143,22 +145,16 @@ impl SearchHandle {
                     }
                     corpus_df += 1;
 
-                    let tf = term_occurrence(&entry, params.exact_match);
+                    let tf = if params.exact_match {
+                        entry.exact_positions.len()
+                    } else {
+                        entry.exact_positions.len() + entry.stemmed_positions.len()
+                    };
                     if tf == 0 {
                         continue;
                     }
 
-                    if collect_positions {
-                        let pos = positions_map.entry(entry.doc_id).or_default();
-                        if params.exact_match {
-                            pos.extend_from_slice(&entry.exact_positions);
-                        } else {
-                            pos.extend_from_slice(&entry.exact_positions);
-                            pos.extend_from_slice(&entry.stemmed_positions);
-                        }
-                    }
-
-                    let field_length = self.version.field_length(entry.doc_id).unwrap_or(0) as f32;
+                    let field_length = version.field_length(entry.doc_id).unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -170,11 +166,11 @@ impl SearchHandle {
                     *per_doc_ntf.entry(entry.doc_id).or_insert(0.0) +=
                         ntf * params.boost * exact_boost;
                 }
-            }
+            })?;
 
             // Search live layer
-            let live_matches = self.snapshot.search_terms(token, params.tolerance);
-            for (_term, is_exact, postings) in live_matches {
+            let snapshot = &self.snapshot;
+            snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
@@ -197,23 +193,12 @@ impl SearchHandle {
                     } else {
                         exact.len() + stemmed.len()
                     };
-
                     if tf == 0 {
                         continue;
                     }
 
-                    if collect_positions {
-                        let pos = positions_map.entry(*doc_id).or_default();
-                        if params.exact_match {
-                            pos.extend_from_slice(exact);
-                        } else {
-                            pos.extend_from_slice(exact);
-                            pos.extend_from_slice(stemmed);
-                        }
-                    }
-
                     let field_length =
-                        self.snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
+                        snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -222,22 +207,168 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
+                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) +=
+                        ntf * params.boost * exact_boost;
                 }
-            }
+            });
 
-            if collect_positions {
-                // Sort and dedup positions per doc
-                for positions in positions_map.values_mut() {
-                    positions.sort_unstable();
-                    positions.dedup();
-                }
-                token_doc_positions.push(positions_map);
+            // Compute IDF for this token and feed directly into scorer
+            let idf = calculate_idf(total_documents, corpus_df);
+            for (&doc_id, &aggregated_ntf) in per_doc_ntf.iter() {
+                let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
+                scorer.add(doc_id, score, token_bit);
             }
+        }
+
+        Ok(())
+    }
+
+    /// Phrase boost path: collects positions and accumulates into field_scores
+    /// before applying the phrase multiplier.
+    fn execute_with_phrase_boost<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        scorer: &mut BM25Scorer,
+    ) -> Result<()> {
+        let total_documents = self.version.total_documents + self.snapshot.total_documents;
+        let total_document_length =
+            self.version.total_document_length + self.snapshot.total_field_length;
+
+        let avg_field_length = if total_documents > 0 {
+            total_document_length as f32 / total_documents as f32
+        } else {
+            0.0
+        };
+
+        let deletes = &self.snapshot.deletes;
+        let compacted_deletes = self.version.deletes_slice();
+
+        let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
+
+        let mut field_scores: HashMap<u64, (f32, u32)> = HashMap::new();
+        let mut token_doc_positions: Vec<HashMap<u64, Vec<u32>>> = Vec::new();
+        let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
+
+        for (token_idx, token) in params.tokens.iter().enumerate() {
+            let token_bit = 1u32 << (token_idx as u32);
+            per_doc_ntf.clear();
+            let mut corpus_df: u64 = 0;
+            let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
+
+            // Search compacted layer (zero-copy)
+            let version = &self.version;
+            version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+                let exact_boost = if is_exact {
+                    exact_match_boost_multiplier
+                } else {
+                    1.0
+                };
+
+                while let Some(entry) = reader.next_ref() {
+                    if is_deleted(entry.doc_id, deletes, compacted_deletes) {
+                        continue;
+                    }
+                    if let Some(filter) = filter {
+                        if !filter.contains(entry.doc_id) {
+                            continue;
+                        }
+                    }
+                    corpus_df += 1;
+
+                    let tf = if params.exact_match {
+                        entry.exact_positions.len()
+                    } else {
+                        entry.exact_positions.len() + entry.stemmed_positions.len()
+                    };
+                    if tf == 0 {
+                        continue;
+                    }
+
+                    let pos = positions_map.entry(entry.doc_id).or_default();
+                    if params.exact_match {
+                        pos.extend_from_slice(entry.exact_positions);
+                    } else {
+                        pos.extend_from_slice(entry.exact_positions);
+                        pos.extend_from_slice(entry.stemmed_positions);
+                    }
+
+                    let field_length = version.field_length(entry.doc_id).unwrap_or(0) as f32;
+
+                    let ntf = bm25f_normalized_tf(
+                        tf as f32,
+                        field_length,
+                        avg_field_length,
+                        params.bm25_params.b,
+                    );
+
+                    *per_doc_ntf.entry(entry.doc_id).or_insert(0.0) +=
+                        ntf * params.boost * exact_boost;
+                }
+            })?;
+
+            // Search live layer
+            let snapshot = &self.snapshot;
+            snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
+                let exact_boost = if is_exact {
+                    exact_match_boost_multiplier
+                } else {
+                    1.0
+                };
+
+                for (doc_id, exact, stemmed) in postings {
+                    if is_deleted(*doc_id, deletes, compacted_deletes) {
+                        continue;
+                    }
+                    if let Some(filter) = filter {
+                        if !filter.contains(*doc_id) {
+                            continue;
+                        }
+                    }
+                    corpus_df += 1;
+
+                    let tf = if params.exact_match {
+                        exact.len()
+                    } else {
+                        exact.len() + stemmed.len()
+                    };
+                    if tf == 0 {
+                        continue;
+                    }
+
+                    let pos = positions_map.entry(*doc_id).or_default();
+                    if params.exact_match {
+                        pos.extend_from_slice(exact);
+                    } else {
+                        pos.extend_from_slice(exact);
+                        pos.extend_from_slice(stemmed);
+                    }
+
+                    let field_length =
+                        snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
+
+                    let ntf = bm25f_normalized_tf(
+                        tf as f32,
+                        field_length,
+                        avg_field_length,
+                        params.bm25_params.b,
+                    );
+
+                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) +=
+                        ntf * params.boost * exact_boost;
+                }
+            });
+
+            // Sort and dedup positions per doc
+            for positions in positions_map.values_mut() {
+                positions.sort_unstable();
+                positions.dedup();
+            }
+            token_doc_positions.push(positions_map);
 
             // Compute IDF for this token and fold into field_scores
             let idf = calculate_idf(total_documents, corpus_df);
-            for (doc_id, aggregated_ntf) in per_doc_ntf {
+            for (&doc_id, &aggregated_ntf) in per_doc_ntf.iter() {
                 let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
                 let entry = field_scores.entry(doc_id).or_insert((0.0, 0));
                 entry.0 += score;
@@ -246,13 +377,11 @@ impl SearchHandle {
         }
 
         // Apply phrase boost
-        if collect_positions {
-            let phrase_multiplier = params.phrase_boost.unwrap_or(0.0);
-            for (&doc_id, (score, _)) in field_scores.iter_mut() {
-                let consecutive_count = count_consecutive_pairs(&token_doc_positions, doc_id);
-                if consecutive_count > 0 {
-                    *score *= 1.0 + consecutive_count as f32 * phrase_multiplier;
-                }
+        let phrase_multiplier = params.phrase_boost.unwrap_or(0.0);
+        for (&doc_id, (score, _)) in field_scores.iter_mut() {
+            let consecutive_count = count_consecutive_pairs(&token_doc_positions, doc_id);
+            if consecutive_count > 0 {
+                *score *= 1.0 + consecutive_count as f32 * phrase_multiplier;
             }
         }
 
@@ -260,15 +389,8 @@ impl SearchHandle {
         for (doc_id, (score, token_mask)) in field_scores {
             scorer.add(doc_id, score, token_mask);
         }
-    }
-}
 
-#[inline]
-fn term_occurrence(entry: &PostingEntry, exact_match: bool) -> usize {
-    if exact_match {
-        entry.exact_positions.len()
-    } else {
-        entry.exact_positions.len() + entry.stemmed_positions.len()
+        Ok(())
     }
 }
 
@@ -340,7 +462,7 @@ mod tests {
 
     fn execute_search(handle: &SearchHandle, params: &SearchParams<'_>) -> SearchResult {
         let mut scorer = BM25Scorer::new();
-        handle.execute::<NoFilter>(params, None, &mut scorer);
+        handle.execute::<NoFilter>(params, None, &mut scorer).unwrap();
         scorer.into_search_result()
     }
 
@@ -813,7 +935,7 @@ mod tests {
 
         // threshold=1.0 with 3 tokens => floor(3 * 1.0) = 3, need all 3
         let mut scorer = BM25Scorer::with_threshold(3);
-        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
         let result = scorer.into_search_result();
         // Only doc 1 matches all 3 tokens
         assert_eq!(result.docs.len(), 1);
@@ -859,7 +981,7 @@ mod tests {
         };
 
         let mut scorer = BM25Scorer::with_threshold(1);
-        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 3);
     }
@@ -909,7 +1031,7 @@ mod tests {
 
         // threshold=1.0 with 1 token => need >= 1
         let mut scorer = BM25Scorer::with_threshold(1);
-        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 1);
     }
@@ -941,7 +1063,10 @@ mod tests {
         let params_custom = SearchParams {
             tokens: &["app".to_string()],
             tolerance: None,
-            exact_match_boost: Some(10.0),
+            bm25_params: Bm25Params {
+                exact_match_boost: 10.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let result_custom = execute_search(&handle, &params_custom);
@@ -977,7 +1102,10 @@ mod tests {
         let params_boosted = SearchParams {
             tokens: &["hello".to_string()],
             tolerance: Some(0),
-            exact_match_boost: Some(100.0),
+            bm25_params: Bm25Params {
+                exact_match_boost: 100.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -1030,7 +1158,7 @@ mod tests {
 
         // threshold=0.7 with 3 tokens => floor(3 * 0.7) = 2, need >= 2 tokens
         let mut scorer = BM25Scorer::with_threshold(2);
-        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
         let result = scorer.into_search_result();
         // Doc 3 filtered out (matches only 1 token, need >= 2)
         assert_eq!(result.docs.len(), 2);
@@ -1096,7 +1224,7 @@ mod tests {
         };
 
         let mut scorer = BM25Scorer::new();
-        handle.execute(&params, Some(&filter), &mut scorer);
+        handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -1147,7 +1275,7 @@ mod tests {
         };
 
         let mut scorer = BM25Scorer::new();
-        handle.execute(&params, Some(&filter), &mut scorer);
+        handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert!(result.docs.is_empty());
     }

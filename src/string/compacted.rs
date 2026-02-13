@@ -140,102 +140,6 @@ impl CompactedVersion {
         })
     }
 
-    /// Search for terms matching the given token and tolerance.
-    ///
-    /// Returns `(matched_term, is_exact, PostingsReader)` triples.
-    /// - `Some(0)`: exact match only
-    /// - `None`: prefix search via FST `Str::starts_with()` automaton
-    /// - `Some(n)`: Levenshtein distance <= n via FST automaton
-    pub fn search_terms(
-        &self,
-        token: &str,
-        tolerance: Option<u8>,
-    ) -> Vec<(String, bool, PostingsReader<'_>)> {
-        let fst_map = match self.fst_map.as_ref() {
-            Some(m) => m,
-            None => return vec![],
-        };
-        let postings_mmap = match self.postings_mmap.as_ref() {
-            Some(m) => m,
-            None => return vec![],
-        };
-
-        match tolerance {
-            Some(0) => {
-                // Exact match
-                if let Some(reader) = self.lookup_postings(token) {
-                    vec![(token.to_string(), true, reader)]
-                } else {
-                    vec![]
-                }
-            }
-            None => {
-                // Prefix search
-                let automaton = Str::new(token).starts_with();
-                self.search_with_automaton(fst_map, postings_mmap, automaton, token)
-            }
-            Some(n) => {
-                // Levenshtein
-                match Levenshtein::new(token, n as u32) {
-                    Ok(automaton) => {
-                        self.search_with_automaton(fst_map, postings_mmap, automaton, token)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Levenshtein automaton construction failed for '{}' with distance {}: {}",
-                            token, n, e
-                        );
-                        vec![]
-                    }
-                }
-            }
-        }
-    }
-
-    /// Generic helper: stream FST matches using the given automaton and build PostingsReaders.
-    fn search_with_automaton<'a, A: fst::Automaton>(
-        &'a self,
-        fst_map: &'a Map<Mmap>,
-        postings_mmap: &'a Mmap,
-        automaton: A,
-        token: &str,
-    ) -> Vec<(String, bool, PostingsReader<'a>)> {
-        let mut stream = fst_map.search(automaton).into_stream();
-        let data = postings_mmap.as_ref();
-        let mut results = Vec::new();
-
-        while let Some((key_bytes, offset)) = stream.next() {
-            let offset = offset as usize;
-            if offset + 8 > data.len() {
-                continue;
-            }
-
-            let doc_count = match data[offset..offset + 4].try_into() {
-                Ok(bytes) => u32::from_le_bytes(bytes) as usize,
-                Err(_) => continue,
-            };
-            let entries_start = offset + 8;
-
-            let key = match std::str::from_utf8(key_bytes) {
-                Ok(k) => k.to_string(),
-                Err(_) => continue,
-            };
-            let is_exact = key == token;
-
-            results.push((
-                key,
-                is_exact,
-                PostingsReader {
-                    data,
-                    pos: entries_start,
-                    remaining: doc_count,
-                },
-            ));
-        }
-
-        results
-    }
-
     /// Look up the field length for a doc_id using binary search on doc_lengths_mmap.
     pub fn field_length(&self, doc_id: u64) -> Option<u32> {
         let mmap = self.doc_lengths_mmap.as_ref()?;
@@ -277,6 +181,94 @@ impl CompactedVersion {
                 unsafe { std::slice::from_raw_parts(ptr, len) }
             }
             None => &[],
+        }
+    }
+
+    /// Callback-based term search: invokes `f(is_exact, reader)` for each matching term.
+    ///
+    /// - `Some(0)`: exact match only
+    /// - `None`: prefix search via FST `Str::starts_with()` automaton
+    /// - `Some(n)`: Levenshtein distance <= n via FST automaton
+    pub fn for_each_term_match<F>(
+        &self,
+        token: &str,
+        tolerance: Option<u8>,
+        mut f: F,
+    ) -> Result<()>
+    where
+        F: FnMut(bool, PostingsReader<'_>),
+    {
+        let fst_map = match self.fst_map.as_ref() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+        let postings_mmap = match self.postings_mmap.as_ref() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        match tolerance {
+            Some(0) => {
+                if let Some(reader) = self.lookup_postings(token) {
+                    f(true, reader);
+                }
+            }
+            None => {
+                let automaton = Str::new(token).starts_with();
+                self.for_each_automaton_match(fst_map, postings_mmap, automaton, token, &mut f);
+            }
+            Some(n) => {
+                let automaton = Levenshtein::new(token, n as u32).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Levenshtein automaton construction failed for '{}' with distance {}: {}",
+                        token,
+                        n,
+                        e
+                    )
+                })?;
+                self.for_each_automaton_match(fst_map, postings_mmap, automaton, token, &mut f);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generic helper: stream FST matches using the given automaton and invoke callback per match.
+    fn for_each_automaton_match<'a, A: fst::Automaton, F>(
+        &'a self,
+        fst_map: &'a Map<Mmap>,
+        postings_mmap: &'a Mmap,
+        automaton: A,
+        token: &str,
+        f: &mut F,
+    ) where
+        F: FnMut(bool, PostingsReader<'a>),
+    {
+        let mut stream = fst_map.search(automaton).into_stream();
+        let data = postings_mmap.as_ref();
+
+        while let Some((key_bytes, offset)) = stream.next() {
+            let offset = offset as usize;
+            if offset + 8 > data.len() {
+                continue;
+            }
+
+            let doc_count = match data[offset..offset + 4].try_into() {
+                Ok(bytes) => u32::from_le_bytes(bytes) as usize,
+                Err(_) => continue,
+            };
+            let entries_start = offset + 8;
+
+            let is_exact = key_bytes == token.as_bytes();
+
+            f(
+                is_exact,
+                PostingsReader {
+                    data,
+                    pos: entries_start,
+                    remaining: doc_count,
+                },
+            );
         }
     }
 
@@ -486,11 +478,67 @@ pub struct PostingEntry {
     pub stemmed_positions: Vec<u32>,
 }
 
+/// Zero-copy borrowing variant of PostingEntry — slices point into mmap'd data.
+pub struct PostingEntryRef<'a> {
+    pub doc_id: u64,
+    pub exact_positions: &'a [u32],
+    pub stemmed_positions: &'a [u32],
+}
+
 /// Reader that iterates over posting entries for a single term from the mmap.
 pub struct PostingsReader<'a> {
     data: &'a [u8],
     pos: usize,
     pub remaining: usize,
+}
+
+impl<'a> PostingsReader<'a> {
+    /// Zero-copy next: returns borrowed slices into the mmap'd data.
+    pub fn next_ref(&mut self) -> Option<PostingEntryRef<'a>> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+
+        let data = self.data;
+        let pos = self.pos;
+
+        // doc_id: u64 (read byte-by-byte, no alignment needed)
+        let doc_id = u64::from_ne_bytes(data[pos..pos + 8].try_into().ok()?);
+        // exact_count: u32
+        let exact_count = u32::from_ne_bytes(data[pos + 8..pos + 12].try_into().ok()?) as usize;
+        // stemmed_count: u32
+        let stemmed_count =
+            u32::from_ne_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
+
+        let cursor = pos + 16;
+
+        // Cast position byte ranges to &[u32] via from_raw_parts.
+        // Alignment is guaranteed: mmap base is page-aligned, offsets are multiples of 4
+        // (header is 8 bytes, entry headers are 16 bytes, positions are 4 bytes each).
+        let exact_ptr = data[cursor..].as_ptr() as *const u32;
+        debug_assert!(
+            exact_ptr as usize % std::mem::align_of::<u32>() == 0,
+            "exact_positions pointer is not aligned"
+        );
+        let exact_positions = unsafe { std::slice::from_raw_parts(exact_ptr, exact_count) };
+
+        let stemmed_offset = cursor + exact_count * 4;
+        let stemmed_ptr = data[stemmed_offset..].as_ptr() as *const u32;
+        debug_assert!(
+            stemmed_ptr as usize % std::mem::align_of::<u32>() == 0,
+            "stemmed_positions pointer is not aligned"
+        );
+        let stemmed_positions = unsafe { std::slice::from_raw_parts(stemmed_ptr, stemmed_count) };
+
+        self.pos = stemmed_offset + stemmed_count * 4;
+
+        Some(PostingEntryRef {
+            doc_id,
+            exact_positions,
+            stemmed_positions,
+        })
+    }
 }
 
 impl<'a> Iterator for PostingsReader<'a> {
@@ -1042,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn test_search_terms_exact() {
+    fn test_for_each_term_match_exact() {
         let tmp = TempDir::new().unwrap();
         let base_path = tmp.path();
         let version_path = ensure_version_dir(base_path, 1).unwrap();
@@ -1060,17 +1108,26 @@ mod tests {
 
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
-        let results = version.search_terms("apple", Some(0));
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("apple", Some(0), |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "apple");
-        assert!(results[0].1); // is_exact
+        assert!(results[0].0); // is_exact
 
-        let results = version.search_terms("missing", Some(0));
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("missing", Some(0), |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_search_terms_prefix() {
+    fn test_for_each_term_match_prefix() {
         let tmp = TempDir::new().unwrap();
         let base_path = tmp.path();
         let version_path = ensure_version_dir(base_path, 1).unwrap();
@@ -1089,29 +1146,40 @@ mod tests {
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
         // Prefix "app" should match "apple" and "application"
-        let results = version.search_terms("app", None);
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("app", None, |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert_eq!(results.len(), 2);
-        let terms: Vec<&str> = results.iter().map(|(t, _, _)| t.as_str()).collect();
-        assert!(terms.contains(&"apple"));
-        assert!(terms.contains(&"application"));
         // Neither is an exact match for "app"
-        for (_, is_exact, _) in &results {
+        for (is_exact, _) in &results {
             assert!(!is_exact);
         }
 
         // Prefix "apple" should match exactly "apple"
-        let results = version.search_terms("apple", None);
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("apple", None, |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "apple");
-        assert!(results[0].1); // is_exact
+        assert!(results[0].0); // is_exact
 
         // Prefix "xyz" should match nothing
-        let results = version.search_terms("xyz", None);
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("xyz", None, |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_search_terms_levenshtein() {
+    fn test_for_each_term_match_levenshtein() {
         let tmp = TempDir::new().unwrap();
         let base_path = tmp.path();
         let version_path = ensure_version_dir(base_path, 1).unwrap();
@@ -1130,24 +1198,24 @@ mod tests {
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
         // Distance 1 from "apple" should match "apple" (exact) and "apply" (1 edit)
-        let results = version.search_terms("apple", Some(1));
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("apple", Some(1), |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert_eq!(results.len(), 2);
-        let terms: Vec<&str> = results.iter().map(|(t, _, _)| t.as_str()).collect();
-        assert!(terms.contains(&"apple"));
-        assert!(terms.contains(&"apply"));
-        // "apple" is exact, "apply" is not
-        for (term, is_exact, _) in &results {
-            if term == "apple" {
-                assert!(is_exact);
-            } else {
-                assert!(!is_exact);
-            }
-        }
+        let exact_count = results.iter().filter(|(is_exact, _)| *is_exact).count();
+        assert_eq!(exact_count, 1);
 
         // Distance 0 via Levenshtein is exact match
-        let results = version.search_terms("apple", Some(0));
+        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        version
+            .for_each_term_match("apple", Some(0), |is_exact, reader| {
+                results.push((is_exact, reader.collect()));
+            })
+            .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "apple");
-        assert!(results[0].1);
+        assert!(results[0].0);
     }
 }

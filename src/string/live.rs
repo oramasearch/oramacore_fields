@@ -170,44 +170,35 @@ impl LiveSnapshot {
         }
     }
 
-    /// Search for terms matching the given token and tolerance.
+    /// Callback-based term search: invokes `f(is_exact, postings)` for each matching term.
     ///
-    /// Returns `(matched_term, is_exact, postings)` triples.
     /// - `Some(0)`: exact match only
     /// - `None`: prefix search via RadixTree
-    /// - `Some(n)`: not supported in live layer, returns empty
-    pub fn search_terms<'a>(
-        &'a self,
-        token: &'a str,
-        tolerance: Option<u8>,
-    ) -> Vec<(&'a str, bool, &'a [PostingTuple])> {
+    /// - `Some(_)`: not supported in live layer (no-op)
+    pub fn for_each_term_match<F>(&self, token: &str, tolerance: Option<u8>, mut f: F)
+    where
+        F: FnMut(bool, &[PostingTuple]),
+    {
         match tolerance {
             Some(0) => {
-                // Exact match
                 if let Some(postings) = self.term_postings.get(token) {
-                    vec![(token, true, postings.as_slice())]
-                } else {
-                    vec![]
+                    f(true, postings.as_slice());
                 }
             }
             None => {
-                // Prefix search
-                let mut results = Vec::new();
                 for (key_bytes, _) in self.term_tree.search_iter(token, xtri::SearchMode::Prefix) {
                     if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
                         if let Some((stored_key, postings)) =
                             self.term_postings.get_key_value(key_str)
                         {
                             let is_exact = stored_key == token;
-                            results.push((stored_key.as_str(), is_exact, postings.as_slice()));
+                            f(is_exact, postings.as_slice());
                         }
                     }
                 }
-                results
             }
             Some(_) => {
                 // Levenshtein not supported in live layer
-                vec![]
             }
         }
     }
@@ -257,7 +248,9 @@ mod tests {
         let layer = LiveLayer::new();
         let snapshot = layer.get_snapshot();
 
-        assert!(snapshot.search_terms("anything", Some(0)).is_empty());
+        let mut count = 0;
+        snapshot.for_each_term_match("anything", Some(0), |_, _| count += 1);
+        assert_eq!(count, 0);
         assert!(snapshot.doc_lengths.is_empty());
         assert!(snapshot.deletes.is_empty());
         assert_eq!(snapshot.total_field_length, 0);
@@ -284,16 +277,18 @@ mod tests {
         assert_eq!(snapshot.total_documents, 2);
         assert_eq!(snapshot.total_field_length, 5); // 3 + 2
 
-        let hello_results = snapshot.search_terms("hello", Some(0));
-        assert_eq!(hello_results.len(), 1);
-        let hello = hello_results[0].2;
+        let mut hello = Vec::new();
+        snapshot.for_each_term_match("hello", Some(0), |_, postings| {
+            hello = postings.to_vec();
+        });
         assert_eq!(hello.len(), 2);
         assert_eq!(hello[0].0, 1); // doc_id 1
         assert_eq!(hello[1].0, 2); // doc_id 2
 
-        let world_results = snapshot.search_terms("world", Some(0));
-        assert_eq!(world_results.len(), 1);
-        let world = world_results[0].2;
+        let mut world = Vec::new();
+        snapshot.for_each_term_match("world", Some(0), |_, postings| {
+            world = postings.to_vec();
+        });
         assert_eq!(world.len(), 1);
         assert_eq!(world[0].0, 1);
 
@@ -316,9 +311,10 @@ mod tests {
         assert_eq!(snapshot.total_field_length, 2);
         assert_eq!(snapshot.deletes_sorted, vec![1]);
 
-        let hello_results = snapshot.search_terms("hello", Some(0));
-        assert_eq!(hello_results.len(), 1);
-        let hello = hello_results[0].2;
+        let mut hello = Vec::new();
+        snapshot.for_each_term_match("hello", Some(0), |_, postings| {
+            hello = postings.to_vec();
+        });
         assert_eq!(hello.len(), 1);
         assert_eq!(hello[0].0, 2);
     }
@@ -338,10 +334,14 @@ mod tests {
         assert_eq!(snapshot.total_field_length, 5);
         assert!(snapshot.deletes.is_empty());
 
-        assert!(snapshot.search_terms("hello", Some(0)).is_empty());
-        let world_results = snapshot.search_terms("world", Some(0));
-        assert_eq!(world_results.len(), 1);
-        let world = world_results[0].2;
+        let mut hello_count = 0;
+        snapshot.for_each_term_match("hello", Some(0), |_, _| hello_count += 1);
+        assert_eq!(hello_count, 0);
+
+        let mut world = Vec::new();
+        snapshot.for_each_term_match("world", Some(0), |_, postings| {
+            world = postings.to_vec();
+        });
         assert_eq!(world.len(), 1);
         assert_eq!(world[0].0, 1);
     }
@@ -427,15 +427,16 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let results = snapshot.search_terms("term", Some(0));
-        assert_eq!(results.len(), 1);
-        let postings = results[0].2;
+        let mut postings = Vec::new();
+        snapshot.for_each_term_match("term", Some(0), |_, p| {
+            postings = p.to_vec();
+        });
         let doc_ids: Vec<u64> = postings.iter().map(|(id, _, _)| *id).collect();
         assert_eq!(doc_ids, vec![1, 5, 10]);
     }
 
     #[test]
-    fn test_search_terms_exact() {
+    fn test_for_each_term_match_exact() {
         let mut layer = LiveLayer::new();
 
         layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
@@ -445,20 +446,23 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let results = snapshot.search_terms("apple", Some(0));
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("apple", Some(0), |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "apple");
-        assert!(results[0].1); // is_exact
-        assert_eq!(results[0].2.len(), 1);
-        assert_eq!(results[0].2[0].0, 1); // doc_id
+        assert!(results[0].0); // is_exact
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].0, 1); // doc_id
 
         // Non-existent term
-        let results = snapshot.search_terms("missing", Some(0));
-        assert!(results.is_empty());
+        let mut count = 0;
+        snapshot.for_each_term_match("missing", Some(0), |_, _| count += 1);
+        assert_eq!(count, 0);
     }
 
     #[test]
-    fn test_search_terms_prefix() {
+    fn test_for_each_term_match_prefix() {
         let mut layer = LiveLayer::new();
 
         layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
@@ -468,26 +472,31 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let mut results = snapshot.search_terms("app", None);
-        results.sort_by_key(|(k, _, _)| k.to_string());
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("app", None, |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "apple");
-        assert!(!results[0].1); // not exact
-        assert_eq!(results[1].0, "application");
-        assert!(!results[1].1); // not exact
+        for (is_exact, _) in &results {
+            assert!(!is_exact); // not exact
+        }
 
         // Prefix that matches exactly one term
-        let results = snapshot.search_terms("apple", None);
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("apple", None, |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "apple");
-        assert!(results[0].1); // is_exact
+        assert!(results[0].0); // is_exact
 
         // Prefix that matches nothing
-        let results = snapshot.search_terms("xyz", None);
-        assert!(results.is_empty());
+        let mut count = 0;
+        snapshot.for_each_term_match("xyz", None, |_, _| count += 1);
+        assert_eq!(count, 0);
 
         // Levenshtein not supported in live layer
-        let results = snapshot.search_terms("apple", Some(1));
-        assert!(results.is_empty());
+        let mut count = 0;
+        snapshot.for_each_term_match("apple", Some(1), |_, _| count += 1);
+        assert_eq!(count, 0);
     }
 }

@@ -75,11 +75,11 @@ impl StringStorage {
         params: &SearchParams<'_>,
         filter: Option<&F>,
         scorer: &mut BM25Scorer,
-    ) {
+    ) -> Result<()> {
         let snapshot = self.get_fresh_snapshot();
         let version = self.version.load();
         let handle = SearchHandle::new(Arc::clone(&version), snapshot);
-        handle.execute(params, filter, scorer);
+        handle.execute(params, filter, scorer)
     }
 
     /// Get a fresh snapshot, refreshing if dirty (double-check locking pattern).
@@ -480,14 +480,16 @@ mod tests {
     fn search_default(index: &StringStorage, tokens: &[&str]) -> SearchResult {
         let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &owned,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        );
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &owned,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         scorer.into_search_result()
     }
 
@@ -819,7 +821,8 @@ mod tests {
                     },
                     None,
                     &mut scorer,
-                );
+                )
+                .unwrap();
                 let result = scorer.into_search_result();
                 assert!(result.docs.len() >= 50);
             }
@@ -967,7 +970,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -997,7 +1001,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -1043,7 +1048,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -1083,7 +1089,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 1);
@@ -1128,7 +1135,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1167,7 +1175,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1206,7 +1215,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1245,7 +1255,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1281,7 +1292,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1302,7 +1314,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         println!("test_scoring_parity_stemmed_only (exact_match=true):");
@@ -1343,7 +1356,8 @@ mod tests {
             },
             None,
             &mut scorer,
-        );
+        )
+        .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
