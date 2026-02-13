@@ -1,4 +1,4 @@
-use super::io::{version_dir, write_deleted_from_iter, write_doc_lengths, write_global_info};
+use super::io::{version_dir, write_deleted_from_iter, write_global_info};
 use super::live::PostingTuple;
 use super::platform::advise_sequential;
 use anyhow::{Context, Result};
@@ -338,14 +338,11 @@ impl CompactedVersion {
         let mut compacted_key_buf: Vec<u8> = Vec::new();
         let mut live_idx = 0;
 
+        // Reusable byte buffer for serializing entries before writing (allocated once)
+        let mut entries_buf: Vec<u8> = Vec::new();
+
         let mut compacted_entry: Option<PostingsReader<'a>> =
             compacted_terms.next_term_into(&mut compacted_key_buf);
-
-        enum Action {
-            Compacted,
-            Live,
-            Merged,
-        }
 
         loop {
             let live_peek = if live_idx < live_terms.len() {
@@ -354,68 +351,220 @@ impl CompactedVersion {
                 None
             };
 
-            let action = match (&compacted_entry, live_peek) {
+            match (compacted_entry, live_peek) {
                 (None, None) => break,
-                (Some(_), None) => Action::Compacted,
-                (None, Some(_)) => Action::Live,
-                (Some(_), Some((live_key, _))) => {
-                    match compacted_key_buf.as_slice().cmp(live_key.as_bytes()) {
-                        std::cmp::Ordering::Less => Action::Compacted,
-                        std::cmp::Ordering::Greater => Action::Live,
-                        std::cmp::Ordering::Equal => Action::Merged,
+                (Some(mut reader), None) => {
+                    entries_buf.clear();
+                    let mut count: u32 = 0;
+                    while let Some(entry) = reader.next_ref() {
+                        if deleted_set.is_none_or(|s| !s.contains(&entry.doc_id)) {
+                            write_entry_to_buf(
+                                &mut entries_buf,
+                                entry.doc_id,
+                                entry.exact_positions,
+                                entry.stemmed_positions,
+                            );
+                            count += 1;
+                        }
                     }
-                }
-            };
-
-            match action {
-                Action::Compacted => {
-                    let reader = compacted_entry.take().unwrap();
-                    let entries: Vec<PostingEntry> = reader.collect();
-                    write_postings_entry(
-                        &compacted_key_buf,
-                        &entries,
-                        deleted_set,
-                        &mut fst_builder,
-                        &mut postings_writer,
-                        &mut current_offset,
-                    )?;
+                    if count > 0 {
+                        flush_term_buf(
+                            &compacted_key_buf,
+                            &entries_buf,
+                            count,
+                            &mut fst_builder,
+                            &mut postings_writer,
+                            &mut current_offset,
+                        )?;
+                    }
                     compacted_entry = compacted_terms.next_term_into(&mut compacted_key_buf);
                 }
-                Action::Live => {
+                (None, Some(_)) => {
                     let (live_key, live_postings) = live_terms[live_idx];
                     live_idx += 1;
-                    let entries: Vec<PostingEntry> = live_postings
-                        .iter()
-                        .map(|(doc_id, exact, stemmed)| PostingEntry {
-                            doc_id: *doc_id,
-                            exact_positions: exact.clone(),
-                            stemmed_positions: stemmed.clone(),
-                        })
-                        .collect();
-                    write_postings_entry(
-                        live_key.as_bytes(),
-                        &entries,
-                        deleted_set,
-                        &mut fst_builder,
-                        &mut postings_writer,
-                        &mut current_offset,
-                    )?;
+                    entries_buf.clear();
+                    let mut count: u32 = 0;
+                    for &(doc_id, ref exact, ref stemmed) in live_postings {
+                        if deleted_set.is_none_or(|s| !s.contains(&doc_id)) {
+                            write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        flush_term_buf(
+                            live_key.as_bytes(),
+                            &entries_buf,
+                            count,
+                            &mut fst_builder,
+                            &mut postings_writer,
+                            &mut current_offset,
+                        )?;
+                    }
+                    compacted_entry = None;
                 }
-                Action::Merged => {
-                    let reader = compacted_entry.take().unwrap();
-                    let (_, live_postings) = live_terms[live_idx];
-                    live_idx += 1;
+                (Some(reader), Some((live_key, _))) => {
+                    match compacted_key_buf.as_slice().cmp(live_key.as_bytes()) {
+                        std::cmp::Ordering::Less => {
+                            let mut reader = reader;
+                            entries_buf.clear();
+                            let mut count: u32 = 0;
+                            while let Some(entry) = reader.next_ref() {
+                                if deleted_set.is_none_or(|s| !s.contains(&entry.doc_id)) {
+                                    write_entry_to_buf(
+                                        &mut entries_buf,
+                                        entry.doc_id,
+                                        entry.exact_positions,
+                                        entry.stemmed_positions,
+                                    );
+                                    count += 1;
+                                }
+                            }
+                            if count > 0 {
+                                flush_term_buf(
+                                    &compacted_key_buf,
+                                    &entries_buf,
+                                    count,
+                                    &mut fst_builder,
+                                    &mut postings_writer,
+                                    &mut current_offset,
+                                )?;
+                            }
+                            compacted_entry =
+                                compacted_terms.next_term_into(&mut compacted_key_buf);
+                        }
+                        std::cmp::Ordering::Greater => {
+                            // Live comes first; put compacted reader back
+                            compacted_entry = Some(reader);
+                            let (live_key, live_postings) = live_terms[live_idx];
+                            live_idx += 1;
+                            entries_buf.clear();
+                            let mut count: u32 = 0;
+                            for &(doc_id, ref exact, ref stemmed) in live_postings {
+                                if deleted_set.is_none_or(|s| !s.contains(&doc_id)) {
+                                    write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
+                                    count += 1;
+                                }
+                            }
+                            if count > 0 {
+                                flush_term_buf(
+                                    live_key.as_bytes(),
+                                    &entries_buf,
+                                    count,
+                                    &mut fst_builder,
+                                    &mut postings_writer,
+                                    &mut current_offset,
+                                )?;
+                            }
+                        }
+                        std::cmp::Ordering::Equal => {
+                            let mut reader = reader;
+                            let (_, live_postings) = live_terms[live_idx];
+                            live_idx += 1;
 
-                    let merged = merge_posting_entries(reader, live_postings);
-                    write_postings_entry(
-                        &compacted_key_buf,
-                        &merged,
-                        deleted_set,
-                        &mut fst_builder,
-                        &mut postings_writer,
-                        &mut current_offset,
-                    )?;
-                    compacted_entry = compacted_terms.next_term_into(&mut compacted_key_buf);
+                            // Streaming sorted merge: both sources sorted by doc_id
+                            entries_buf.clear();
+                            let mut count: u32 = 0;
+                            let mut li = 0;
+                            let mut compacted_next = reader.next_ref();
+
+                            loop {
+                                let live_peek_entry = if li < live_postings.len() {
+                                    Some(&live_postings[li])
+                                } else {
+                                    None
+                                };
+
+                                match (&compacted_next, live_peek_entry) {
+                                    (None, None) => break,
+                                    (Some(c), None) => {
+                                        if deleted_set
+                                            .is_none_or(|s| !s.contains(&c.doc_id))
+                                        {
+                                            write_entry_to_buf(
+                                                &mut entries_buf,
+                                                c.doc_id,
+                                                c.exact_positions,
+                                                c.stemmed_positions,
+                                            );
+                                            count += 1;
+                                        }
+                                        compacted_next = reader.next_ref();
+                                    }
+                                    (None, Some(l)) => {
+                                        if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
+                                            write_entry_to_buf(
+                                                &mut entries_buf,
+                                                l.0,
+                                                &l.1,
+                                                &l.2,
+                                            );
+                                            count += 1;
+                                        }
+                                        li += 1;
+                                    }
+                                    (Some(c), Some(l)) => match c.doc_id.cmp(&l.0) {
+                                        std::cmp::Ordering::Less => {
+                                            if deleted_set
+                                                .is_none_or(|s| !s.contains(&c.doc_id))
+                                            {
+                                                write_entry_to_buf(
+                                                    &mut entries_buf,
+                                                    c.doc_id,
+                                                    c.exact_positions,
+                                                    c.stemmed_positions,
+                                                );
+                                                count += 1;
+                                            }
+                                            compacted_next = reader.next_ref();
+                                        }
+                                        std::cmp::Ordering::Greater => {
+                                            if deleted_set
+                                                .is_none_or(|s| !s.contains(&l.0))
+                                            {
+                                                write_entry_to_buf(
+                                                    &mut entries_buf,
+                                                    l.0,
+                                                    &l.1,
+                                                    &l.2,
+                                                );
+                                                count += 1;
+                                            }
+                                            li += 1;
+                                        }
+                                        std::cmp::Ordering::Equal => {
+                                            // Live wins
+                                            if deleted_set
+                                                .is_none_or(|s| !s.contains(&l.0))
+                                            {
+                                                write_entry_to_buf(
+                                                    &mut entries_buf,
+                                                    l.0,
+                                                    &l.1,
+                                                    &l.2,
+                                                );
+                                                count += 1;
+                                            }
+                                            compacted_next = reader.next_ref();
+                                            li += 1;
+                                        }
+                                    },
+                                }
+                            }
+
+                            if count > 0 {
+                                flush_term_buf(
+                                    &compacted_key_buf,
+                                    &entries_buf,
+                                    count,
+                                    &mut fst_builder,
+                                    &mut postings_writer,
+                                    &mut current_offset,
+                                )?;
+                            }
+                            compacted_entry =
+                                compacted_terms.next_term_into(&mut compacted_key_buf);
+                        }
+                    }
                 }
             }
         }
@@ -432,30 +581,18 @@ impl CompactedVersion {
             .sync_all()
             .with_context(|| "Failed to sync postings file")?;
 
-        // ── Build doc_lengths ──
-        let merged_doc_lengths =
-            merge_doc_lengths(compacted_doc_lengths, live_doc_lengths, deleted_set);
-        write_doc_lengths(&doc_lengths_path, &merged_doc_lengths)?;
+        // ── Build doc_lengths + global_info (streaming) ──
+        let (new_total_doc_length, new_total_documents) = merge_and_write_doc_lengths(
+            &doc_lengths_path,
+            compacted_doc_lengths,
+            live_doc_lengths,
+            deleted_set,
+        )?;
 
         // ── Write deleted.bin ──
         write_deleted_from_iter(&deleted_path, deletes_to_write.iter().copied())?;
 
         // ── Write global_info.bin ──
-        // Compute new totals from merged doc_lengths
-        let mut new_total_doc_length: u64 = 0;
-        let mut new_total_documents: u64 = 0;
-        for &(_, field_len) in &merged_doc_lengths {
-            new_total_doc_length += field_len as u64;
-            new_total_documents += 1;
-        }
-
-        // If we're carrying forward (no apply-deletes), we need to account for
-        // documents that are in deleted.bin but not yet physically removed from
-        // doc_lengths. But since we rebuild doc_lengths fresh with filtering,
-        // the merged_doc_lengths already represents the true set.
-        // However, if we didn't apply deletes, deleted docs may still be in the
-        // merged doc_lengths (since deleted_set is None). In that case, the global
-        // info should reflect ALL docs in doc_lengths (including pending deletes).
         write_global_info(&global_info_path, new_total_doc_length, new_total_documents)?;
 
         Ok(())
@@ -637,127 +774,56 @@ impl<'a> Iterator for DocLengthIterator<'a> {
     }
 }
 
-/// Write a single term's postings entry to disk, optionally filtering out deleted doc_ids.
-fn write_postings_entry(
+/// Serialize a single posting entry (doc_id + positions) into a byte buffer.
+#[inline]
+fn write_entry_to_buf(buf: &mut Vec<u8>, doc_id: u64, exact: &[u32], stemmed: &[u32]) {
+    buf.extend_from_slice(&doc_id.to_le_bytes());
+    buf.extend_from_slice(&(exact.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&(stemmed.len() as u32).to_le_bytes());
+    for &pos in exact {
+        buf.extend_from_slice(&pos.to_le_bytes());
+    }
+    for &pos in stemmed {
+        buf.extend_from_slice(&pos.to_le_bytes());
+    }
+}
+
+/// Flush a completed term's entries buffer to disk and register it in the FST.
+fn flush_term_buf(
     key: &[u8],
-    entries: &[PostingEntry],
-    deleted_set: Option<&HashSet<u64>>,
+    entries_buf: &[u8],
+    count: u32,
     fst_builder: &mut fst::MapBuilder<BufWriter<File>>,
     postings_writer: &mut BufWriter<File>,
     current_offset: &mut u64,
 ) -> Result<()> {
-    // Filter entries if needed
-    let filtered: Vec<&PostingEntry>;
-    let entries_to_write: &[&PostingEntry] = if let Some(set) = deleted_set {
-        filtered = entries
-            .iter()
-            .filter(|e| !set.contains(&e.doc_id))
-            .collect();
-        &filtered
-    } else {
-        // Can't avoid allocation here without unsafe, but it's only during compaction
-        filtered = entries.iter().collect();
-        &filtered
-    };
-
-    if entries_to_write.is_empty() {
-        return Ok(());
-    }
-
     fst_builder
         .insert(key, *current_offset)
         .map_err(|e| anyhow::anyhow!("Failed to insert key into FST: {e}"))?;
 
-    let doc_count = entries_to_write.len() as u32;
-    postings_writer.write_all(&doc_count.to_le_bytes())?;
+    postings_writer.write_all(&count.to_le_bytes())?;
     postings_writer.write_all(&0u32.to_le_bytes())?; // pad
-    *current_offset += 8;
+    postings_writer.write_all(entries_buf)?;
 
-    for entry in entries_to_write {
-        postings_writer.write_all(&entry.doc_id.to_le_bytes())?;
-        let exact_count = entry.exact_positions.len() as u32;
-        let stemmed_count = entry.stemmed_positions.len() as u32;
-        postings_writer.write_all(&exact_count.to_le_bytes())?;
-        postings_writer.write_all(&stemmed_count.to_le_bytes())?;
-        for &pos in &entry.exact_positions {
-            postings_writer.write_all(&pos.to_le_bytes())?;
-        }
-        for &pos in &entry.stemmed_positions {
-            postings_writer.write_all(&pos.to_le_bytes())?;
-        }
-        // 8 (doc_id) + 4 (exact_count) + 4 (stemmed_count) + 4*exact + 4*stemmed
-        *current_offset += 16 + (exact_count as u64) * 4 + (stemmed_count as u64) * 4;
-    }
+    *current_offset += 8 + entries_buf.len() as u64;
 
     Ok(())
 }
 
-/// Merge compacted posting entries with live posting entries. Both must be sorted by doc_id.
-/// Live entries win on conflict (same doc_id).
-fn merge_posting_entries(
-    compacted: PostingsReader<'_>,
-    live: &[PostingTuple],
-) -> Vec<PostingEntry> {
-    let compacted_entries: Vec<PostingEntry> = compacted.collect();
-    let mut result = Vec::with_capacity(compacted_entries.len() + live.len());
-
-    let mut ci = 0;
-    let mut li = 0;
-
-    while ci < compacted_entries.len() && li < live.len() {
-        let c_id = compacted_entries[ci].doc_id;
-        let l_id = live[li].0;
-
-        match c_id.cmp(&l_id) {
-            std::cmp::Ordering::Less => {
-                result.push(compacted_entries[ci].clone());
-                ci += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                result.push(PostingEntry {
-                    doc_id: live[li].0,
-                    exact_positions: live[li].1.clone(),
-                    stemmed_positions: live[li].2.clone(),
-                });
-                li += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                // Live wins
-                result.push(PostingEntry {
-                    doc_id: live[li].0,
-                    exact_positions: live[li].1.clone(),
-                    stemmed_positions: live[li].2.clone(),
-                });
-                ci += 1;
-                li += 1;
-            }
-        }
-    }
-
-    while ci < compacted_entries.len() {
-        result.push(compacted_entries[ci].clone());
-        ci += 1;
-    }
-    while li < live.len() {
-        result.push(PostingEntry {
-            doc_id: live[li].0,
-            exact_positions: live[li].1.clone(),
-            stemmed_positions: live[li].2.clone(),
-        });
-        li += 1;
-    }
-
-    result
-}
-
-/// Merge compacted doc_lengths with live doc_lengths, optionally filtering deletes.
-/// Live entries win on conflict (same doc_id).
-fn merge_doc_lengths(
+/// Merge compacted doc_lengths with live doc_lengths, write directly to disk,
+/// and return (total_doc_length, total_documents). No intermediate Vec.
+fn merge_and_write_doc_lengths(
+    path: &Path,
     compacted: &mut DocLengthIterator<'_>,
     live: &[(u64, u16)],
     deleted_set: Option<&HashSet<u64>>,
-) -> Vec<(u64, u32)> {
-    let mut result = Vec::new();
+) -> Result<(u64, u64)> {
+    let file = File::create(path)
+        .with_context(|| format!("Failed to create doc_lengths file: {path:?}"))?;
+    let mut writer = BufWriter::new(file);
+
+    let mut total_doc_length: u64 = 0;
+    let mut total_documents: u64 = 0;
     let mut li = 0;
     let mut compacted_next = compacted.next();
 
@@ -772,44 +838,64 @@ fn merge_doc_lengths(
             (None, None) => break,
             (Some((c_id, c_len)), None) => {
                 if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
-                    result.push((c_id, c_len));
+                    writer.write_all(&c_id.to_le_bytes())?;
+                    writer.write_all(&c_len.to_le_bytes())?;
+                    total_doc_length += c_len as u64;
+                    total_documents += 1;
                 }
                 compacted_next = compacted.next();
             }
             (None, Some((l_id, l_len))) => {
                 if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                    result.push((l_id, l_len));
+                    writer.write_all(&l_id.to_le_bytes())?;
+                    writer.write_all(&l_len.to_le_bytes())?;
+                    total_doc_length += l_len as u64;
+                    total_documents += 1;
                 }
                 li += 1;
             }
-            (Some((c_id, c_len)), Some((l_id, l_len))) => {
-                match c_id.cmp(&l_id) {
-                    std::cmp::Ordering::Less => {
-                        if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
-                            result.push((c_id, c_len));
-                        }
-                        compacted_next = compacted.next();
+            (Some((c_id, c_len)), Some((l_id, l_len))) => match c_id.cmp(&l_id) {
+                std::cmp::Ordering::Less => {
+                    if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
+                        writer.write_all(&c_id.to_le_bytes())?;
+                        writer.write_all(&c_len.to_le_bytes())?;
+                        total_doc_length += c_len as u64;
+                        total_documents += 1;
                     }
-                    std::cmp::Ordering::Greater => {
-                        if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                            result.push((l_id, l_len));
-                        }
-                        li += 1;
-                    }
-                    std::cmp::Ordering::Equal => {
-                        // Live wins
-                        if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                            result.push((l_id, l_len));
-                        }
-                        compacted_next = compacted.next();
-                        li += 1;
-                    }
+                    compacted_next = compacted.next();
                 }
-            }
+                std::cmp::Ordering::Greater => {
+                    if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
+                        writer.write_all(&l_id.to_le_bytes())?;
+                        writer.write_all(&l_len.to_le_bytes())?;
+                        total_doc_length += l_len as u64;
+                        total_documents += 1;
+                    }
+                    li += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    // Live wins
+                    if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
+                        writer.write_all(&l_id.to_le_bytes())?;
+                        writer.write_all(&l_len.to_le_bytes())?;
+                        total_doc_length += l_len as u64;
+                        total_documents += 1;
+                    }
+                    compacted_next = compacted.next();
+                    li += 1;
+                }
+            },
         }
     }
 
-    result
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())
+        .with_context(|| format!("Failed to flush doc_lengths buffer for: {path:?}"))?
+        .sync_all()
+        .with_context(|| format!("Failed to sync doc_lengths file: {path:?}"))?;
+
+    Ok((total_doc_length, total_documents))
 }
 
 #[cfg(test)]
