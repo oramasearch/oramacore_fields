@@ -222,8 +222,8 @@ impl SearchHandle {
         Ok(())
     }
 
-    /// Phrase boost path: collects positions and accumulates into field_scores
-    /// before applying the phrase multiplier.
+    /// Phrase boost path: collects positions and applies phrase multiplier
+    /// directly to scorer after all tokens are processed.
     fn execute_with_phrase_boost<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
@@ -245,15 +245,16 @@ impl SearchHandle {
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
-        let mut field_scores: HashMap<u64, (f32, u32)> = HashMap::new();
-        let mut token_doc_positions: Vec<HashMap<u64, Vec<u32>>> = Vec::new();
         let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
+        let mut prev_raw: Vec<(u64, u32)> = Vec::new();
+        let mut curr_raw: Vec<(u64, u32)> = Vec::new();
+        let mut consecutive_counts: HashMap<u64, usize> = HashMap::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
             let token_bit = 1u32 << (token_idx as u32);
             per_doc_ntf.clear();
+            curr_raw.clear();
             let mut corpus_df: u64 = 0;
-            let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
 
             // Search compacted layer (zero-copy)
             let version = &self.version;
@@ -284,12 +285,17 @@ impl SearchHandle {
                         continue;
                     }
 
-                    let pos = positions_map.entry(entry.doc_id).or_default();
                     if params.exact_match {
-                        pos.extend_from_slice(entry.exact_positions);
+                        for &p in entry.exact_positions {
+                            curr_raw.push((entry.doc_id, p));
+                        }
                     } else {
-                        pos.extend_from_slice(entry.exact_positions);
-                        pos.extend_from_slice(entry.stemmed_positions);
+                        for &p in entry.exact_positions {
+                            curr_raw.push((entry.doc_id, p));
+                        }
+                        for &p in entry.stemmed_positions {
+                            curr_raw.push((entry.doc_id, p));
+                        }
                     }
 
                     let field_length = version.field_length(entry.doc_id).unwrap_or(0) as f32;
@@ -335,12 +341,17 @@ impl SearchHandle {
                         continue;
                     }
 
-                    let pos = positions_map.entry(*doc_id).or_default();
                     if params.exact_match {
-                        pos.extend_from_slice(exact);
+                        for &p in exact.iter() {
+                            curr_raw.push((*doc_id, p));
+                        }
                     } else {
-                        pos.extend_from_slice(exact);
-                        pos.extend_from_slice(stemmed);
+                        for &p in exact.iter() {
+                            curr_raw.push((*doc_id, p));
+                        }
+                        for &p in stemmed.iter() {
+                            curr_raw.push((*doc_id, p));
+                        }
                     }
 
                     let field_length =
@@ -357,71 +368,70 @@ impl SearchHandle {
                 }
             });
 
-            // Sort and dedup positions per doc
-            for positions in positions_map.values_mut() {
-                positions.sort_unstable();
-                positions.dedup();
+            // Sort and dedup positions, then check adjacency with previous token
+            curr_raw.sort_unstable();
+            curr_raw.dedup();
+            if token_idx > 0 {
+                check_adjacency_pairs(&prev_raw, &curr_raw, &mut consecutive_counts);
             }
-            token_doc_positions.push(positions_map);
+            prev_raw.clear();
+            prev_raw.append(&mut curr_raw);
 
-            // Compute IDF for this token and fold into field_scores
+            // Compute IDF for this token and feed directly into scorer
             let idf = calculate_idf(total_documents, corpus_df);
             for (&doc_id, &aggregated_ntf) in per_doc_ntf.iter() {
                 let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
-                let entry = field_scores.entry(doc_id).or_insert((0.0, 0));
-                entry.0 += score;
-                entry.1 |= token_bit;
+                scorer.add(doc_id, score, token_bit);
+            }
+
+            if token_idx == 0 {
+                consecutive_counts.reserve(per_doc_ntf.len());
             }
         }
 
-        // Apply phrase boost
+        // Apply phrase boost directly to scorer
         let phrase_multiplier = params.phrase_boost.unwrap_or(0.0);
-        for (&doc_id, (score, _)) in field_scores.iter_mut() {
-            let consecutive_count = count_consecutive_pairs(&token_doc_positions, doc_id);
-            if consecutive_count > 0 {
-                *score *= 1.0 + consecutive_count as f32 * phrase_multiplier;
+        for (&doc_id, &count) in consecutive_counts.iter() {
+            if count > 0 {
+                scorer.multiply_score(doc_id, 1.0 + count as f32 * phrase_multiplier);
             }
-        }
-
-        // Feed results into scorer
-        for (doc_id, (score, token_mask)) in field_scores {
-            scorer.add(doc_id, score, token_mask);
         }
 
         Ok(())
     }
 }
 
-/// Count consecutive query token pairs at adjacent positions in a document.
-fn count_consecutive_pairs(token_doc_positions: &[HashMap<u64, Vec<u32>>], doc_id: u64) -> usize {
-    let mut count = 0;
-    for i in 0..token_doc_positions.len().saturating_sub(1) {
-        if let (Some(a), Some(b)) = (
-            token_doc_positions[i].get(&doc_id),
-            token_doc_positions[i + 1].get(&doc_id),
-        ) {
-            if has_adjacent_positions(a, b) {
-                count += 1;
+/// Merge-join two sorted `(doc_id, position)` buffers and increment
+/// `consecutive_counts` for each doc that has any position `p` in `prev`
+/// where `(doc_id, p+1)` exists in `curr`. O(n+m), zero allocations.
+fn check_adjacency_pairs(
+    prev: &[(u64, u32)],
+    curr: &[(u64, u32)],
+    consecutive_counts: &mut HashMap<u64, usize>,
+) {
+    let mut pi = 0;
+    let mut ci = 0;
+    while pi < prev.len() && ci < curr.len() {
+        let (pd, pp) = prev[pi];
+        let (cd, cp) = curr[ci];
+        let target_doc = pd;
+        let target_pos = pp + 1;
+        match (target_doc, target_pos).cmp(&(cd, cp)) {
+            std::cmp::Ordering::Equal => {
+                *consecutive_counts.entry(pd).or_insert(0) += 1;
+                // Skip remaining pairs for this doc — we only need one adjacent pair per token pair
+                let skip_doc = pd;
+                while pi < prev.len() && prev[pi].0 == skip_doc {
+                    pi += 1;
+                }
+                while ci < curr.len() && curr[ci].0 == skip_doc {
+                    ci += 1;
+                }
             }
+            std::cmp::Ordering::Less => pi += 1,
+            std::cmp::Ordering::Greater => ci += 1,
         }
     }
-    count
-}
-
-/// Check if any position in `a` + 1 exists in `b`. Both must be sorted.
-/// O(n+m) two-pointer scan.
-fn has_adjacent_positions(a: &[u32], b: &[u32]) -> bool {
-    let mut ai = 0;
-    let mut bi = 0;
-    while ai < a.len() && bi < b.len() {
-        let target = a[ai] + 1;
-        match target.cmp(&b[bi]) {
-            std::cmp::Ordering::Equal => return true,
-            std::cmp::Ordering::Less => ai += 1,
-            std::cmp::Ordering::Greater => bi += 1,
-        }
-    }
-    false
 }
 
 #[inline]
@@ -1180,23 +1190,22 @@ mod tests {
     // ---- Helper function unit tests ----
 
     #[test]
-    fn test_has_adjacent_positions_basic() {
-        assert!(has_adjacent_positions(&[0, 2, 5], &[1, 3, 6])); // 0+1=1 found
-        assert!(has_adjacent_positions(&[2], &[3])); // 2+1=3 found
-        assert!(!has_adjacent_positions(&[0, 2], &[4, 5])); // no match
-        assert!(!has_adjacent_positions(&[], &[1])); // empty a
-        assert!(!has_adjacent_positions(&[0], &[])); // empty b
-    }
+    fn test_check_adjacency_pairs_basic() {
+        let mut counts = HashMap::new();
+        // Token 0→1: doc 1 has pos 0→1 (adjacent)
+        let prev = vec![(1u64, 0u32)];
+        let curr = vec![(1u64, 1u32)];
+        check_adjacency_pairs(&prev, &curr, &mut counts);
+        assert_eq!(*counts.get(&1).unwrap(), 1);
 
-    #[test]
-    fn test_count_consecutive_pairs_basic() {
-        let token_positions = vec![
-            HashMap::from([(1u64, vec![0u32])]),
-            HashMap::from([(1u64, vec![1u32])]),
-            HashMap::from([(1u64, vec![2u32])]),
-        ];
-        assert_eq!(count_consecutive_pairs(&token_positions, 1), 2);
-        assert_eq!(count_consecutive_pairs(&token_positions, 99), 0);
+        // Token 1→2: doc 1 has pos 1→2 (adjacent)
+        let prev2 = vec![(1u64, 1u32)];
+        let curr2 = vec![(1u64, 2u32)];
+        check_adjacency_pairs(&prev2, &curr2, &mut counts);
+        assert_eq!(*counts.get(&1).unwrap(), 2);
+
+        // Doc 99 never appeared
+        assert!(counts.get(&99).is_none());
     }
 
     // ---- DocumentFilter tests ----

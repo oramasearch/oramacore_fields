@@ -37,6 +37,13 @@ impl BM25Scorer {
         }
     }
 
+    /// Multiply an existing document's score by `factor`. No-op if the document hasn't been added.
+    pub fn multiply_score(&mut self, doc_id: u64, factor: f32) {
+        if let Some(score) = self.document_scores.get_mut(&doc_id) {
+            *score *= factor;
+        }
+    }
+
     /// Add a score contribution for a document. `token_mask` is a bitmask indicating which
     /// query tokens this document matched (bit *i* set ⇒ token *i* matched).
     pub fn add(&mut self, doc_id: u64, score: f32, token_mask: u32) {

@@ -292,7 +292,7 @@ fn test_search_alloc_phrase_boost() {
     // HashMap internals. Should still be much less than the old 2*N*tokens
     // PostingEntry allocations.
     assert!(
-        allocs < 150,
-        "phrase boost search allocated too much: {allocs} (expected < 150 for 50 docs, 2 tokens)"
+        allocs < 25,
+        "phrase boost search allocated too much: {allocs} (expected < 25 for 50 docs, 2 tokens)"
     );
 }
