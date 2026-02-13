@@ -95,8 +95,22 @@ impl SearchHandle {
         }
     }
 
-    /// Fast path: no phrase boost needed. Feeds scores directly into scorer,
-    /// reusing a single `per_doc_ntf` HashMap across tokens.
+    /// Fast path: no phrase boost needed.
+    ///
+    /// Algorithm (per token):
+    /// 1. Scan compacted + live layers for matching terms (exact, prefix, or fuzzy
+    ///    depending on `tolerance`).
+    /// 2. For each matching (term, doc) pair, compute the BM25F normalized TF:
+    ///    `ntf = tf / (1 - b + b * field_len / avg_field_len)`, weighted by field
+    ///    boost and exact-match boost. Multiple term matches for the same doc are
+    ///    summed (BM25F multi-field aggregation with a single field).
+    /// 3. Compute Lucene-style IDF: `ln(1 + (N - df + 0.5) / (df + 0.5))`.
+    /// 4. Final per-token score: `idf * (k+1) * ntf / (k + ntf)` — the standard
+    ///    BM25 saturation formula that caps the TF contribution.
+    /// 5. Scores are fed into `BM25Scorer` which sums across tokens and optionally
+    ///    enforces a minimum-token-match threshold.
+    ///
+    /// A single `per_doc_ntf` HashMap is reused across tokens to avoid allocations.
     fn execute_simple<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
@@ -222,8 +236,13 @@ impl SearchHandle {
         Ok(())
     }
 
-    /// Phrase boost path: collects positions and applies phrase multiplier
-    /// directly to scorer after all tokens are processed.
+    /// Phrase boost path: same BM25F scoring as `execute_simple`, but additionally
+    /// collects token positions to detect consecutive token pairs (phrase matches).
+    ///
+    /// After all tokens are scored, each document's score is multiplied by
+    /// `1 + count * phrase_boost`, where `count` is the number of adjacent token
+    /// pairs found. Adjacency is checked via a merge-join on sorted (doc_id, pos)
+    /// buffers — O(n+m) with zero extra allocations.
     fn execute_with_phrase_boost<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,

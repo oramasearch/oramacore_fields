@@ -70,6 +70,13 @@ impl StringStorage {
     }
 
     /// Search the index for documents matching the given tokens, accumulating scores into `scorer`.
+    ///
+    /// Uses BM25F scoring: for each query token, computes a length-normalized term frequency
+    /// (ntf) per document, then combines it with inverse document frequency (IDF) to produce
+    /// a relevance score. Scores from multiple tokens are summed per document.
+    ///
+    /// Both the compacted (mmap) and live (in-memory) layers are searched and merged, so
+    /// results reflect all inserts/deletes without requiring a compaction first.
     pub fn search<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
