@@ -456,6 +456,7 @@ mod tests {
     use super::super::iterator::SearchResult;
     use super::super::NoFilter;
     use super::*;
+    use assert_approx_eq::assert_approx_eq;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -1087,5 +1088,276 @@ mod tests {
 
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
+    }
+
+    // ---- Scoring parity tests ----
+    // These tests verify that BM25 scores from oramacore_fields match those from oramacore
+    // when given identical data and parameters.
+    //
+    // IMPORTANT: oramacore derives per-doc field_length as max(stemmed_positions) + 1,
+    // while oramacore_fields uses the explicit IndexedValue.field_length.
+    // To ensure parity, all test data satisfies: field_length = max(stemmed_positions) + 1.
+    //
+    // Run corresponding oramacore tests:
+    //   cd /path/to/oramacore && cargo test test_scoring_parity -- --nocapture
+
+    #[test]
+    fn test_scoring_parity_basic_bm25() {
+        // Test 1: Single token, two docs
+        // Doc1: field_length=5, "term1" exact=[0,1] stemmed=[0,4]
+        //   → tf(exact_match=false) = 2+2 = 4, oramacore doc_length = max(4)+1 = 5
+        // Doc2: field_length=3, "term1" exact=[0] stemmed=[2]
+        //   → tf = 1+1 = 2, oramacore doc_length = max(2)+1 = 3
+        // tolerance=None (prefix search) → 3x exact_match_boost applied
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
+        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
+        index.compact(1).unwrap();
+
+        let tokens = vec!["term1".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: false,
+                boost: 1.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+        let score2 = scores[&2];
+
+        println!("test_scoring_parity_basic_bm25:");
+        println!("  doc1 score = {score1:.10}");
+        println!("  doc2 score = {score2:.10}");
+
+        assert!(score1 > score2, "Doc1 (tf=4) should rank higher than Doc2 (tf=2)");
+        // Cross-repo parity: these values must match oramacore's test_scoring_parity_basic_bm25
+        assert_approx_eq!(score1, 0.35853180, 1e-6);
+        assert_approx_eq!(score2, 0.34503868, 1e-6);
+    }
+
+    #[test]
+    fn test_scoring_parity_exact_match() {
+        // Test 2: exact_match=true with tolerance=Some(0)
+        // Same data as Test 1
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
+        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
+        index.compact(1).unwrap();
+
+        let tokens = vec!["term1".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: true,
+                boost: 1.0,
+                tolerance: Some(0),
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+        let score2 = scores[&2];
+
+        println!("test_scoring_parity_exact_match:");
+        println!("  doc1 score = {score1:.10}");
+        println!("  doc2 score = {score2:.10}");
+
+        // Doc1: tf=2 (exact only), Doc2: tf=1 (exact only), with 3x exact_match_boost
+        assert!(score1 > score2);
+        // Cross-repo parity: these values must match oramacore's test_scoring_parity_exact_match
+        assert_approx_eq!(score1, 0.32412723, 1e-6);
+        assert_approx_eq!(score2, 0.30272260, 1e-6);
+    }
+
+    #[test]
+    fn test_scoring_parity_field_boost() {
+        // Test 3: Same data as Test 1, but boost=2.0
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
+        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
+        index.compact(1).unwrap();
+
+        let tokens = vec!["term1".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: false,
+                boost: 2.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+        let score2 = scores[&2];
+
+        println!("test_scoring_parity_field_boost:");
+        println!("  doc1 score = {score1:.10}");
+        println!("  doc2 score = {score2:.10}");
+
+        assert!(score1 > score2);
+        // Cross-repo parity: these values must match oramacore's test_scoring_parity_field_boost
+        assert_approx_eq!(score1, 0.37862647, 1e-6);
+        assert_approx_eq!(score2, 0.37096643, 1e-6);
+    }
+
+    #[test]
+    fn test_scoring_parity_single_doc() {
+        // Test 4: Single doc, single token (simplest case)
+        // Doc1: field_length=3, "hello" exact=[0] stemmed=[2]
+        //   → tf = 1+1 = 2, oramacore doc_length = max(2)+1 = 3
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(3, vec![("hello", vec![0], vec![2])]));
+        index.compact(1).unwrap();
+
+        let tokens = vec!["hello".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: false,
+                boost: 1.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+
+        println!("test_scoring_parity_single_doc:");
+        println!("  doc1 score = {score1:.10}");
+
+        // Cross-repo parity: must match oramacore's test_scoring_parity_single_doc
+        assert_approx_eq!(score1, 0.52741718, 1e-6);
+    }
+
+    #[test]
+    fn test_scoring_parity_stemmed_only() {
+        // Test 5: Stemmed-only positions
+        // Doc1: field_length=4, "run" exact=[] stemmed=[0,1,3]
+        //   → tf(exact_match=false) = 3, oramacore doc_length = max(3)+1 = 4
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(4, vec![("run", vec![], vec![0, 1, 3])]));
+        index.compact(1).unwrap();
+
+        // exact_match=false → tf=3 (stemmed only)
+        let tokens = vec!["run".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: false,
+                boost: 1.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+        println!("test_scoring_parity_stemmed_only (exact_match=false):");
+        println!("  doc1 score = {score1:.10}");
+        // Cross-repo parity: must match oramacore's test_scoring_parity_stemmed_only
+        assert_approx_eq!(score1, 0.55844170, 1e-6);
+
+        // exact_match=true → tf=0, no results
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: true,
+                boost: 1.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        println!("test_scoring_parity_stemmed_only (exact_match=true):");
+        println!("  scores = {scores:?}");
+
+        assert!(
+            scores.is_empty(),
+            "exact_match=true with stemmed-only should yield no results"
+        );
+    }
+
+    #[test]
+    fn test_scoring_parity_varying_lengths() {
+        // Test 6: Multiple documents with varying field lengths
+        // Doc1: field_length=10, "word" exact=[0,1,2] stemmed=[9]
+        //   → tf = 3+1 = 4, oramacore doc_length = max(9)+1 = 10
+        // Doc2: field_length=2,  "word" exact=[0] stemmed=[1]
+        //   → tf = 1+1 = 2, oramacore doc_length = max(1)+1 = 2
+        // Doc3: field_length=20, "word" exact=[0,1] stemmed=[0,19]
+        //   → tf = 2+2 = 4, oramacore doc_length = max(19)+1 = 20
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(10, vec![("word", vec![0, 1, 2], vec![9])]));
+        index.insert(2, make_value(2, vec![("word", vec![0], vec![1])]));
+        index.insert(3, make_value(20, vec![("word", vec![0, 1], vec![0, 19])]));
+        index.compact(1).unwrap();
+
+        let tokens = vec!["word".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                exact_match: false,
+                boost: 1.0,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        );
+        let scores = scorer.get_scores();
+
+        let score1 = scores[&1];
+        let score2 = scores[&2];
+        let score3 = scores[&3];
+
+        println!("test_scoring_parity_varying_lengths:");
+        println!("  doc1 (fl=10, tf=4) score = {score1:.10}");
+        println!("  doc2 (fl=2,  tf=2) score = {score2:.10}");
+        println!("  doc3 (fl=20, tf=4) score = {score3:.10}");
+
+        // Cross-repo parity: must match oramacore's test_scoring_parity_varying_lengths
+        assert_approx_eq!(score1, 0.26820570, 1e-6);
+        assert_approx_eq!(score2, 0.27248147, 1e-6);
+        assert_approx_eq!(score3, 0.25202709, 1e-6);
     }
 }

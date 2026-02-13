@@ -103,8 +103,6 @@ impl SearchHandle {
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
 
-        // Whether exact-match boost applies (only in fuzzy/prefix mode)
-        let apply_exact_boost = params.tolerance != Some(0);
         let exact_match_boost_multiplier = params
             .exact_match_boost
             .unwrap_or(EXACT_MATCH_BOOST_MULTIPLIER);
@@ -128,7 +126,7 @@ impl SearchHandle {
             // Search compacted layer
             let compacted_matches = self.version.search_terms(token, params.tolerance);
             for (_term, is_exact, reader) in compacted_matches {
-                let exact_boost = if apply_exact_boost && is_exact {
+                let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
                     1.0
@@ -177,7 +175,7 @@ impl SearchHandle {
             // Search live layer
             let live_matches = self.snapshot.search_terms(token, params.tolerance);
             for (_term, is_exact, postings) in live_matches {
-                let exact_boost = if apply_exact_boost && is_exact {
+                let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
                     1.0
@@ -959,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exact_match_boost_not_applied_in_exact_mode() {
+    fn test_exact_match_boost_applied_in_exact_mode() {
         let version = Arc::new(CompactedVersion::empty());
 
         let mut layer = LiveLayer::new();
@@ -969,12 +967,13 @@ mod tests {
 
         let handle = SearchHandle::new(version, snapshot);
 
-        // tolerance=Some(0) means exact match mode, no boost applied
+        // tolerance=Some(0) with default boost (3.0)
         let params_default = SearchParams {
             tokens: &["hello".to_string()],
             tolerance: Some(0),
             ..Default::default()
         };
+        // tolerance=Some(0) with custom boost (100.0)
         let params_boosted = SearchParams {
             tokens: &["hello".to_string()],
             tolerance: Some(0),
@@ -985,8 +984,8 @@ mod tests {
         let result_default = execute_search(&handle, &params_default);
         let result_boosted = execute_search(&handle, &params_boosted);
 
-        // Scores should be identical (boost not applied in exact mode)
-        assert_eq!(result_default.docs[0].score, result_boosted.docs[0].score);
+        // Higher exact_match_boost should give a higher score
+        assert!(result_boosted.docs[0].score > result_default.docs[0].score);
     }
 
     // ---- Combined tests ----
