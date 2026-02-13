@@ -4,6 +4,7 @@ use std::sync::Arc;
 use super::compacted::{CompactedVersion, PostingEntry};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
+use super::scorer::BM25Scorer;
 use super::scoring::{bm25f_normalized_tf, bm25f_score, calculate_idf};
 use super::DocumentFilter;
 
@@ -25,8 +26,6 @@ pub struct SearchParams<'a> {
     pub tolerance: Option<u8>,
     /// Score multiplier per consecutive token pair. None = disabled.
     pub phrase_boost: Option<f32>,
-    /// Minimum fraction of tokens a doc must match (0.0–1.0). None = no filter.
-    pub threshold: Option<f32>,
     /// Exact-match boost in fuzzy/prefix mode. None = default 3.0.
     pub exact_match_boost: Option<f32>,
 }
@@ -40,7 +39,6 @@ impl Default for SearchParams<'_> {
             bm25_params: Bm25Params::default(),
             tolerance: Some(0),
             phrase_boost: None,
-            threshold: None,
             exact_match_boost: None,
         }
     }
@@ -85,7 +83,12 @@ impl SearchHandle {
         Self { version, snapshot }
     }
 
-    pub fn execute<F: DocumentFilter>(&self, params: &SearchParams<'_>, filter: Option<&F>) -> SearchResult {
+    pub fn execute<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        scorer: &mut BM25Scorer,
+    ) {
         // Compute global stats by combining compacted + live
         let total_documents = self.version.total_documents + self.snapshot.total_documents;
         let total_document_length =
@@ -110,17 +113,14 @@ impl SearchHandle {
         let collect_positions =
             params.phrase_boost.is_some_and(|b| b > 0.0) && params.tokens.len() >= 2;
 
-        // Whether to track per-doc token match count for threshold filtering
-        let apply_threshold = params.threshold.is_some();
-
-        // Per-doc score accumulator: doc_id -> aggregated normalized TF per token
-        // We accumulate per-token, then finalize with IDF
-        let mut token_scores: Vec<(String, HashMap<u64, f32>, u64)> = Vec::new();
+        // Per-doc accumulator: doc_id -> (score, token_mask)
+        let mut field_scores: HashMap<u64, (f32, u32)> = HashMap::new();
 
         // Per-token per-doc positions (only allocated when phrase boost is active)
         let mut token_doc_positions: Vec<HashMap<u64, Vec<u32>>> = Vec::new();
 
-        for token in params.tokens {
+        for (token_idx, token) in params.tokens.iter().enumerate() {
+            let token_bit = 1u32 << (token_idx as u32);
             let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
             let mut corpus_df: u64 = 0;
             let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
@@ -237,29 +237,20 @@ impl SearchHandle {
                 token_doc_positions.push(positions_map);
             }
 
-            token_scores.push((token.clone(), per_doc_ntf, corpus_df));
-        }
-
-        // Finalize: compute BM25 score per doc + track token match counts
-        let mut doc_scores: HashMap<u64, f32> = HashMap::new();
-        let mut doc_matched_count: HashMap<u64, usize> = HashMap::new();
-
-        for (_, per_doc_ntf, corpus_df) in &token_scores {
-            let idf = calculate_idf(total_documents, *corpus_df);
-
-            for (&doc_id, &aggregated_ntf) in per_doc_ntf {
+            // Compute IDF for this token and fold into field_scores
+            let idf = calculate_idf(total_documents, corpus_df);
+            for (doc_id, aggregated_ntf) in per_doc_ntf {
                 let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
-                *doc_scores.entry(doc_id).or_insert(0.0) += score;
-                if apply_threshold {
-                    *doc_matched_count.entry(doc_id).or_insert(0) += 1;
-                }
+                let entry = field_scores.entry(doc_id).or_insert((0.0, 0));
+                entry.0 += score;
+                entry.1 |= token_bit;
             }
         }
 
         // Apply phrase boost
         if collect_positions {
             let phrase_multiplier = params.phrase_boost.unwrap_or(0.0);
-            for (&doc_id, score) in doc_scores.iter_mut() {
+            for (&doc_id, (score, _)) in field_scores.iter_mut() {
                 let consecutive_count = count_consecutive_pairs(&token_doc_positions, doc_id);
                 if consecutive_count > 0 {
                     *score *= 1.0 + consecutive_count as f32 * phrase_multiplier;
@@ -267,25 +258,10 @@ impl SearchHandle {
             }
         }
 
-        // Compute minimum token match count for threshold filtering
-        let min_tokens = params
-            .threshold
-            .map(|t| (params.tokens.len() as f32 * t.clamp(0.0, 1.0)).floor() as usize)
-            .unwrap_or(0);
-
-        let mut result = SearchResult {
-            docs: doc_scores
-                .into_iter()
-                .filter(|(doc_id, _)| {
-                    min_tokens == 0
-                        || doc_matched_count.get(doc_id).copied().unwrap_or(0) >= min_tokens
-                })
-                .map(|(doc_id, score)| ScoredDoc { doc_id, score })
-                .collect(),
-        };
-
-        result.sort_by_score();
-        result
+        // Feed results into scorer
+        for (doc_id, (score, token_mask)) in field_scores {
+            scorer.add(doc_id, score, token_mask);
+        }
     }
 }
 
@@ -364,6 +340,12 @@ mod tests {
         }
     }
 
+    fn execute_search(handle: &SearchHandle, params: &SearchParams<'_>) -> SearchResult {
+        let mut scorer = BM25Scorer::new();
+        handle.execute::<NoFilter>(params, None, &mut scorer);
+        scorer.into_search_result()
+    }
+
     #[test]
     fn test_search_empty() {
         let version = Arc::new(CompactedVersion::empty());
@@ -376,7 +358,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert!(result.docs.is_empty());
     }
 
@@ -398,7 +380,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
         assert!(result.docs[0].score > 0.0);
         assert!(result.docs[1].score > 0.0);
@@ -422,7 +404,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
     }
@@ -445,7 +427,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
     }
@@ -498,7 +480,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > result.docs[1].score);
@@ -526,8 +508,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_normal = handle.execute::<NoFilter>(&params_normal, None);
-        let result_boosted = handle.execute::<NoFilter>(&params_boosted, None);
+        let result_normal = execute_search(&handle, &params_normal);
+        let result_boosted = execute_search(&handle, &params_boosted);
 
         assert!(result_boosted.docs[0].score > result_normal.docs[0].score);
     }
@@ -551,7 +533,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
@@ -576,7 +558,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > result.docs[1].score);
@@ -599,7 +581,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
     }
@@ -638,7 +620,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
         // Doc 1 should score higher due to phrase boost
         assert_eq!(result.docs[0].doc_id, 1);
@@ -673,8 +655,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_with = handle.execute::<NoFilter>(&params_with_boost, None);
-        let result_without = handle.execute::<NoFilter>(&params_without_boost, None);
+        let result_with = execute_search(&handle, &params_with_boost);
+        let result_without = execute_search(&handle, &params_without_boost);
 
         // Non-adjacent: no boost applied, scores should be equal
         assert_eq!(result_with.docs[0].score, result_without.docs[0].score);
@@ -708,14 +690,14 @@ mod tests {
             ..Default::default()
         };
 
-        let result_boosted = handle.execute::<NoFilter>(&params, None);
+        let result_boosted = execute_search(&handle, &params);
 
         let params_no_boost = SearchParams {
             tokens: &["the".to_string(), "quick".to_string(), "fox".to_string()],
             ..Default::default()
         };
 
-        let result_base = handle.execute::<NoFilter>(&params_no_boost, None);
+        let result_base = execute_search(&handle, &params_no_boost);
 
         // With 2 consecutive pairs and phrase_boost=1.0: score *= 1 + 2*1.0 = 3.0
         let expected_ratio = 3.0;
@@ -753,8 +735,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_none = handle.execute::<NoFilter>(&params_none, None);
-        let result_default = handle.execute::<NoFilter>(&params_default, None);
+        let result_none = execute_search(&handle, &params_none);
+        let result_default = execute_search(&handle, &params_default);
 
         assert_eq!(result_none.docs[0].score, result_default.docs[0].score);
     }
@@ -786,7 +768,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_boosted = handle.execute::<NoFilter>(&params, None);
+        let result_boosted = execute_search(&handle, &params);
 
         let params_no_boost = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -794,7 +776,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_base = handle.execute::<NoFilter>(&params_no_boost, None);
+        let result_base = execute_search(&handle, &params_no_boost);
 
         // Should be boosted (exact positions 0,1 are adjacent)
         assert!(result_boosted.docs[0].score > result_base.docs[0].score);
@@ -828,11 +810,13 @@ mod tests {
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
-            threshold: Some(1.0),
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        // threshold=1.0 with 3 tokens => floor(3 * 1.0) = 3, need all 3
+        let mut scorer = BM25Scorer::with_threshold(3);
+        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        let result = scorer.into_search_result();
         // Only doc 1 matches all 3 tokens
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
@@ -873,11 +857,12 @@ mod tests {
         // threshold=0.5 => floor(3 * 0.5) = 1, so docs matching >= 1 token pass
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
-            threshold: Some(0.5),
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let mut scorer = BM25Scorer::with_threshold(1);
+        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 3);
     }
 
@@ -901,11 +886,10 @@ mod tests {
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
-            threshold: None,
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
     }
 
@@ -922,11 +906,13 @@ mod tests {
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
-            threshold: Some(1.0),
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        // threshold=1.0 with 1 token => need >= 1
+        let mut scorer = BM25Scorer::with_threshold(1);
+        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 1);
     }
 
@@ -951,7 +937,7 @@ mod tests {
             tolerance: None,
             ..Default::default()
         };
-        let result_default = handle.execute::<NoFilter>(&params_default, None);
+        let result_default = execute_search(&handle, &params_default);
 
         // Custom boost (10.0)
         let params_custom = SearchParams {
@@ -960,7 +946,7 @@ mod tests {
             exact_match_boost: Some(10.0),
             ..Default::default()
         };
-        let result_custom = handle.execute::<NoFilter>(&params_custom, None);
+        let result_custom = execute_search(&handle, &params_custom);
 
         // Both should have doc 1 first
         assert_eq!(result_default.docs[0].doc_id, 1);
@@ -996,8 +982,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_default = handle.execute::<NoFilter>(&params_default, None);
-        let result_boosted = handle.execute::<NoFilter>(&params_boosted, None);
+        let result_default = execute_search(&handle, &params_default);
+        let result_boosted = execute_search(&handle, &params_boosted);
 
         // Scores should be identical (boost not applied in exact mode)
         assert_eq!(result_default.docs[0].score, result_boosted.docs[0].score);
@@ -1040,11 +1026,13 @@ mod tests {
         let params = SearchParams {
             tokens: &["the".to_string(), "quick".to_string(), "fox".to_string()],
             phrase_boost: Some(1.0),
-            threshold: Some(0.7), // floor(3 * 0.7) = 2, need >= 2 tokens
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        // threshold=0.7 with 3 tokens => floor(3 * 0.7) = 2, need >= 2 tokens
+        let mut scorer = BM25Scorer::with_threshold(2);
+        handle.execute::<NoFilter>(&params, None, &mut scorer);
+        let result = scorer.into_search_result();
         // Doc 3 filtered out (matches only 1 token, need >= 2)
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -1108,7 +1096,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params, Some(&filter));
+        let mut scorer = BM25Scorer::new();
+        handle.execute(&params, Some(&filter), &mut scorer);
+        let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
@@ -1134,7 +1124,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute::<NoFilter>(&params, None);
+        let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 3);
     }
 
@@ -1157,7 +1147,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params, Some(&filter));
+        let mut scorer = BM25Scorer::new();
+        handle.execute(&params, Some(&filter), &mut scorer);
+        let result = scorer.into_search_result();
         assert!(result.docs.is_empty());
     }
 }

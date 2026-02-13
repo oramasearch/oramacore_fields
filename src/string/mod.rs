@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::string::{StringStorage, Threshold, Bm25Params, IndexedValue, TermData, SearchParams};
+//! use oramacore_fields::string::{StringStorage, Threshold, Bm25Params, IndexedValue, TermData, SearchParams, BM25Scorer};
 //! use std::collections::HashMap;
 //! use std::path::PathBuf;
 //!
@@ -25,10 +25,12 @@
 //!
 //! // Search
 //! let tokens = vec!["hello".to_string()];
-//! let result = index.search::<oramacore_fields::string::NoFilter>(&SearchParams {
+//! let mut scorer = BM25Scorer::new();
+//! index.search::<oramacore_fields::string::NoFilter>(&SearchParams {
 //!     tokens: &tokens,
 //!     ..Default::default()
-//! }, None);
+//! }, None, &mut scorer);
+//! let result = scorer.into_search_result();
 //! assert_eq!(result.docs.len(), 1);
 //! ```
 
@@ -43,6 +45,7 @@ mod iterator;
 mod live;
 mod merge;
 mod platform;
+mod scorer;
 mod scoring;
 mod storage;
 
@@ -51,6 +54,7 @@ pub use error::Error;
 pub use indexer::{IndexedValue, StringIndexer, TermData, Tokenizer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use iterator::{ScoredDoc, SearchParams, SearchResult};
+pub use scorer::BM25Scorer;
 pub use storage::StringStorage;
 
 pub trait DocumentFilter {

@@ -6,7 +6,8 @@ use super::io::{
     ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir, version_dir,
     write_current_atomic, FORMAT_VERSION,
 };
-use super::iterator::{SearchHandle, SearchParams, SearchResult};
+use super::iterator::{SearchHandle, SearchParams};
+use super::scorer::BM25Scorer;
 use super::DocumentFilter;
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::sorted_merge;
@@ -68,12 +69,17 @@ impl StringStorage {
         live.delete(doc_id);
     }
 
-    /// Search the index for documents matching the given tokens.
-    pub fn search<F: DocumentFilter>(&self, params: &SearchParams<'_>, filter: Option<&F>) -> SearchResult {
+    /// Search the index for documents matching the given tokens, accumulating scores into `scorer`.
+    pub fn search<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        scorer: &mut BM25Scorer,
+    ) {
         let snapshot = self.get_fresh_snapshot();
         let version = self.version.load();
         let handle = SearchHandle::new(Arc::clone(&version), snapshot);
-        handle.execute(params, filter)
+        handle.execute(params, filter, scorer);
     }
 
     /// Get a fresh snapshot, refreshing if dirty (double-check locking pattern).
@@ -447,6 +453,7 @@ fn validate_deleted_file(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::super::indexer::TermData;
+    use super::super::iterator::SearchResult;
     use super::super::NoFilter;
     use super::*;
     use std::collections::HashMap;
@@ -471,13 +478,16 @@ mod tests {
 
     fn search_default(index: &StringStorage, tokens: &[&str]) -> SearchResult {
         let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+        let mut scorer = BM25Scorer::new();
         index.search::<NoFilter>(
             &SearchParams {
                 tokens: &owned,
                 ..Default::default()
             },
             None,
-        )
+            &mut scorer,
+        );
+        scorer.into_search_result()
     }
 
     #[test]
@@ -800,13 +810,16 @@ mod tests {
         let reader = thread::spawn(move || {
             for _ in 0..20 {
                 let tokens = vec!["term".to_string()];
-                let result = index_clone.search::<NoFilter>(
+                let mut scorer = BM25Scorer::new();
+                index_clone.search::<NoFilter>(
                     &SearchParams {
                         tokens: &tokens,
                         ..Default::default()
                     },
                     None,
+                    &mut scorer,
                 );
+                let result = scorer.into_search_result();
                 assert!(result.docs.len() >= 50);
             }
         });
@@ -944,14 +957,17 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["app".to_string()];
-        let result = index.search::<NoFilter>(
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
             &SearchParams {
                 tokens: &tokens,
                 tolerance: None,
                 ..Default::default()
             },
             None,
+            &mut scorer,
         );
+        let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -971,14 +987,17 @@ mod tests {
 
         // Levenshtein distance 1 from "apple"
         let tokens = vec!["apple".to_string()];
-        let result = index.search::<NoFilter>(
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
             &SearchParams {
                 tokens: &tokens,
                 tolerance: Some(1),
                 ..Default::default()
             },
             None,
+            &mut scorer,
         );
+        let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -1014,14 +1033,17 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string(), "world".to_string()];
-        let result = index.search::<NoFilter>(
+        let mut scorer = BM25Scorer::new();
+        index.search::<NoFilter>(
             &SearchParams {
                 tokens: &tokens,
                 phrase_boost: Some(2.0),
                 ..Default::default()
             },
             None,
+            &mut scorer,
         );
+        let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
         // Doc 1 should score higher due to phrase boost on adjacent positions
@@ -1051,14 +1073,17 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
-        let result = index.search::<NoFilter>(
+        // threshold=1.0 with 3 tokens => need all 3
+        let mut scorer = BM25Scorer::with_threshold(3);
+        index.search::<NoFilter>(
             &SearchParams {
                 tokens: &tokens,
-                threshold: Some(1.0),
                 ..Default::default()
             },
             None,
+            &mut scorer,
         );
+        let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
