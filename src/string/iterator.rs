@@ -1205,7 +1205,7 @@ mod tests {
         assert_eq!(*counts.get(&1).unwrap(), 2);
 
         // Doc 99 never appeared
-        assert!(counts.get(&99).is_none());
+        assert!(!counts.contains_key(&99));
     }
 
     // ---- DocumentFilter tests ----
