@@ -477,9 +477,7 @@ impl CompactedVersion {
                                 match (&compacted_next, live_peek_entry) {
                                     (None, None) => break,
                                     (Some(c), None) => {
-                                        if deleted_set
-                                            .is_none_or(|s| !s.contains(&c.doc_id))
-                                        {
+                                        if deleted_set.is_none_or(|s| !s.contains(&c.doc_id)) {
                                             write_entry_to_buf(
                                                 &mut entries_buf,
                                                 c.doc_id,
@@ -492,21 +490,14 @@ impl CompactedVersion {
                                     }
                                     (None, Some(l)) => {
                                         if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
-                                            write_entry_to_buf(
-                                                &mut entries_buf,
-                                                l.0,
-                                                &l.1,
-                                                &l.2,
-                                            );
+                                            write_entry_to_buf(&mut entries_buf, l.0, &l.1, &l.2);
                                             count += 1;
                                         }
                                         li += 1;
                                     }
                                     (Some(c), Some(l)) => match c.doc_id.cmp(&l.0) {
                                         std::cmp::Ordering::Less => {
-                                            if deleted_set
-                                                .is_none_or(|s| !s.contains(&c.doc_id))
-                                            {
+                                            if deleted_set.is_none_or(|s| !s.contains(&c.doc_id)) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     c.doc_id,
@@ -518,9 +509,7 @@ impl CompactedVersion {
                                             compacted_next = reader.next_ref();
                                         }
                                         std::cmp::Ordering::Greater => {
-                                            if deleted_set
-                                                .is_none_or(|s| !s.contains(&l.0))
-                                            {
+                                            if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -533,9 +522,7 @@ impl CompactedVersion {
                                         }
                                         std::cmp::Ordering::Equal => {
                                             // Live wins
-                                            if deleted_set
-                                                .is_none_or(|s| !s.contains(&l.0))
-                                            {
+                                            if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -599,15 +586,7 @@ impl CompactedVersion {
     }
 }
 
-/// A single posting entry read from the compacted postings file.
-#[derive(Debug, Clone)]
-pub struct PostingEntry {
-    pub doc_id: u64,
-    pub exact_positions: Vec<u32>,
-    pub stemmed_positions: Vec<u32>,
-}
-
-/// Zero-copy borrowing variant of PostingEntry — slices point into mmap'd data.
+/// Zero-copy borrowing variant — slices point into mmap'd data.
 pub struct PostingEntryRef<'a> {
     pub doc_id: u64,
     pub exact_positions: &'a [u32],
@@ -670,47 +649,10 @@ impl<'a> PostingsReader<'a> {
 }
 
 impl<'a> Iterator for PostingsReader<'a> {
-    type Item = PostingEntry;
+    type Item = PostingEntryRef<'a>;
 
-    fn next(&mut self) -> Option<PostingEntry> {
-        if self.remaining == 0 {
-            return None;
-        }
-        self.remaining -= 1;
-
-        let data = self.data;
-        let pos = self.pos;
-
-        // doc_id: u64
-        let doc_id = u64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
-        // exact_count: u32
-        let exact_count = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as usize;
-        // stemmed_count: u32
-        let stemmed_count = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
-
-        let mut cursor = pos + 16;
-
-        let mut exact_positions = Vec::with_capacity(exact_count);
-        for _ in 0..exact_count {
-            let v = u32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?);
-            exact_positions.push(v);
-            cursor += 4;
-        }
-
-        let mut stemmed_positions = Vec::with_capacity(stemmed_count);
-        for _ in 0..stemmed_count {
-            let v = u32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?);
-            stemmed_positions.push(v);
-            cursor += 4;
-        }
-
-        self.pos = cursor;
-
-        Some(PostingEntry {
-            doc_id,
-            exact_positions,
-            stemmed_positions,
-        })
+    fn next(&mut self) -> Option<PostingEntryRef<'a>> {
+        self.next_ref()
     }
 }
 
@@ -1057,8 +999,7 @@ mod tests {
 
         while let Some(reader) = iter.next_term_into(&mut key_buf) {
             let key = String::from_utf8(key_buf.clone()).unwrap();
-            let entries: Vec<_> = reader.collect();
-            results.push((key, entries.len()));
+            results.push((key, reader.count()));
         }
 
         assert_eq!(results.len(), 3);
@@ -1156,7 +1097,7 @@ mod tests {
         let v2 = CompactedVersion::load(base_path, 2).unwrap();
 
         // hello should now have docs 1, 2, 3
-        let entries: Vec<PostingEntry> = v2.lookup_postings("hello").unwrap().collect();
+        let entries: Vec<PostingEntryRef> = v2.lookup_postings("hello").unwrap().collect();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].doc_id, 1);
         assert_eq!(entries[1].doc_id, 2);
@@ -1185,19 +1126,19 @@ mod tests {
 
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("apple", Some(0), |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].0); // is_exact
 
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("missing", Some(0), |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert!(results.is_empty());
@@ -1223,10 +1164,10 @@ mod tests {
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
         // Prefix "app" should match "apple" and "application"
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("app", None, |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1236,20 +1177,20 @@ mod tests {
         }
 
         // Prefix "apple" should match exactly "apple"
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("apple", None, |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].0); // is_exact
 
         // Prefix "xyz" should match nothing
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("xyz", None, |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert!(results.is_empty());
@@ -1275,10 +1216,10 @@ mod tests {
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
         // Distance 1 from "apple" should match "apple" (exact) and "apply" (1 edit)
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("apple", Some(1), |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1286,10 +1227,10 @@ mod tests {
         assert_eq!(exact_count, 1);
 
         // Distance 0 via Levenshtein is exact match
-        let mut results: Vec<(bool, Vec<PostingEntry>)> = Vec::new();
+        let mut results: Vec<(bool, usize)> = Vec::new();
         version
             .for_each_term_match("apple", Some(0), |is_exact, reader| {
-                results.push((is_exact, reader.collect()));
+                results.push((is_exact, reader.count()));
             })
             .unwrap();
         assert_eq!(results.len(), 1);
