@@ -8,9 +8,9 @@ use super::scoring::{bm25f_normalized_tf, bm25f_score, calculate_idf};
 
 /// Parameters for a search query.
 #[derive(Debug, Clone)]
-pub struct SearchParams {
+pub struct SearchParams<'a> {
     /// Pre-tokenized query terms.
-    pub tokens: Vec<String>,
+    pub tokens: &'a [String],
     /// If true, only count exact (unstemmed) positions.
     pub exact_match: bool,
     /// Field weight multiplier for BM25F scoring.
@@ -30,10 +30,10 @@ pub struct SearchParams {
     pub exact_match_boost: Option<f32>,
 }
 
-impl Default for SearchParams {
+impl Default for SearchParams<'_> {
     fn default() -> Self {
         Self {
-            tokens: Vec::new(),
+            tokens: &[],
             exact_match: false,
             boost: 1.0,
             bm25_params: Bm25Params::default(),
@@ -84,7 +84,7 @@ impl SearchHandle {
         Self { version, snapshot }
     }
 
-    pub fn execute(&self, params: &SearchParams) -> SearchResult {
+    pub fn execute(&self, params: &SearchParams<'_>) -> SearchResult {
         // Compute global stats by combining compacted + live
         let total_documents = self.version.total_documents + self.snapshot.total_documents;
         let total_document_length =
@@ -119,7 +119,7 @@ impl SearchHandle {
         // Per-token per-doc positions (only allocated when phrase boost is active)
         let mut token_doc_positions: Vec<HashMap<u64, Vec<u32>>> = Vec::new();
 
-        for token in &params.tokens {
+        for token in params.tokens {
             let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
             let mut corpus_df: u64 = 0;
             let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
@@ -358,8 +358,9 @@ mod tests {
         let snapshot = Arc::new(LiveSnapshot::empty());
         let handle = SearchHandle::new(version, snapshot);
 
+        let tokens = vec!["hello".to_string()];
         let params = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &tokens,
             ..Default::default()
         };
 
@@ -381,7 +382,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             ..Default::default()
         };
 
@@ -404,7 +405,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             exact_match: true,
             ..Default::default()
         };
@@ -428,7 +429,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             ..Default::default()
         };
 
@@ -481,7 +482,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             ..Default::default()
         };
 
@@ -503,12 +504,12 @@ mod tests {
         let handle = SearchHandle::new(Arc::clone(&version), Arc::clone(&snapshot));
 
         let params_normal = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             ..Default::default()
         };
 
         let params_boosted = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             boost: 2.0,
             ..Default::default()
         };
@@ -533,7 +534,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["app".to_string()],
+            tokens: &vec!["app".to_string()],
             tolerance: None,
             ..Default::default()
         };
@@ -558,7 +559,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["app".to_string()],
+            tokens: &vec!["app".to_string()],
             tolerance: None,
             ..Default::default()
         };
@@ -582,7 +583,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["apple".to_string()],
+            tokens: &vec!["apple".to_string()],
             ..Default::default()
         };
 
@@ -620,7 +621,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             phrase_boost: Some(2.0),
             ..Default::default()
         };
@@ -651,12 +652,12 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params_with_boost = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             phrase_boost: Some(2.0),
             ..Default::default()
         };
         let params_without_boost = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             ..Default::default()
         };
 
@@ -690,7 +691,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
+            tokens: &vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
             phrase_boost: Some(1.0),
             ..Default::default()
         };
@@ -698,7 +699,7 @@ mod tests {
         let result_boosted = handle.execute(&params);
 
         let params_no_boost = SearchParams {
-            tokens: vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
+            tokens: &vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
             ..Default::default()
         };
 
@@ -731,12 +732,12 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params_none = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             phrase_boost: None,
             ..Default::default()
         };
         let params_default = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             ..Default::default()
         };
 
@@ -767,7 +768,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             exact_match: true,
             phrase_boost: Some(2.0),
             ..Default::default()
@@ -776,7 +777,7 @@ mod tests {
         let result_boosted = handle.execute(&params);
 
         let params_no_boost = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             exact_match: true,
             ..Default::default()
         };
@@ -814,7 +815,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string(), "foo".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string(), "foo".to_string()],
             threshold: Some(1.0),
             ..Default::default()
         };
@@ -859,7 +860,7 @@ mod tests {
 
         // threshold=0.5 => floor(3 * 0.5) = 1, so docs matching >= 1 token pass
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string(), "foo".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string(), "foo".to_string()],
             threshold: Some(0.5),
             ..Default::default()
         };
@@ -887,7 +888,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &vec!["hello".to_string(), "world".to_string()],
             threshold: None,
             ..Default::default()
         };
@@ -908,7 +909,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             threshold: Some(1.0),
             ..Default::default()
         };
@@ -934,7 +935,7 @@ mod tests {
 
         // Default boost (3.0)
         let params_default = SearchParams {
-            tokens: vec!["app".to_string()],
+            tokens: &vec!["app".to_string()],
             tolerance: None,
             ..Default::default()
         };
@@ -942,7 +943,7 @@ mod tests {
 
         // Custom boost (10.0)
         let params_custom = SearchParams {
-            tokens: vec!["app".to_string()],
+            tokens: &vec!["app".to_string()],
             tolerance: None,
             exact_match_boost: Some(10.0),
             ..Default::default()
@@ -972,12 +973,12 @@ mod tests {
 
         // tolerance=Some(0) means exact match mode, no boost applied
         let params_default = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             tolerance: Some(0),
             ..Default::default()
         };
         let params_boosted = SearchParams {
-            tokens: vec!["hello".to_string()],
+            tokens: &vec!["hello".to_string()],
             tolerance: Some(0),
             exact_match_boost: Some(100.0),
             ..Default::default()
@@ -1025,7 +1026,7 @@ mod tests {
         let handle = SearchHandle::new(version, snapshot);
 
         let params = SearchParams {
-            tokens: vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
+            tokens: &vec!["the".to_string(), "quick".to_string(), "fox".to_string()],
             phrase_boost: Some(1.0),
             threshold: Some(0.7), // floor(3 * 0.7) = 2, need >= 2 tokens
             ..Default::default()

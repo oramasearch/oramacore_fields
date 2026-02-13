@@ -68,7 +68,7 @@ impl StringStorage {
     }
 
     /// Search the index for documents matching the given tokens.
-    pub fn search(&self, params: &SearchParams) -> SearchResult {
+    pub fn search(&self, params: &SearchParams<'_>) -> SearchResult {
         let snapshot = self.get_fresh_snapshot();
         let version = self.version.load();
         let handle = SearchHandle::new(Arc::clone(&version), snapshot);
@@ -467,11 +467,12 @@ mod tests {
         }
     }
 
-    fn default_search(tokens: Vec<&str>) -> SearchParams {
-        SearchParams {
-            tokens: tokens.into_iter().map(|s| s.to_string()).collect(),
+    fn search_default(index: &StringStorage, tokens: &[&str]) -> SearchResult {
+        let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+        index.search(&SearchParams {
+            tokens: &owned,
             ..Default::default()
-        }
+        })
     }
 
     #[test]
@@ -490,17 +491,17 @@ mod tests {
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(3, make_value(4, vec![("world", vec![0, 1], vec![])]));
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
         assert!(doc_ids.contains(&2));
 
-        let result = index.search(&default_search(vec!["world"]));
+        let result = search_default(&index, &["world"]);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 3);
 
-        let result = index.search(&default_search(vec!["missing"]));
+        let result = search_default(&index, &["missing"]);
         assert!(result.docs.is_empty());
     }
 
@@ -513,7 +514,7 @@ mod tests {
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         index.delete(1);
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
     }
@@ -529,10 +530,10 @@ mod tests {
 
         index.compact(1).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
 
-        let result = index.search(&default_search(vec!["world"]));
+        let result = search_default(&index, &["world"]);
         assert_eq!(result.docs.len(), 1);
 
         assert_eq!(index.current_version_number(), 1);
@@ -552,11 +553,11 @@ mod tests {
 
         {
             let index = StringStorage::new(base_path, Threshold::default()).unwrap();
-            let result = index.search(&default_search(vec!["hello"]));
+            let result = search_default(&index, &["hello"]);
             assert_eq!(result.docs.len(), 1);
             assert_eq!(result.docs[0].doc_id, 1);
 
-            let result = index.search(&default_search(vec!["world"]));
+            let result = search_default(&index, &["world"]);
             assert_eq!(result.docs.len(), 1);
             assert_eq!(result.docs[0].doc_id, 2);
 
@@ -576,7 +577,7 @@ mod tests {
 
         index.compact(1).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
@@ -593,7 +594,7 @@ mod tests {
 
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
     }
 
@@ -611,7 +612,7 @@ mod tests {
         index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(3).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 3);
     }
 
@@ -628,14 +629,14 @@ mod tests {
         index.delete(2);
         index.compact(1).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
 
         // Insert more and compact again
         index.insert(4, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(2).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 3);
     }
 
@@ -761,11 +762,11 @@ mod tests {
         index.compact(1).unwrap();
 
         index.delete(2);
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
 
         index.compact(2).unwrap();
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 2);
     }
 
@@ -793,8 +794,9 @@ mod tests {
         let index_clone = Arc::clone(&index);
         let reader = thread::spawn(move || {
             for _ in 0..20 {
+                let tokens = vec!["term".to_string()];
                 let result = index_clone.search(&SearchParams {
-                    tokens: vec!["term".to_string()],
+                    tokens: &tokens,
                     ..Default::default()
                 });
                 assert!(result.docs.len() >= 50);
@@ -804,7 +806,7 @@ mod tests {
         writer.join().unwrap();
         reader.join().unwrap();
 
-        let final_result = index.search(&default_search(vec!["term"]));
+        let final_result = search_default(&index, &["term"]);
         assert_eq!(final_result.docs.len(), 100);
     }
 
@@ -824,7 +826,7 @@ mod tests {
 
         {
             let index = StringStorage::new(base_path, Threshold::default()).unwrap();
-            let result = index.search(&default_search(vec!["hello"]));
+            let result = search_default(&index, &["hello"]);
             assert_eq!(result.docs.len(), 2);
             let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
             assert!(doc_ids.contains(&1));
@@ -843,12 +845,12 @@ mod tests {
         index.delete(2);
         index.compact(1).unwrap();
 
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert!(result.docs.is_empty());
 
         // Re-insert after all deleted
         index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        let result = index.search(&default_search(vec!["hello"]));
+        let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 3);
     }
@@ -871,7 +873,7 @@ mod tests {
 
         index.compact(1).unwrap();
 
-        let result = index.search(&default_search(vec!["hello", "world"]));
+        let result = search_default(&index, &["hello", "world"]);
         assert_eq!(result.docs.len(), 2);
         // Doc 1 should rank higher (matches both tokens)
         assert_eq!(result.docs[0].doc_id, 1);
@@ -891,14 +893,14 @@ mod tests {
         index.delete(1);
         index.compact(3).unwrap();
 
-        let result = index.search(&default_search(vec!["k"]));
+        let result = search_default(&index, &["k"]);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
 
         // Persistence check
         drop(index);
         let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-        let result = index.search(&default_search(vec!["k"]));
+        let result = search_default(&index, &["k"]);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
     }
@@ -933,8 +935,9 @@ mod tests {
         index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
         index.compact(1).unwrap();
 
+        let tokens = vec!["app".to_string()];
         let result = index.search(&SearchParams {
-            tokens: vec!["app".to_string()],
+            tokens: &tokens,
             tolerance: None,
             ..Default::default()
         });
@@ -956,8 +959,9 @@ mod tests {
         index.compact(1).unwrap();
 
         // Levenshtein distance 1 from "apple"
+        let tokens = vec!["apple".to_string()];
         let result = index.search(&SearchParams {
-            tokens: vec!["apple".to_string()],
+            tokens: &tokens,
             tolerance: Some(1),
             ..Default::default()
         });
@@ -995,8 +999,9 @@ mod tests {
         );
         index.compact(1).unwrap();
 
+        let tokens = vec!["hello".to_string(), "world".to_string()];
         let result = index.search(&SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string()],
+            tokens: &tokens,
             phrase_boost: Some(2.0),
             ..Default::default()
         });
@@ -1028,8 +1033,9 @@ mod tests {
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
 
+        let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
         let result = index.search(&SearchParams {
-            tokens: vec!["hello".to_string(), "world".to_string(), "foo".to_string()],
+            tokens: &tokens,
             threshold: Some(1.0),
             ..Default::default()
         });

@@ -24,8 +24,9 @@
 //! index.insert(1, IndexedValue { field_length: 1, terms });
 //!
 //! // Search
+//! let tokens = vec!["hello".to_string()];
 //! let result = index.search(&SearchParams {
-//!     tokens: vec!["hello".to_string()],
+//!     tokens: &tokens,
 //!     ..Default::default()
 //! });
 //! assert_eq!(result.docs.len(), 1);
