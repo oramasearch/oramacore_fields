@@ -110,7 +110,12 @@ impl<T: IndexableNumber> NumberStorage<T> {
         fs::create_dir_all(&base_path)?;
 
         // Check if CURRENT exists (resuming existing index)
-        let version = if let Some(offset) = read_current(&base_path)? {
+        let version = if let Some((format_version, offset)) = read_current(&base_path)? {
+            if format_version != super::io::FORMAT_VERSION {
+                return Err(Error::UnsupportedVersion {
+                    version: format_version,
+                });
+            }
             CompactedVersion::load(&base_path, offset)?
         } else {
             // New index - create initial version
@@ -648,13 +653,26 @@ impl<T: IndexableNumber> NumberStorage<T> {
         }
 
         match read_current(&self.base_path) {
-            Ok(Some(offset)) => {
+            Ok(Some((format_version, offset))) => {
                 checks.push(IntegrityCheck::ok(
                     "CURRENT",
-                    Some(format!(
-                        "version: {}, offset: {offset}",
-                        super::io::FORMAT_VERSION
-                    )),
+                    Some(format!("version: {format_version}, offset: {offset}")),
+                ));
+
+                // Check format version
+                if format_version != super::io::FORMAT_VERSION {
+                    checks.push(IntegrityCheck::failed(
+                        "format version",
+                        Some(format!(
+                            "Expected {}, found {format_version}",
+                            super::io::FORMAT_VERSION
+                        )),
+                    ));
+                    return IntegrityCheckResult::new(checks);
+                }
+                checks.push(IntegrityCheck::ok(
+                    "format version",
+                    Some(format!("{}", super::io::FORMAT_VERSION)),
                 ));
 
                 // Check version directory

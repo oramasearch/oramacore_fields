@@ -39,10 +39,10 @@ pub fn write_current_atomic(base_path: &Path, offset: u64) -> Result<(), Error> 
     Ok(())
 }
 
-/// Read the CURRENT file and return the version offset.
+/// Read the CURRENT file and return the format version and version offset.
 ///
 /// Returns None if the file doesn't exist.
-pub fn read_current(base_path: &Path) -> Result<Option<u64>, Error> {
+pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>, Error> {
     let current_path = base_path.join("CURRENT");
 
     if !current_path.exists() {
@@ -55,14 +55,10 @@ pub fn read_current(base_path: &Path) -> Result<Option<u64>, Error> {
 
     // Read format version
     let version_line = lines.next().ok_or(Error::CorruptedEntry)??;
-    let version: u32 = version_line
+    let format_version: u32 = version_line
         .trim()
         .parse()
         .map_err(|_| Error::CorruptedEntry)?;
-
-    if version != FORMAT_VERSION {
-        return Err(Error::UnsupportedVersion { version });
-    }
 
     // Read offset
     let offset_line = lines.next().ok_or(Error::CorruptedEntry)??;
@@ -71,7 +67,7 @@ pub fn read_current(base_path: &Path) -> Result<Option<u64>, Error> {
         .parse()
         .map_err(|_| Error::CorruptedEntry)?;
 
-    Ok(Some(offset))
+    Ok(Some((format_version, offset)))
 }
 
 /// Sync a directory to ensure durability.
@@ -119,10 +115,16 @@ mod tests {
         write_current_atomic(base_path, 123).unwrap();
 
         // Read back
-        assert_eq!(read_current(base_path).unwrap(), Some(123));
+        assert_eq!(
+            read_current(base_path).unwrap(),
+            Some((FORMAT_VERSION, 123))
+        );
 
         // Update CURRENT
         write_current_atomic(base_path, 456).unwrap();
-        assert_eq!(read_current(base_path).unwrap(), Some(456));
+        assert_eq!(
+            read_current(base_path).unwrap(),
+            Some((FORMAT_VERSION, 456))
+        );
     }
 }
