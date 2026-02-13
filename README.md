@@ -32,13 +32,15 @@ Each index type provides an **Indexer** that extracts values from JSON and a **S
 ### Bool Index
 
 ```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
 use oramacore_fields::bool::{BoolIndexer, BoolStorage, DeletionThreshold};
 use serde_json::json;
-use std::path::PathBuf;
+# let dir = tempdir()?;
 
 // Create an indexer for plain boolean values (use `true` for array fields)
 let indexer = BoolIndexer::new(false);
-let storage = BoolStorage::new(PathBuf::from("/tmp/bool_idx"), DeletionThreshold::default()).unwrap();
+let storage = BoolStorage::new(dir.path().to_path_buf(), DeletionThreshold::default()).unwrap();
 
 // Index JSON values
 let value = indexer.index_json(&json!(true)).unwrap();
@@ -57,27 +59,39 @@ assert_eq!(true_docs, vec![1, 3]);
 // Delete a document and compact to disk
 storage.delete(1);
 storage.compact(1).unwrap();
+# Ok(())
+# }
 ```
 
 Array fields are supported by passing `is_array: true`:
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
+# use oramacore_fields::bool::{BoolIndexer, BoolStorage, DeletionThreshold};
+# use serde_json::json;
+# let dir = tempdir()?;
+# let storage = BoolStorage::new(dir.path().to_path_buf(), DeletionThreshold::default()).unwrap();
 let array_indexer = BoolIndexer::new(true);
 let value = array_indexer.index_json(&json!([true, false, true])).unwrap();
 storage.insert(&value, 4);
+# Ok(())
+# }
 ```
 
 ### Number Index
 
 ```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
 use oramacore_fields::number::{NumberIndexer, NumberStorage, Threshold, FilterOp};
 use serde_json::json;
-use std::path::PathBuf;
+# let dir = tempdir()?;
 
 // Create an indexer and storage for u64 values
 let indexer = NumberIndexer::<u64>::new(false);
 let storage: NumberStorage<u64> = NumberStorage::new(
-    PathBuf::from("/tmp/num_idx"),
+    dir.path().to_path_buf(),
     Threshold::default(),
 ).unwrap();
 
@@ -98,11 +112,19 @@ assert_eq!(results, vec![2, 3]);
 // Delete and compact
 storage.delete(2);
 storage.compact(1).unwrap();
+# Ok(())
+# }
 ```
 
 Also supports `f64` and array fields:
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
+# use oramacore_fields::number::{NumberIndexer, NumberStorage, Threshold, FilterOp};
+# use serde_json::json;
+# let dir = tempdir()?;
+# let storage: NumberStorage<u64> = NumberStorage::new(dir.path().to_path_buf(), Threshold::default()).unwrap();
 // f64 index
 let f64_indexer = NumberIndexer::<f64>::new(false);
 let value = f64_indexer.index_json(&json!(3.14)).unwrap();
@@ -114,17 +136,21 @@ storage.insert(&value, 4).unwrap();
 
 let results: Vec<u64> = storage.filter(FilterOp::Eq(20)).iter().collect();
 assert!(results.contains(&4));
+# Ok(())
+# }
 ```
 
 ### String Index (Full-Text Search)
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
 use oramacore_fields::string::{StringStorage, Threshold, IndexedValue, TermData, SearchParams, BM25Scorer};
 use std::collections::HashMap;
-use std::path::PathBuf;
+# let dir = tempdir()?;
 
 let storage = StringStorage::new(
-    PathBuf::from("/tmp/str_idx"),
+    dir.path().to_path_buf(),
     Threshold::default(),
 ).unwrap();
 
@@ -153,17 +179,21 @@ assert_eq!(result.docs.len(), 1);
 // Delete and compact
 storage.delete(1);
 storage.compact(1).unwrap();
+# Ok(())
+# }
 ```
 
 ### String Filter Index
 
 ```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
 use oramacore_fields::string_filter::{StringIndexer, StringFilterStorage, Threshold};
 use serde_json::json;
-use std::path::PathBuf;
+# let dir = tempdir()?;
 
 let indexer = StringIndexer::new(false);
-let storage = StringFilterStorage::new(PathBuf::from("/tmp/str_idx"), Threshold::default()).unwrap();
+let storage = StringFilterStorage::new(dir.path().to_path_buf(), Threshold::default()).unwrap();
 
 // Index JSON strings
 let value = indexer.index_json(&json!("hello")).unwrap();
@@ -178,22 +208,37 @@ storage.insert(&value, 3);
 // Query: exact match
 let docs: Vec<u64> = storage.filter("hello").iter().collect();
 assert_eq!(docs, vec![1, 3]);
+# Ok(())
+# }
+```
 
-// Array field: index multiple tags per document
+Array fields are supported:
+
+```rust,no_run
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
+# use oramacore_fields::string_filter::{StringIndexer, StringFilterStorage, Threshold};
+# use serde_json::json;
+# let dir = tempdir()?;
+# let storage = StringFilterStorage::new(dir.path().to_path_buf(), Threshold::default()).unwrap();
 let array_indexer = StringIndexer::new(true);
 let value = array_indexer.index_json(&json!(["rust", "search", "index"])).unwrap();
 storage.insert(&value, 4);
+# Ok(())
+# }
 ```
 
 ### GeoPoint Index
 
 ```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
 use oramacore_fields::geopoint::{GeoPointIndexer, GeoPointStorage, Threshold, GeoFilterOp, GeoPoint};
 use serde_json::json;
-use std::path::PathBuf;
+# let dir = tempdir()?;
 
 let indexer = GeoPointIndexer::new(false);
-let storage = GeoPointStorage::new(PathBuf::from("/tmp/geo_idx"), Threshold::default(), 10).unwrap();
+let storage = GeoPointStorage::new(dir.path().to_path_buf(), Threshold::default(), 10).unwrap();
 
 // Index JSON geopoints (objects with "lat" and "lon" fields)
 let value = indexer.index_json(&json!({"lat": 41.9028, "lon": 12.4964})).unwrap(); // Rome
@@ -216,6 +261,8 @@ let results: Vec<u64> = storage.filter(GeoFilterOp::BoundingBox {
     min_lon: -5.0,
     max_lon: 15.0,
 }).iter().collect();
+# Ok(())
+# }
 ```
 
 ## CLI
@@ -228,7 +275,7 @@ cargo build --features cli
 
 Commands:
 
-```
+```text
 oramacore_fields bool check|info|show <path>
 oramacore_fields number check|info|search <args>
 oramacore_fields geopoint check|info|search <args>
