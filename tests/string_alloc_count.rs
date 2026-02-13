@@ -101,29 +101,31 @@ fn test_search_alloc_after_compact() {
     // Warm up snapshot so the first search doesn't trigger snapshot rebuild
     let tokens = vec!["apple".to_string()];
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     drop(scorer);
 
     // Now measure allocations for a real search
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     let result = scorer.into_search_result();
     let (allocs, _) = stop_counting(baseline);
 
@@ -146,28 +148,30 @@ fn test_search_alloc_clean_snapshot() {
     // Warm up snapshot
     let tokens = vec!["apple".to_string()];
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     drop(scorer);
 
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     let result = scorer.into_search_result();
     let (allocs, _) = stop_counting(baseline);
 
@@ -189,40 +193,39 @@ fn test_search_alloc_prefix() {
         index.insert(i, make_value(3, vec![("apple", vec![0], vec![1, 2])]));
     }
     for i in 50..100u64 {
-        index.insert(
-            i,
-            make_value(3, vec![("application", vec![0], vec![1, 2])]),
-        );
+        index.insert(i, make_value(3, vec![("application", vec![0], vec![1, 2])]));
     }
     index.compact(1).unwrap();
 
     // Warm up
     let tokens = vec!["app".to_string()];
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            tolerance: None,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     drop(scorer);
 
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            tolerance: None,
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     let result = scorer.into_search_result();
     let (allocs, _) = stop_counting(baseline);
 
@@ -255,30 +258,32 @@ fn test_search_alloc_phrase_boost() {
 
     // Warm up
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            phrase_boost: Some(2.0),
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                phrase_boost: Some(2.0),
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     drop(scorer);
 
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(
-        &SearchParams {
-            tokens: &tokens,
-            phrase_boost: Some(2.0),
-            ..Default::default()
-        },
-        None,
-        &mut scorer,
-    )
-    .unwrap();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                phrase_boost: Some(2.0),
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
     let result = scorer.into_search_result();
     let (allocs, _) = stop_counting(baseline);
 

@@ -207,8 +207,7 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) +=
-                        ntf * params.boost * exact_boost;
+                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
                 }
             });
 
@@ -354,8 +353,7 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) +=
-                        ntf * params.boost * exact_boost;
+                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
                 }
             });
 
@@ -462,7 +460,9 @@ mod tests {
 
     fn execute_search(handle: &SearchHandle, params: &SearchParams<'_>) -> SearchResult {
         let mut scorer = BM25Scorer::new();
-        handle.execute::<NoFilter>(params, None, &mut scorer).unwrap();
+        handle
+            .execute::<NoFilter>(params, None, &mut scorer)
+            .unwrap();
         scorer.into_search_result()
     }
 
@@ -935,7 +935,9 @@ mod tests {
 
         // threshold=1.0 with 3 tokens => floor(3 * 1.0) = 3, need all 3
         let mut scorer = BM25Scorer::with_threshold(3);
-        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
+        handle
+            .execute::<NoFilter>(&params, None, &mut scorer)
+            .unwrap();
         let result = scorer.into_search_result();
         // Only doc 1 matches all 3 tokens
         assert_eq!(result.docs.len(), 1);
@@ -981,7 +983,9 @@ mod tests {
         };
 
         let mut scorer = BM25Scorer::with_threshold(1);
-        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
+        handle
+            .execute::<NoFilter>(&params, None, &mut scorer)
+            .unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 3);
     }
@@ -1031,7 +1035,9 @@ mod tests {
 
         // threshold=1.0 with 1 token => need >= 1
         let mut scorer = BM25Scorer::with_threshold(1);
-        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
+        handle
+            .execute::<NoFilter>(&params, None, &mut scorer)
+            .unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 1);
     }
@@ -1158,7 +1164,9 @@ mod tests {
 
         // threshold=0.7 with 3 tokens => floor(3 * 0.7) = 2, need >= 2 tokens
         let mut scorer = BM25Scorer::with_threshold(2);
-        handle.execute::<NoFilter>(&params, None, &mut scorer).unwrap();
+        handle
+            .execute::<NoFilter>(&params, None, &mut scorer)
+            .unwrap();
         let result = scorer.into_search_result();
         // Doc 3 filtered out (matches only 1 token, need >= 2)
         assert_eq!(result.docs.len(), 2);

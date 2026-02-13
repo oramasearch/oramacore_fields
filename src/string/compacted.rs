@@ -189,12 +189,7 @@ impl CompactedVersion {
     /// - `Some(0)`: exact match only
     /// - `None`: prefix search via FST `Str::starts_with()` automaton
     /// - `Some(n)`: Levenshtein distance <= n via FST automaton
-    pub fn for_each_term_match<F>(
-        &self,
-        token: &str,
-        tolerance: Option<u8>,
-        mut f: F,
-    ) -> Result<()>
+    pub fn for_each_term_match<F>(&self, token: &str, tolerance: Option<u8>, mut f: F) -> Result<()>
     where
         F: FnMut(bool, PostingsReader<'_>),
     {
@@ -220,10 +215,7 @@ impl CompactedVersion {
             Some(n) => {
                 let automaton = Levenshtein::new(token, n as u32).map_err(|e| {
                     anyhow::anyhow!(
-                        "Levenshtein automaton construction failed for '{}' with distance {}: {}",
-                        token,
-                        n,
-                        e
+                        "Levenshtein automaton construction failed for '{token}' with distance {n}: {e}"
                     )
                 })?;
                 self.for_each_automaton_match(fst_map, postings_mmap, automaton, token, &mut f);
@@ -508,8 +500,7 @@ impl<'a> PostingsReader<'a> {
         // exact_count: u32
         let exact_count = u32::from_ne_bytes(data[pos + 8..pos + 12].try_into().ok()?) as usize;
         // stemmed_count: u32
-        let stemmed_count =
-            u32::from_ne_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
+        let stemmed_count = u32::from_ne_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
 
         let cursor = pos + 16;
 

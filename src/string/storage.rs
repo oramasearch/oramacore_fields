@@ -7,10 +7,10 @@ use super::io::{
     write_current_atomic, FORMAT_VERSION,
 };
 use super::iterator::{SearchHandle, SearchParams};
-use super::scorer::BM25Scorer;
-use super::DocumentFilter;
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::sorted_merge;
+use super::scorer::BM25Scorer;
+use super::DocumentFilter;
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use std::fs;
@@ -814,15 +814,16 @@ mod tests {
             for _ in 0..20 {
                 let tokens = vec!["term".to_string()];
                 let mut scorer = BM25Scorer::new();
-                index_clone.search::<NoFilter>(
-                    &SearchParams {
-                        tokens: &tokens,
-                        ..Default::default()
-                    },
-                    None,
-                    &mut scorer,
-                )
-                .unwrap();
+                index_clone
+                    .search::<NoFilter>(
+                        &SearchParams {
+                            tokens: &tokens,
+                            ..Default::default()
+                        },
+                        None,
+                        &mut scorer,
+                    )
+                    .unwrap();
                 let result = scorer.into_search_result();
                 assert!(result.docs.len() >= 50);
             }
@@ -962,16 +963,17 @@ mod tests {
 
         let tokens = vec!["app".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -993,16 +995,17 @@ mod tests {
         // Levenshtein distance 1 from "apple"
         let tokens = vec!["apple".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                tolerance: Some(1),
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    tolerance: Some(1),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -1040,16 +1043,17 @@ mod tests {
 
         let tokens = vec!["hello".to_string(), "world".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                phrase_boost: Some(2.0),
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    phrase_boost: Some(2.0),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 2);
@@ -1082,15 +1086,16 @@ mod tests {
         let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
         // threshold=1.0 with 3 tokens => need all 3
         let mut scorer = BM25Scorer::with_threshold(3);
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let result = scorer.into_search_result();
 
         assert_eq!(result.docs.len(), 1);
@@ -1125,18 +1130,19 @@ mod tests {
 
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: false,
-                boost: 1.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: false,
+                    boost: 1.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1146,9 +1152,12 @@ mod tests {
         println!("  doc1 score = {score1:.10}");
         println!("  doc2 score = {score2:.10}");
 
-        assert!(score1 > score2, "Doc1 (tf=4) should rank higher than Doc2 (tf=2)");
+        assert!(
+            score1 > score2,
+            "Doc1 (tf=4) should rank higher than Doc2 (tf=2)"
+        );
         // Cross-repo parity: these values must match oramacore's test_scoring_parity_basic_bm25
-        assert_approx_eq!(score1, 0.35853180, 1e-6);
+        assert_approx_eq!(score1, 0.358_531_8, 1e-6);
         assert_approx_eq!(score2, 0.34503868, 1e-6);
     }
 
@@ -1165,18 +1174,19 @@ mod tests {
 
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: true,
-                boost: 1.0,
-                tolerance: Some(0),
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: true,
+                    boost: 1.0,
+                    tolerance: Some(0),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1190,7 +1200,7 @@ mod tests {
         assert!(score1 > score2);
         // Cross-repo parity: these values must match oramacore's test_scoring_parity_exact_match
         assert_approx_eq!(score1, 0.32412723, 1e-6);
-        assert_approx_eq!(score2, 0.30272260, 1e-6);
+        assert_approx_eq!(score2, 0.302_722_6, 1e-6);
     }
 
     #[test]
@@ -1205,18 +1215,19 @@ mod tests {
 
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: false,
-                boost: 2.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: false,
+                    boost: 2.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1245,18 +1256,19 @@ mod tests {
 
         let tokens = vec!["hello".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: false,
-                boost: 1.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: false,
+                    boost: 1.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1265,7 +1277,7 @@ mod tests {
         println!("  doc1 score = {score1:.10}");
 
         // Cross-repo parity: must match oramacore's test_scoring_parity_single_doc
-        assert_approx_eq!(score1, 0.52741718, 1e-6);
+        assert_approx_eq!(score1, 0.527_417_2, 1e-6);
     }
 
     #[test]
@@ -1282,40 +1294,42 @@ mod tests {
         // exact_match=false → tf=3 (stemmed only)
         let tokens = vec!["run".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: false,
-                boost: 1.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: false,
+                    boost: 1.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
         println!("test_scoring_parity_stemmed_only (exact_match=false):");
         println!("  doc1 score = {score1:.10}");
         // Cross-repo parity: must match oramacore's test_scoring_parity_stemmed_only
-        assert_approx_eq!(score1, 0.55844170, 1e-6);
+        assert_approx_eq!(score1, 0.558_441_7, 1e-6);
 
         // exact_match=true → tf=0, no results
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: true,
-                boost: 1.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: true,
+                    boost: 1.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         println!("test_scoring_parity_stemmed_only (exact_match=true):");
@@ -1346,18 +1360,19 @@ mod tests {
 
         let tokens = vec!["word".to_string()];
         let mut scorer = BM25Scorer::new();
-        index.search::<NoFilter>(
-            &SearchParams {
-                tokens: &tokens,
-                exact_match: false,
-                boost: 1.0,
-                tolerance: None,
-                ..Default::default()
-            },
-            None,
-            &mut scorer,
-        )
-        .unwrap();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    exact_match: false,
+                    boost: 1.0,
+                    tolerance: None,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
         let scores = scorer.get_scores();
 
         let score1 = scores[&1];
@@ -1370,8 +1385,8 @@ mod tests {
         println!("  doc3 (fl=20, tf=4) score = {score3:.10}");
 
         // Cross-repo parity: must match oramacore's test_scoring_parity_varying_lengths
-        assert_approx_eq!(score1, 0.26820570, 1e-6);
+        assert_approx_eq!(score1, 0.268_205_7, 1e-6);
         assert_approx_eq!(score2, 0.27248147, 1e-6);
-        assert_approx_eq!(score3, 0.25202709, 1e-6);
+        assert_approx_eq!(score3, 0.252_027_1, 1e-6);
     }
 }
