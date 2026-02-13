@@ -1,6 +1,6 @@
 # oramacore_fields
 
-On-disk field indexes for search engines. Provides four specialized index types with a shared architecture: in-memory live layer for fast writes, memory-mapped compacted storage for efficient reads, and periodic compaction with concurrent access.
+On-disk field indexes for search engines. Provides five specialized index types with a shared architecture: in-memory live layer for fast writes, memory-mapped compacted storage for efficient reads, and periodic compaction with concurrent access.
 
 ## Modules
 
@@ -8,6 +8,7 @@ On-disk field indexes for search engines. Provides four specialized index types 
 |--------|------|-----------------|
 | `bool` | Boolean (true/false) | Filter by value |
 | `number` | Numeric (u64, f64) | eq, gt, gte, lt, lte, between |
+| `string` | Full-text (BM25 scoring) | Search by tokens (exact, fuzzy, prefix) |
 | `string_filter` | String (exact match) | Filter by key |
 | `geopoint` | Geographic (lat/lon) | Bounding box, radius |
 
@@ -115,6 +116,45 @@ let results: Vec<u64> = storage.filter(FilterOp::Eq(20)).iter().collect();
 assert!(results.contains(&4));
 ```
 
+### String Index (Full-Text Search)
+
+```rust
+use oramacore_fields::string::{StringStorage, Threshold, IndexedValue, TermData, SearchParams, BM25Scorer};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+let storage = StringStorage::new(
+    PathBuf::from("/tmp/str_idx"),
+    Threshold::default(),
+).unwrap();
+
+// Insert a document with term positions
+let mut terms = HashMap::new();
+terms.insert("hello".to_string(), TermData {
+    exact_positions: vec![0],
+    stemmed_positions: vec![],
+});
+terms.insert("world".to_string(), TermData {
+    exact_positions: vec![1],
+    stemmed_positions: vec![],
+});
+storage.insert(1, IndexedValue { field_length: 2, terms });
+
+// Search for documents matching a token
+let tokens = vec!["hello".to_string()];
+let mut scorer = BM25Scorer::new();
+storage.search::<oramacore_fields::string::NoFilter>(&SearchParams {
+    tokens: &tokens,
+    ..Default::default()
+}, None, &mut scorer).unwrap();
+let result = scorer.into_search_result();
+assert_eq!(result.docs.len(), 1);
+
+// Delete and compact
+storage.delete(1);
+storage.compact(1).unwrap();
+```
+
 ### String Filter Index
 
 ```rust
@@ -157,10 +197,10 @@ let storage = GeoPointStorage::new(PathBuf::from("/tmp/geo_idx"), Threshold::def
 
 // Index JSON geopoints (objects with "lat" and "lon" fields)
 let value = indexer.index_json(&json!({"lat": 41.9028, "lon": 12.4964})).unwrap(); // Rome
-storage.insert(&value, 1).unwrap();
+storage.insert(value, 1);
 
 let value = indexer.index_json(&json!({"lat": 51.5074, "lon": -0.1278})).unwrap(); // London
-storage.insert(&value, 2).unwrap();
+storage.insert(value, 2);
 
 // Query: find points within a radius
 let results: Vec<u64> = storage.filter(GeoFilterOp::Radius {
@@ -196,7 +236,7 @@ oramacore_fields geopoint check|info|search <args>
 
 ## Architecture
 
-All four modules share a common two-layer design:
+All five modules share a common two-layer design:
 
 - **LiveLayer**: In-memory storage for fast inserts and deletes. Thread-safe via `RwLock`.
 - **CompactedVersion**: Memory-mapped disk storage loaded via `memmap2`. Swapped atomically using `ArcSwap` for lock-free reads during compaction.
