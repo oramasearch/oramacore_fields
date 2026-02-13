@@ -27,10 +27,7 @@ pub struct StringStorage {
 
 impl StringStorage {
     /// Open or create a string index at the given path.
-    pub fn new(
-        path: impl Into<PathBuf>,
-        threshold: Threshold,
-    ) -> Result<Self> {
+    pub fn new(path: impl Into<PathBuf>, threshold: Threshold) -> Result<Self> {
         let base_path = path.into();
         fs::create_dir_all(&base_path)
             .with_context(|| format!("Failed to create base directory: {base_path:?}"))?;
@@ -147,11 +144,7 @@ impl StringStorage {
 
         let compacted_postings = current.total_postings();
         // Estimate live postings as number of unique (term, doc_id) pairs
-        let live_postings: usize = snapshot
-            .term_postings
-            .values()
-            .map(|v| v.len())
-            .sum();
+        let live_postings: usize = snapshot.term_postings.values().map(|v| v.len()).sum();
         let total_postings = compacted_postings + live_postings;
 
         if total_postings == 0 {
@@ -176,10 +169,7 @@ impl StringStorage {
 
         let mut compacted_terms = current.iter_terms();
         let live_sorted = snapshot.iter_terms_sorted();
-        let mut live_terms: Vec<_> = live_sorted
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect();
+        let mut live_terms: Vec<_> = live_sorted.iter().map(|(k, v)| (*k, *v)).collect();
         let mut compacted_dl = current.iter_doc_lengths();
         let live_dl = snapshot.iter_doc_lengths_sorted();
 
@@ -205,10 +195,7 @@ impl StringStorage {
     ) -> Result<()> {
         let mut compacted_terms = current.iter_terms();
         let live_sorted = snapshot.iter_terms_sorted();
-        let mut live_terms: Vec<_> = live_sorted
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect();
+        let mut live_terms: Vec<_> = live_sorted.iter().map(|(k, v)| (*k, *v)).collect();
         let mut compacted_dl = current.iter_doc_lengths();
         let live_dl = snapshot.iter_doc_lengths_sorted();
 
@@ -490,22 +477,14 @@ mod tests {
     #[test]
     fn test_new_empty_index() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
         assert_eq!(index.current_version_number(), 0);
     }
 
     #[test]
     fn test_insert_and_search() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -528,11 +507,7 @@ mod tests {
     #[test]
     fn test_delete_and_search() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -546,11 +521,7 @@ mod tests {
     #[test]
     fn test_compact_basic() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -573,22 +544,14 @@ mod tests {
         let base_path = tmp.path().to_path_buf();
 
         {
-            let index = StringStorage::new(
-                base_path.clone(),
-                Threshold::default(),
-            )
-            .unwrap();
+            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
             index.insert(1, make_value(3, vec![("hello", vec![0], vec![1])]));
             index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
             index.compact(1).unwrap();
         }
 
         {
-            let index = StringStorage::new(
-                base_path,
-                Threshold::default(),
-            )
-            .unwrap();
+            let index = StringStorage::new(base_path, Threshold::default()).unwrap();
             let result = index.search(&default_search(vec!["hello"]));
             assert_eq!(result.docs.len(), 1);
             assert_eq!(result.docs[0].doc_id, 1);
@@ -604,11 +567,7 @@ mod tests {
     #[test]
     fn test_compact_with_deletes() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -627,11 +586,7 @@ mod tests {
     #[test]
     fn test_ops_during_compaction_preserved() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -645,11 +600,7 @@ mod tests {
     #[test]
     fn test_compact_multiple_rounds() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -668,11 +619,8 @@ mod tests {
     fn test_compact_carries_forward_deletes() {
         let tmp = TempDir::new().unwrap();
         // High threshold so deletes are carried forward
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            0.9f64.try_into().unwrap(),
-        )
-        .unwrap();
+        let index =
+            StringStorage::new(tmp.path().to_path_buf(), 0.9f64.try_into().unwrap()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -694,11 +642,7 @@ mod tests {
     #[test]
     fn test_cleanup_removes_old_versions() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -720,18 +664,20 @@ mod tests {
     #[test]
     fn test_info_after_operations() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         let info = index.info();
         assert_eq!(info.current_version_number, 0);
         assert_eq!(info.unique_terms_count, 0);
 
         index.insert(1, make_value(5, vec![("hello", vec![0], vec![])]));
-        index.insert(2, make_value(3, vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])]));
+        index.insert(
+            2,
+            make_value(
+                3,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         index.compact(1).unwrap();
 
         let info = index.info();
@@ -747,27 +693,23 @@ mod tests {
     #[test]
     fn test_integrity_check_valid() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
 
         let result = index.integrity_check();
-        assert!(result.passed, "integrity check should pass: {:?}", result.checks);
+        assert!(
+            result.passed,
+            "integrity check should pass: {:?}",
+            result.checks
+        );
     }
 
     #[test]
     fn test_integrity_check_missing_files() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -775,7 +717,10 @@ mod tests {
         fs::remove_file(tmp.path().join("versions/1/postings.dat")).unwrap();
 
         let result = index.integrity_check();
-        assert!(!result.passed, "integrity check should fail with missing file");
+        assert!(
+            !result.passed,
+            "integrity check should fail with missing file"
+        );
     }
 
     #[test]
@@ -784,11 +729,7 @@ mod tests {
         let base_path = tmp.path().to_path_buf();
 
         {
-            let index = StringStorage::new(
-                base_path.clone(),
-                Threshold::default(),
-            )
-            .unwrap();
+            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
             index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
             index.compact(1).unwrap();
         }
@@ -812,11 +753,7 @@ mod tests {
     #[test]
     fn test_delete_compacted_doc_id() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -838,13 +775,8 @@ mod tests {
         use std::thread;
 
         let tmp = TempDir::new().unwrap();
-        let index = Arc::new(
-            StringStorage::new(
-                tmp.path().to_path_buf(),
-                Threshold::default(),
-            )
-            .unwrap(),
-        );
+        let index =
+            Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
 
         // Pre-populate
         for i in 0..50u64 {
@@ -882,11 +814,7 @@ mod tests {
         let base_path = tmp.path().to_path_buf();
 
         {
-            let index = StringStorage::new(
-                base_path.clone(),
-                Threshold::default(),
-            )
-            .unwrap();
+            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
             index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
             index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
             index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -895,11 +823,7 @@ mod tests {
         }
 
         {
-            let index = StringStorage::new(
-                base_path,
-                Threshold::default(),
-            )
-            .unwrap();
+            let index = StringStorage::new(base_path, Threshold::default()).unwrap();
             let result = index.search(&default_search(vec!["hello"]));
             assert_eq!(result.docs.len(), 2);
             let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -911,11 +835,7 @@ mod tests {
     #[test]
     fn test_compact_all_deleted() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -936,17 +856,16 @@ mod tests {
     #[test]
     fn test_search_multiple_tokens_combined() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         // Doc 1 matches both "hello" and "world"
-        index.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        index.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         // Doc 2 matches only "hello"
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
 
@@ -961,11 +880,7 @@ mod tests {
     #[test]
     fn test_insert_compact_delete_compact() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("k", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -982,11 +897,7 @@ mod tests {
 
         // Persistence check
         drop(index);
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
         let result = index.search(&default_search(vec!["k"]));
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
@@ -995,11 +906,7 @@ mod tests {
     #[test]
     fn test_total_size_bytes() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
@@ -1019,11 +926,7 @@ mod tests {
     #[test]
     fn test_prefix_search_after_compact() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
         index.insert(2, make_value(3, vec![("application", vec![0], vec![])]));
@@ -1045,11 +948,7 @@ mod tests {
     #[test]
     fn test_levenshtein_search_after_compact() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
         index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
@@ -1076,22 +975,24 @@ mod tests {
     #[test]
     fn test_phrase_boost_after_compact() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         // Doc 1: adjacent tokens
-        index.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        index.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         // Doc 2: non-adjacent tokens
-        index.insert(2, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![5], vec![]),
-        ]));
+        index.insert(
+            2,
+            make_value(
+                6,
+                vec![("hello", vec![0], vec![]), ("world", vec![5], vec![])],
+            ),
+        );
         index.compact(1).unwrap();
 
         let result = index.search(&SearchParams {
@@ -1109,18 +1010,20 @@ mod tests {
     #[test]
     fn test_threshold_after_compact() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(
-            tmp.path().to_path_buf(),
-            Threshold::default(),
-        )
-        .unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
 
         // Doc 1 matches all 3 tokens
-        index.insert(1, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-            ("foo", vec![2], vec![]),
-        ]));
+        index.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("hello", vec![0], vec![]),
+                    ("world", vec![1], vec![]),
+                    ("foo", vec![2], vec![]),
+                ],
+            ),
+        );
         // Doc 2 matches only 1 of 3 tokens
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();

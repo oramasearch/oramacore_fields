@@ -146,7 +146,11 @@ impl CompactedVersion {
     /// - `Some(0)`: exact match only
     /// - `None`: prefix search via FST `Str::starts_with()` automaton
     /// - `Some(n)`: Levenshtein distance <= n via FST automaton
-    pub fn search_terms(&self, token: &str, tolerance: Option<u8>) -> Vec<(String, bool, PostingsReader<'_>)> {
+    pub fn search_terms(
+        &self,
+        token: &str,
+        tolerance: Option<u8>,
+    ) -> Vec<(String, bool, PostingsReader<'_>)> {
         let fst_map = match self.fst_map.as_ref() {
             Some(m) => m,
             None => return vec![],
@@ -249,8 +253,7 @@ impl CompactedVersion {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let offset = mid * entry_size;
-            let mid_doc_id =
-                u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
+            let mid_doc_id = u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
             match mid_doc_id.cmp(&doc_id) {
                 std::cmp::Ordering::Equal => {
                     let field_len =
@@ -448,10 +451,7 @@ impl CompactedVersion {
         // ── Build doc_lengths ──
         let merged_doc_lengths =
             merge_doc_lengths(compacted_doc_lengths, live_doc_lengths, deleted_set);
-        write_doc_lengths(
-            &doc_lengths_path,
-            &merged_doc_lengths,
-        )?;
+        write_doc_lengths(&doc_lengths_path, &merged_doc_lengths)?;
 
         // ── Write deleted.bin ──
         write_deleted_from_iter(&deleted_path, deletes_to_write.iter().copied())?;
@@ -508,11 +508,9 @@ impl<'a> Iterator for PostingsReader<'a> {
         // doc_id: u64
         let doc_id = u64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
         // exact_count: u32
-        let exact_count =
-            u32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as usize;
+        let exact_count = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as usize;
         // stemmed_count: u32
-        let stemmed_count =
-            u32::from_le_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
+        let stemmed_count = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().ok()?) as usize;
 
         let mut cursor = pos + 16;
 
@@ -567,8 +565,7 @@ impl<'a> CompactedTermIterator<'a> {
             });
         }
 
-        let doc_count =
-            u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+        let doc_count = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
         let entries_start = offset + 8;
 
         Some(PostingsReader {
@@ -594,8 +591,7 @@ impl<'a> Iterator for DocLengthIterator<'a> {
         }
 
         let doc_id = u64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
-        let field_len =
-            u32::from_le_bytes(self.data[self.pos + 8..self.pos + 12].try_into().ok()?);
+        let field_len = u32::from_le_bytes(self.data[self.pos + 8..self.pos + 12].try_into().ok()?);
         self.pos += 12;
 
         Some((doc_id, field_len))
@@ -614,7 +610,10 @@ fn write_postings_entry(
     // Filter entries if needed
     let filtered: Vec<&PostingEntry>;
     let entries_to_write: &[&PostingEntry] = if let Some(set) = deleted_set {
-        filtered = entries.iter().filter(|e| !set.contains(&e.doc_id)).collect();
+        filtered = entries
+            .iter()
+            .filter(|e| !set.contains(&e.doc_id))
+            .collect();
         &filtered
     } else {
         // Can't avoid allocation here without unsafe, but it's only during compaction
@@ -648,8 +647,7 @@ fn write_postings_entry(
             postings_writer.write_all(&pos.to_le_bytes())?;
         }
         // 8 (doc_id) + 4 (exact_count) + 4 (stemmed_count) + 4*exact + 4*stemmed
-        *current_offset +=
-            16 + (exact_count as u64) * 4 + (stemmed_count as u64) * 4;
+        *current_offset += 16 + (exact_count as u64) * 4 + (stemmed_count as u64) * 4;
     }
 
     Ok(())
@@ -777,6 +775,8 @@ fn merge_doc_lengths(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::type_complexity)]
+
     use super::super::io::ensure_version_dir;
     use super::*;
     use tempfile::TempDir;
@@ -789,10 +789,7 @@ mod tests {
     ) {
         let empty = CompactedVersion::empty();
         let mut compacted_terms = empty.iter_terms();
-        let mut live: Vec<_> = entries
-            .iter()
-            .map(|(k, v)| (*k, v.as_slice()))
-            .collect();
+        let mut live: Vec<_> = entries.iter().map(|(k, v)| (*k, v.as_slice())).collect();
         let mut compacted_dl = empty.iter_doc_lengths();
 
         CompactedVersion::build_from_sorted_sources(
@@ -824,7 +821,10 @@ mod tests {
 
         build_simple(
             &[
-                ("hello", vec![(1, vec![0], vec![]), (2, vec![0, 3], vec![1])]),
+                (
+                    "hello",
+                    vec![(1, vec![0], vec![]), (2, vec![0, 3], vec![1])],
+                ),
                 ("world", vec![(3, vec![1], vec![])]),
             ],
             &[(1, 5), (2, 10), (3, 3)],
@@ -885,12 +885,15 @@ mod tests {
         let version_path = ensure_version_dir(base_path, 1).unwrap();
 
         build_simple(
-            &[("a", vec![
-                (1, vec![0], vec![]),
-                (5, vec![0], vec![]),
-                (10, vec![0], vec![]),
-                (100, vec![0], vec![]),
-            ])],
+            &[(
+                "a",
+                vec![
+                    (1, vec![0], vec![]),
+                    (5, vec![0], vec![]),
+                    (10, vec![0], vec![]),
+                    (100, vec![0], vec![]),
+                ],
+            )],
             &[(1, 3), (5, 7), (10, 15), (100, 20)],
             &[],
             &version_path,
@@ -1010,8 +1013,7 @@ mod tests {
         let v2_path = ensure_version_dir(base_path, 2).unwrap();
         let mut compacted_terms = v1.iter_terms();
         let live_postings = vec![(2u64, vec![0u32], vec![1u32])];
-        let mut live_terms: Vec<_> =
-            vec![("hello", live_postings.as_slice())];
+        let mut live_terms: Vec<_> = vec![("hello", live_postings.as_slice())];
         let mut compacted_dl = v1.iter_doc_lengths();
         let live_doc_lengths = &[(2u64, 4u16)];
 

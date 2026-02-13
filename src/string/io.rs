@@ -166,8 +166,8 @@ where
 
 /// Write doc_lengths as sorted (doc_id: u64, field_length: u32) entries (12 bytes each).
 pub fn write_doc_lengths(path: &Path, entries: &[(u64, u32)]) -> Result<()> {
-    let file =
-        File::create(path).with_context(|| format!("Failed to create doc_lengths file: {path:?}"))?;
+    let file = File::create(path)
+        .with_context(|| format!("Failed to create doc_lengths file: {path:?}"))?;
 
     let mut writer = BufWriter::new(file);
     for &(doc_id, field_length) in entries {
@@ -186,9 +186,13 @@ pub fn write_doc_lengths(path: &Path, entries: &[(u64, u32)]) -> Result<()> {
 }
 
 /// Write global info: (total_document_length: u64, total_documents: u64).
-pub fn write_global_info(path: &Path, total_document_length: u64, total_documents: u64) -> Result<()> {
-    let file =
-        File::create(path).with_context(|| format!("Failed to create global_info file: {path:?}"))?;
+pub fn write_global_info(
+    path: &Path,
+    total_document_length: u64,
+    total_documents: u64,
+) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("Failed to create global_info file: {path:?}"))?;
 
     let mut writer = BufWriter::new(file);
     writer.write_all(&total_document_length.to_le_bytes())?;

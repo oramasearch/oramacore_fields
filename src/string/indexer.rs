@@ -36,7 +36,10 @@ pub struct StringIndexer<T: Tokenizer> {
 
 impl<T: Tokenizer> StringIndexer<T> {
     pub fn new(is_array: bool, tokenizer: T) -> Self {
-        Self { is_array, tokenizer }
+        Self {
+            is_array,
+            tokenizer,
+        }
     }
 
     /// Tokenize a single string and build an [`IndexedValue`] with term positions.

@@ -86,8 +86,7 @@ impl SearchHandle {
 
     pub fn execute(&self, params: &SearchParams) -> SearchResult {
         // Compute global stats by combining compacted + live
-        let total_documents =
-            self.version.total_documents + self.snapshot.total_documents;
+        let total_documents = self.version.total_documents + self.snapshot.total_documents;
         let total_document_length =
             self.version.total_document_length + self.snapshot.total_field_length;
 
@@ -102,12 +101,13 @@ impl SearchHandle {
 
         // Whether exact-match boost applies (only in fuzzy/prefix mode)
         let apply_exact_boost = params.tolerance != Some(0);
-        let exact_match_boost_multiplier =
-            params.exact_match_boost.unwrap_or(EXACT_MATCH_BOOST_MULTIPLIER);
+        let exact_match_boost_multiplier = params
+            .exact_match_boost
+            .unwrap_or(EXACT_MATCH_BOOST_MULTIPLIER);
 
         // Whether to collect positions for phrase matching
-        let collect_positions = params.phrase_boost.is_some_and(|b| b > 0.0)
-            && params.tokens.len() >= 2;
+        let collect_positions =
+            params.phrase_boost.is_some_and(|b| b > 0.0) && params.tokens.len() >= 2;
 
         // Whether to track per-doc token match count for threshold filtering
         let apply_threshold = params.threshold.is_some();
@@ -122,11 +122,7 @@ impl SearchHandle {
         for token in &params.tokens {
             let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
             let mut corpus_df: u64 = 0;
-            let mut positions_map: HashMap<u64, Vec<u32>> = if collect_positions {
-                HashMap::new()
-            } else {
-                HashMap::new()
-            };
+            let mut positions_map: HashMap<u64, Vec<u32>> = HashMap::new();
 
             // Search compacted layer
             let compacted_matches = self.version.search_terms(token, params.tolerance);
@@ -158,10 +154,7 @@ impl SearchHandle {
                         }
                     }
 
-                    let field_length = self
-                        .version
-                        .field_length(entry.doc_id)
-                        .unwrap_or(0) as f32;
+                    let field_length = self.version.field_length(entry.doc_id).unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -210,12 +203,8 @@ impl SearchHandle {
                         }
                     }
 
-                    let field_length = self
-                        .snapshot
-                        .doc_lengths
-                        .get(doc_id)
-                        .copied()
-                        .unwrap_or(0) as f32;
+                    let field_length =
+                        self.snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -224,8 +213,7 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) +=
-                        ntf * params.boost * exact_boost;
+                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
                 }
             }
 
@@ -261,8 +249,7 @@ impl SearchHandle {
         if collect_positions {
             let phrase_multiplier = params.phrase_boost.unwrap_or(0.0);
             for (&doc_id, score) in doc_scores.iter_mut() {
-                let consecutive_count =
-                    count_consecutive_pairs(&token_doc_positions, doc_id);
+                let consecutive_count = count_consecutive_pairs(&token_doc_positions, doc_id);
                 if consecutive_count > 0 {
                     *score *= 1.0 + consecutive_count as f32 * phrase_multiplier;
                 }
@@ -272,9 +259,7 @@ impl SearchHandle {
         // Compute minimum token match count for threshold filtering
         let min_tokens = params
             .threshold
-            .map(|t| {
-                (params.tokens.len() as f32 * t.clamp(0.0, 1.0)).floor() as usize
-            })
+            .map(|t| (params.tokens.len() as f32 * t.clamp(0.0, 1.0)).floor() as usize)
             .unwrap_or(0);
 
         let mut result = SearchResult {
@@ -282,8 +267,7 @@ impl SearchHandle {
                 .into_iter()
                 .filter(|(doc_id, _)| {
                     min_tokens == 0
-                        || doc_matched_count.get(doc_id).copied().unwrap_or(0)
-                            >= min_tokens
+                        || doc_matched_count.get(doc_id).copied().unwrap_or(0) >= min_tokens
                 })
                 .map(|(doc_id, score)| ScoredDoc { doc_id, score })
                 .collect(),
@@ -304,10 +288,7 @@ fn term_occurrence(entry: &PostingEntry, exact_match: bool) -> usize {
 }
 
 /// Count consecutive query token pairs at adjacent positions in a document.
-fn count_consecutive_pairs(
-    token_doc_positions: &[HashMap<u64, Vec<u32>>],
-    doc_id: u64,
-) -> usize {
+fn count_consecutive_pairs(token_doc_positions: &[HashMap<u64, Vec<u32>>], doc_id: u64) -> usize {
     let mut count = 0;
     for i in 0..token_doc_positions.len().saturating_sub(1) {
         if let (Some(a), Some(b)) = (
@@ -349,9 +330,9 @@ fn is_deleted(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::live::LiveLayer;
     use super::super::indexer::{IndexedValue, TermData};
+    use super::super::live::LiveLayer;
+    use super::*;
     use std::collections::HashMap as StdHashMap;
 
     fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> IndexedValue {
@@ -460,9 +441,18 @@ mod tests {
     fn test_search_result_sort() {
         let mut result = SearchResult {
             docs: vec![
-                ScoredDoc { doc_id: 1, score: 1.0 },
-                ScoredDoc { doc_id: 2, score: 3.0 },
-                ScoredDoc { doc_id: 3, score: 2.0 },
+                ScoredDoc {
+                    doc_id: 1,
+                    score: 1.0,
+                },
+                ScoredDoc {
+                    doc_id: 2,
+                    score: 3.0,
+                },
+                ScoredDoc {
+                    doc_id: 3,
+                    score: 2.0,
+                },
             ],
         };
 
@@ -477,10 +467,13 @@ mod tests {
         let version = Arc::new(CompactedVersion::empty());
 
         let mut layer = LiveLayer::new();
-        layer.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         layer.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
@@ -606,15 +599,21 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // Doc 1: "hello" at pos 0, "world" at pos 1 (adjacent)
-        layer.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         // Doc 2: "hello" at pos 0, "world" at pos 5 (not adjacent)
-        layer.insert(2, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![5], vec![]),
-        ]));
+        layer.insert(
+            2,
+            make_value(
+                6,
+                vec![("hello", vec![0], vec![]), ("world", vec![5], vec![])],
+            ),
+        );
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -639,10 +638,13 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // Tokens are not adjacent
-        layer.insert(1, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![5], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![("hello", vec![0], vec![]), ("world", vec![5], vec![])],
+            ),
+        );
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -671,11 +673,17 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // All 3 tokens at consecutive positions: 2 adjacent pairs
-        layer.insert(1, make_value(6, vec![
-            ("the", vec![0], vec![]),
-            ("quick", vec![1], vec![]),
-            ("fox", vec![2], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("the", vec![0], vec![]),
+                    ("quick", vec![1], vec![]),
+                    ("fox", vec![2], vec![]),
+                ],
+            ),
+        );
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -699,8 +707,10 @@ mod tests {
         // With 2 consecutive pairs and phrase_boost=1.0: score *= 1 + 2*1.0 = 3.0
         let expected_ratio = 3.0;
         let actual_ratio = result_boosted.docs[0].score / result_base.docs[0].score;
-        assert!((actual_ratio - expected_ratio).abs() < 0.01,
-            "Expected ratio ~{expected_ratio}, got {actual_ratio}");
+        assert!(
+            (actual_ratio - expected_ratio).abs() < 0.01,
+            "Expected ratio ~{expected_ratio}, got {actual_ratio}"
+        );
     }
 
     #[test]
@@ -708,10 +718,13 @@ mod tests {
         let version = Arc::new(CompactedVersion::empty());
 
         let mut layer = LiveLayer::new();
-        layer.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -741,10 +754,13 @@ mod tests {
         // "hello" has exact pos 0, stemmed pos 5
         // "world" has exact pos 1, stemmed pos 3
         // Only exact positions adjacent: 0->1
-        layer.insert(1, make_value(6, vec![
-            ("hello", vec![0], vec![5]),
-            ("world", vec![1], vec![3]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![("hello", vec![0], vec![5]), ("world", vec![1], vec![3])],
+            ),
+        );
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -779,11 +795,17 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // Doc 1 matches all 3 tokens
-        layer.insert(1, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-            ("foo", vec![2], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("hello", vec![0], vec![]),
+                    ("world", vec![1], vec![]),
+                    ("foo", vec![2], vec![]),
+                ],
+            ),
+        );
         // Doc 2 matches only 1 of 3 tokens
         layer.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
@@ -809,16 +831,25 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // Doc 1 matches all 3 tokens
-        layer.insert(1, make_value(6, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-            ("foo", vec![2], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("hello", vec![0], vec![]),
+                    ("world", vec![1], vec![]),
+                    ("foo", vec![2], vec![]),
+                ],
+            ),
+        );
         // Doc 2 matches 2 of 3 tokens
-        layer.insert(2, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        layer.insert(
+            2,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         // Doc 3 matches only 1 of 3 tokens
         layer.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
@@ -842,10 +873,13 @@ mod tests {
         let version = Arc::new(CompactedVersion::empty());
 
         let mut layer = LiveLayer::new();
-        layer.insert(1, make_value(4, vec![
-            ("hello", vec![0], vec![]),
-            ("world", vec![1], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
         layer.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
@@ -964,16 +998,25 @@ mod tests {
 
         let mut layer = LiveLayer::new();
         // Doc 1: matches all 3 tokens, consecutive
-        layer.insert(1, make_value(6, vec![
-            ("the", vec![0], vec![]),
-            ("quick", vec![1], vec![]),
-            ("fox", vec![2], vec![]),
-        ]));
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("the", vec![0], vec![]),
+                    ("quick", vec![1], vec![]),
+                    ("fox", vec![2], vec![]),
+                ],
+            ),
+        );
         // Doc 2: matches 2 of 3 tokens, consecutive
-        layer.insert(2, make_value(4, vec![
-            ("the", vec![0], vec![]),
-            ("quick", vec![1], vec![]),
-        ]));
+        layer.insert(
+            2,
+            make_value(
+                4,
+                vec![("the", vec![0], vec![]), ("quick", vec![1], vec![])],
+            ),
+        );
         // Doc 3: matches only 1 token
         layer.insert(3, make_value(2, vec![("the", vec![0], vec![])]));
         layer.refresh_snapshot();
