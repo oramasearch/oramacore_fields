@@ -5,6 +5,7 @@ use super::compacted::{CompactedVersion, PostingEntry};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
 use super::scoring::{bm25f_normalized_tf, bm25f_score, calculate_idf};
+use super::DocumentFilter;
 
 /// Parameters for a search query.
 #[derive(Debug, Clone)]
@@ -84,7 +85,7 @@ impl SearchHandle {
         Self { version, snapshot }
     }
 
-    pub fn execute(&self, params: &SearchParams<'_>) -> SearchResult {
+    pub fn execute<F: DocumentFilter>(&self, params: &SearchParams<'_>, filter: Option<&F>) -> SearchResult {
         // Compute global stats by combining compacted + live
         let total_documents = self.version.total_documents + self.snapshot.total_documents;
         let total_document_length =
@@ -137,6 +138,11 @@ impl SearchHandle {
                     if is_deleted(entry.doc_id, deletes, compacted_deletes) {
                         continue;
                     }
+                    if let Some(filter) = filter {
+                        if !filter.contains(entry.doc_id) {
+                            continue;
+                        }
+                    }
                     corpus_df += 1;
 
                     let tf = term_occurrence(&entry, params.exact_match);
@@ -180,6 +186,11 @@ impl SearchHandle {
                 for (doc_id, exact, stemmed) in postings {
                     if is_deleted(*doc_id, deletes, compacted_deletes) {
                         continue;
+                    }
+                    if let Some(filter) = filter {
+                        if !filter.contains(*doc_id) {
+                            continue;
+                        }
                     }
                     corpus_df += 1;
 
@@ -332,6 +343,7 @@ fn is_deleted(
 mod tests {
     use super::super::indexer::{IndexedValue, TermData};
     use super::super::live::LiveLayer;
+    use super::super::NoFilter;
     use super::*;
     use std::collections::HashMap as StdHashMap;
 
@@ -364,7 +376,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert!(result.docs.is_empty());
     }
 
@@ -386,7 +398,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
         assert!(result.docs[0].score > 0.0);
         assert!(result.docs[1].score > 0.0);
@@ -410,7 +422,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
     }
@@ -433,7 +445,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 2);
     }
@@ -486,7 +498,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > result.docs[1].score);
@@ -514,8 +526,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_normal = handle.execute(&params_normal);
-        let result_boosted = handle.execute(&params_boosted);
+        let result_normal = handle.execute::<NoFilter>(&params_normal, None);
+        let result_boosted = handle.execute::<NoFilter>(&params_boosted, None);
 
         assert!(result_boosted.docs[0].score > result_normal.docs[0].score);
     }
@@ -539,7 +551,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
@@ -564,7 +576,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > result.docs[1].score);
@@ -587,7 +599,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
     }
@@ -626,7 +638,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
         // Doc 1 should score higher due to phrase boost
         assert_eq!(result.docs[0].doc_id, 1);
@@ -661,8 +673,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_with = handle.execute(&params_with_boost);
-        let result_without = handle.execute(&params_without_boost);
+        let result_with = handle.execute::<NoFilter>(&params_with_boost, None);
+        let result_without = handle.execute::<NoFilter>(&params_without_boost, None);
 
         // Non-adjacent: no boost applied, scores should be equal
         assert_eq!(result_with.docs[0].score, result_without.docs[0].score);
@@ -696,14 +708,14 @@ mod tests {
             ..Default::default()
         };
 
-        let result_boosted = handle.execute(&params);
+        let result_boosted = handle.execute::<NoFilter>(&params, None);
 
         let params_no_boost = SearchParams {
             tokens: &["the".to_string(), "quick".to_string(), "fox".to_string()],
             ..Default::default()
         };
 
-        let result_base = handle.execute(&params_no_boost);
+        let result_base = handle.execute::<NoFilter>(&params_no_boost, None);
 
         // With 2 consecutive pairs and phrase_boost=1.0: score *= 1 + 2*1.0 = 3.0
         let expected_ratio = 3.0;
@@ -741,8 +753,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_none = handle.execute(&params_none);
-        let result_default = handle.execute(&params_default);
+        let result_none = handle.execute::<NoFilter>(&params_none, None);
+        let result_default = handle.execute::<NoFilter>(&params_default, None);
 
         assert_eq!(result_none.docs[0].score, result_default.docs[0].score);
     }
@@ -774,7 +786,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_boosted = handle.execute(&params);
+        let result_boosted = handle.execute::<NoFilter>(&params, None);
 
         let params_no_boost = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -782,7 +794,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_base = handle.execute(&params_no_boost);
+        let result_base = handle.execute::<NoFilter>(&params_no_boost, None);
 
         // Should be boosted (exact positions 0,1 are adjacent)
         assert!(result_boosted.docs[0].score > result_base.docs[0].score);
@@ -820,7 +832,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         // Only doc 1 matches all 3 tokens
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
@@ -865,7 +877,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 3);
     }
 
@@ -893,7 +905,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 2);
     }
 
@@ -914,7 +926,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         assert_eq!(result.docs.len(), 1);
     }
 
@@ -939,7 +951,7 @@ mod tests {
             tolerance: None,
             ..Default::default()
         };
-        let result_default = handle.execute(&params_default);
+        let result_default = handle.execute::<NoFilter>(&params_default, None);
 
         // Custom boost (10.0)
         let params_custom = SearchParams {
@@ -948,7 +960,7 @@ mod tests {
             exact_match_boost: Some(10.0),
             ..Default::default()
         };
-        let result_custom = handle.execute(&params_custom);
+        let result_custom = handle.execute::<NoFilter>(&params_custom, None);
 
         // Both should have doc 1 first
         assert_eq!(result_default.docs[0].doc_id, 1);
@@ -984,8 +996,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result_default = handle.execute(&params_default);
-        let result_boosted = handle.execute(&params_boosted);
+        let result_default = handle.execute::<NoFilter>(&params_default, None);
+        let result_boosted = handle.execute::<NoFilter>(&params_boosted, None);
 
         // Scores should be identical (boost not applied in exact mode)
         assert_eq!(result_default.docs[0].score, result_boosted.docs[0].score);
@@ -1032,7 +1044,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle.execute(&params);
+        let result = handle.execute::<NoFilter>(&params, None);
         // Doc 3 filtered out (matches only 1 token, need >= 2)
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -1062,5 +1074,90 @@ mod tests {
         ];
         assert_eq!(count_consecutive_pairs(&token_positions, 1), 2);
         assert_eq!(count_consecutive_pairs(&token_positions, 99), 0);
+    }
+
+    // ---- DocumentFilter tests ----
+
+    struct SortedDocumentFilter {
+        doc_ids: Vec<u64>,
+    }
+    impl super::DocumentFilter for SortedDocumentFilter {
+        fn contains(&self, doc_id: u64) -> bool {
+            self.doc_ids.binary_search(&doc_id).is_ok()
+        }
+    }
+
+    #[test]
+    fn test_document_filter_skips_non_matching() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let filter = SortedDocumentFilter {
+            doc_ids: vec![1, 3],
+        };
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = handle.execute(&params, Some(&filter));
+        assert_eq!(result.docs.len(), 2);
+        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&3));
+        assert!(!doc_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_document_filter_none_returns_all() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = handle.execute::<NoFilter>(&params, None);
+        assert_eq!(result.docs.len(), 3);
+    }
+
+    #[test]
+    fn test_document_filter_empty_returns_nothing() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let filter = SortedDocumentFilter { doc_ids: vec![] };
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = handle.execute(&params, Some(&filter));
+        assert!(result.docs.is_empty());
     }
 }

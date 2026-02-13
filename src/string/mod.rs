@@ -25,10 +25,10 @@
 //!
 //! // Search
 //! let tokens = vec!["hello".to_string()];
-//! let result = index.search(&SearchParams {
+//! let result = index.search::<oramacore_fields::string::NoFilter>(&SearchParams {
 //!     tokens: &tokens,
 //!     ..Default::default()
-//! });
+//! }, None);
 //! assert_eq!(result.docs.len(), 1);
 //! ```
 
@@ -52,3 +52,16 @@ pub use indexer::{IndexedValue, StringIndexer, TermData, Tokenizer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use iterator::{ScoredDoc, SearchParams, SearchResult};
 pub use storage::StringStorage;
+
+pub trait DocumentFilter {
+    fn contains(&self, doc_id: u64) -> bool;
+}
+
+/// No-op filter that accepts all documents. Used as default when no filtering is needed.
+pub struct NoFilter;
+impl DocumentFilter for NoFilter {
+    #[inline]
+    fn contains(&self, _doc_id: u64) -> bool {
+        true
+    }
+}

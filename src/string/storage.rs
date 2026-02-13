@@ -7,6 +7,7 @@ use super::io::{
     write_current_atomic, FORMAT_VERSION,
 };
 use super::iterator::{SearchHandle, SearchParams, SearchResult};
+use super::DocumentFilter;
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::sorted_merge;
 use anyhow::{anyhow, Context, Result};
@@ -68,11 +69,11 @@ impl StringStorage {
     }
 
     /// Search the index for documents matching the given tokens.
-    pub fn search(&self, params: &SearchParams<'_>) -> SearchResult {
+    pub fn search<F: DocumentFilter>(&self, params: &SearchParams<'_>, filter: Option<&F>) -> SearchResult {
         let snapshot = self.get_fresh_snapshot();
         let version = self.version.load();
         let handle = SearchHandle::new(Arc::clone(&version), snapshot);
-        handle.execute(params)
+        handle.execute(params, filter)
     }
 
     /// Get a fresh snapshot, refreshing if dirty (double-check locking pattern).
@@ -446,6 +447,7 @@ fn validate_deleted_file(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::super::indexer::TermData;
+    use super::super::NoFilter;
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
@@ -469,10 +471,13 @@ mod tests {
 
     fn search_default(index: &StringStorage, tokens: &[&str]) -> SearchResult {
         let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
-        index.search(&SearchParams {
-            tokens: &owned,
-            ..Default::default()
-        })
+        index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &owned,
+                ..Default::default()
+            },
+            None,
+        )
     }
 
     #[test]
@@ -795,10 +800,13 @@ mod tests {
         let reader = thread::spawn(move || {
             for _ in 0..20 {
                 let tokens = vec!["term".to_string()];
-                let result = index_clone.search(&SearchParams {
-                    tokens: &tokens,
-                    ..Default::default()
-                });
+                let result = index_clone.search::<NoFilter>(
+                    &SearchParams {
+                        tokens: &tokens,
+                        ..Default::default()
+                    },
+                    None,
+                );
                 assert!(result.docs.len() >= 50);
             }
         });
@@ -936,11 +944,14 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["app".to_string()];
-        let result = index.search(&SearchParams {
-            tokens: &tokens,
-            tolerance: None,
-            ..Default::default()
-        });
+        let result = index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                tolerance: None,
+                ..Default::default()
+            },
+            None,
+        );
 
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -960,11 +971,14 @@ mod tests {
 
         // Levenshtein distance 1 from "apple"
         let tokens = vec!["apple".to_string()];
-        let result = index.search(&SearchParams {
-            tokens: &tokens,
-            tolerance: Some(1),
-            ..Default::default()
-        });
+        let result = index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                tolerance: Some(1),
+                ..Default::default()
+            },
+            None,
+        );
 
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
@@ -1000,11 +1014,14 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string(), "world".to_string()];
-        let result = index.search(&SearchParams {
-            tokens: &tokens,
-            phrase_boost: Some(2.0),
-            ..Default::default()
-        });
+        let result = index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                phrase_boost: Some(2.0),
+                ..Default::default()
+            },
+            None,
+        );
 
         assert_eq!(result.docs.len(), 2);
         // Doc 1 should score higher due to phrase boost on adjacent positions
@@ -1034,11 +1051,14 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
-        let result = index.search(&SearchParams {
-            tokens: &tokens,
-            threshold: Some(1.0),
-            ..Default::default()
-        });
+        let result = index.search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                threshold: Some(1.0),
+                ..Default::default()
+            },
+            None,
+        );
 
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
