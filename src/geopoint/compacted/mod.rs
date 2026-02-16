@@ -360,7 +360,6 @@ impl Segment {
             current_entry: 0,
         })
     }
-
 }
 
 pub(crate) struct SegmentPointIter<'a> {

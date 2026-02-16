@@ -91,5 +91,4 @@ mod tests {
         let result: Vec<u64> = sorted_merge(left.into_iter(), right.into_iter()).collect();
         assert_eq!(result, vec![1, 2, 3, 4]);
     }
-
 }
