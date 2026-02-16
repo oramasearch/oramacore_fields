@@ -1,6 +1,6 @@
 //! On-disk field indexes for search engines.
 //!
-//! Provides five specialized index types with a shared architecture: an in-memory
+//! Provides six specialized index types with a shared architecture: an in-memory
 //! live layer for fast writes, memory-mapped compacted storage for efficient reads,
 //! and periodic compaction with concurrent access.
 //!
@@ -13,6 +13,7 @@
 //! | [`string`] | Full-text (BM25 scoring) | Search by tokens (exact, fuzzy, prefix) |
 //! | [`string_filter`] | String (exact match) | Filter by key |
 //! | [`geopoint`] | Geographic (lat/lon) | Bounding box, radius |
+//! | [`vector`] | Vector (f32 embeddings) | Approximate nearest neighbor (HNSW) |
 //!
 //! # Usage
 //!
@@ -27,7 +28,7 @@
 //!
 //! # Architecture
 //!
-//! All five modules share a common two-layer design:
+//! All six modules share a common two-layer design:
 //!
 //! - **LiveLayer**: In-memory storage for fast inserts and deletes. Thread-safe via `RwLock`.
 //! - **CompactedVersion**: Memory-mapped disk storage loaded via `memmap2`. Swapped
@@ -40,6 +41,7 @@ pub mod geopoint;
 pub mod number;
 pub mod string;
 pub mod string_filter;
+pub mod vector;
 
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]
