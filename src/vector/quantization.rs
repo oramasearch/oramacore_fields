@@ -72,12 +72,12 @@ impl QuantizationParams {
     /// Write quantization parameters to a binary file.
     pub fn write_to_file(&self, path: &Path) -> Result<(), Error> {
         let mut file = std::fs::File::create(path)?;
-        file.write_all(&(self.dimensions as u32).to_le_bytes())?;
+        file.write_all(&(self.dimensions as u32).to_ne_bytes())?;
         for &min in &self.mins {
-            file.write_all(&min.to_le_bytes())?;
+            file.write_all(&min.to_ne_bytes())?;
         }
         for &max in &self.maxs {
-            file.write_all(&max.to_le_bytes())?;
+            file.write_all(&max.to_ne_bytes())?;
         }
         file.sync_all()?;
         Ok(())
@@ -88,18 +88,18 @@ impl QuantizationParams {
         let mut file = std::fs::File::open(path)?;
         let mut buf4 = [0u8; 4];
         file.read_exact(&mut buf4)?;
-        let dimensions = u32::from_le_bytes(buf4) as usize;
+        let dimensions = u32::from_ne_bytes(buf4) as usize;
 
         let mut mins = vec![0.0f32; dimensions];
         for min in &mut mins {
             file.read_exact(&mut buf4)?;
-            *min = f32::from_le_bytes(buf4);
+            *min = f32::from_ne_bytes(buf4);
         }
 
         let mut maxs = vec![0.0f32; dimensions];
         for max in &mut maxs {
             file.read_exact(&mut buf4)?;
-            *max = f32::from_le_bytes(buf4);
+            *max = f32::from_ne_bytes(buf4);
         }
 
         Ok(Self {
