@@ -87,6 +87,11 @@ impl<T: IndexableNumber> CompactedVersion<T> {
         }
     }
 
+    /// Returns true if this version has any memory-mapped data on disk.
+    pub fn has_data(&self) -> bool {
+        self.header.is_some() || !self.data.is_empty() || self.deleted.is_some()
+    }
+
     /// Load a compacted index from disk.
     pub fn load(base_path: &Path, offset: u64) -> Result<Self, Error> {
         let version_dir = base_path.join("versions").join(offset.to_string());

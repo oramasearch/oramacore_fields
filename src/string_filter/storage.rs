@@ -109,7 +109,24 @@ impl StringFilterStorage {
             live.get_snapshot()
         };
 
+        // Nothing to compact — free memory and return early
+        if snapshot.is_empty() {
+            let mut live = self.live.write().unwrap();
+            live.ops.drain(..snapshot.ops_len);
+            live.ops.shrink_to_fit();
+            live.refresh_snapshot();
+            return Ok(());
+        }
+
         let current = self.version.load();
+
+        if version_number == current.version_number && current.has_data() {
+            return Err(anyhow!(
+                "Cannot compact to version {version_number}: same as current active version. \
+                 Use a different version number to avoid corrupting active mmaps."
+            ));
+        }
+
         let new_version_dir = ensure_version_dir(&self.base_path, version_number)?;
 
         let should_apply_deletes = self.should_apply_deletes(&snapshot, &current);

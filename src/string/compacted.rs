@@ -40,6 +40,14 @@ impl CompactedVersion {
         }
     }
 
+    /// Returns true if this version has any memory-mapped data on disk.
+    pub fn has_data(&self) -> bool {
+        self.fst_map.is_some()
+            || self.postings_mmap.is_some()
+            || self.doc_lengths_mmap.is_some()
+            || self.deleted_mmap.is_some()
+    }
+
     pub fn load(base_path: &Path, version_number: u64) -> Result<Self> {
         let dir = version_dir(base_path, version_number);
 

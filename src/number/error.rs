@@ -27,6 +27,9 @@ pub enum Error {
     /// Corrupted entry data.
     CorruptedEntry,
 
+    /// Cannot compact to same version number as current active version.
+    VersionConflict { version: u64 },
+
     /// I/O error.
     Io(io::Error),
 }
@@ -44,6 +47,10 @@ impl fmt::Display for Error {
             Error::UnsupportedVersion { version } => {
                 write!(f, "unsupported format version: {version}")
             }
+            Error::VersionConflict { version } => write!(
+                f,
+                "cannot compact to version {version}: same as current active version"
+            ),
             Error::CorruptedEntry => write!(f, "corrupted entry data"),
             Error::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -54,7 +61,12 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Io(e) => Some(e),
-            _ => None,
+            Error::NaNNotAllowed
+            | Error::TypeMismatch { .. }
+            | Error::InvalidMagic { .. }
+            | Error::UnsupportedVersion { .. }
+            | Error::CorruptedEntry
+            | Error::VersionConflict { .. } => None,
         }
     }
 }

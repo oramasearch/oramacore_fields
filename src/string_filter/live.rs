@@ -138,6 +138,11 @@ impl LiveSnapshot {
         }
     }
 
+    /// Returns true if this snapshot has no inserts and no deletes.
+    pub fn is_empty(&self) -> bool {
+        self.doc_ids.is_empty() && self.deletes.is_empty()
+    }
+
     /// Return the sorted doc_ids for a given key, or an empty slice if not found.
     pub fn doc_ids_for_key(&self, key: &str) -> &[u64] {
         match self.keys.binary_search_by(|k| k.as_str().cmp(key)) {

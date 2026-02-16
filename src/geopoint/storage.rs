@@ -145,7 +145,23 @@ impl GeoPointStorage {
             live.get_snapshot()
         };
 
+        // Nothing to compact — free memory and return early
+        if snapshot.inserts.is_empty() && snapshot.deletes.is_empty() {
+            let mut live = self.live.write().unwrap();
+            live.ops.drain(..snapshot.ops_len);
+            live.ops.shrink_to_fit();
+            live.refresh_snapshot();
+            return Ok(());
+        }
+
         let current = self.version.load();
+
+        if version_id == current.version_id && current.has_data() {
+            return Err(anyhow!(
+                "Cannot compact to version {version_id}: same as current active version. \
+                 Use a different version number to avoid corrupting active mmaps."
+            ));
+        }
 
         // Combine all delete sets using sorted Vec merge
         let mut snapshot_deletes: Vec<u64> = snapshot.deletes.iter().copied().collect();

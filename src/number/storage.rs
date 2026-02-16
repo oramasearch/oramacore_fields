@@ -287,8 +287,21 @@ impl<T: IndexableNumber> NumberStorage<T> {
             live.get_snapshot()
         };
 
+        // Nothing to compact — free memory and return early
+        if snapshot.inserts.is_empty() && snapshot.deletes.is_empty() {
+            let mut live = self.live.write().unwrap();
+            live.ops.drain(..snapshot.ops_len);
+            live.ops.shrink_to_fit();
+            live.refresh_snapshot();
+            return Ok(());
+        }
+
         // Step 3: Load current version (lock-free)
         let old_version = self.version.load();
+
+        if offset == old_version.offset && old_version.has_data() {
+            return Err(Error::VersionConflict { version: offset });
+        }
 
         // Step 4: Build new version (no locks held during I/O!)
         let version_dir = ensure_version_dir(&self.base_path, offset)?;
