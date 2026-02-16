@@ -6,11 +6,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric};
+//! use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig};
 //! use std::path::PathBuf;
 //!
 //! let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
-//! let index = VectorStorage::new(PathBuf::from("/tmp/my_vectors"), config).unwrap();
+//! let index = VectorStorage::new(PathBuf::from("/tmp/my_vectors"), config, SegmentConfig::default()).unwrap();
 //!
 //! // Insert vectors
 //! index.insert(1, &[0.1, 0.2, 0.3]).unwrap();
@@ -24,7 +24,6 @@
 //! index.compact(1).unwrap();
 //! ```
 
-mod compacted;
 mod config;
 mod distance;
 mod error;
@@ -36,9 +35,10 @@ pub mod io;
 mod live;
 mod platform;
 mod quantization;
+pub(crate) mod segment;
 mod storage;
 
-pub use config::{DistanceMetric, VectorConfig};
+pub use config::{DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig};
 pub use error::Error;
 pub use indexer::{IndexedValue, VectorIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};

@@ -110,6 +110,46 @@ impl QuantizationParams {
     }
 }
 
+/// Check if new min/max values fit within existing quantization range (all dimensions).
+pub fn range_contains(params: &QuantizationParams, new_mins: &[f32], new_maxs: &[f32]) -> bool {
+    for d in 0..params.dimensions {
+        if new_mins[d] < params.mins[d] || new_maxs[d] > params.maxs[d] {
+            return false;
+        }
+    }
+    true
+}
+
+/// Compute per-dimension min and max from a flat vector buffer.
+pub fn compute_min_max(vectors: &[f32], dimensions: usize) -> (Vec<f32>, Vec<f32>) {
+    let num_vectors = vectors.len() / dimensions;
+    let mut mins = vec![f32::INFINITY; dimensions];
+    let mut maxs = vec![f32::NEG_INFINITY; dimensions];
+    for i in 0..num_vectors {
+        let offset = i * dimensions;
+        for d in 0..dimensions {
+            let v = vectors[offset + d];
+            if v < mins[d] {
+                mins[d] = v;
+            }
+            if v > maxs[d] {
+                maxs[d] = v;
+            }
+        }
+    }
+    (mins, maxs)
+}
+
+/// Element-wise minimum of two slices.
+pub fn element_wise_min(a: &[f32], b: &[f32]) -> Vec<f32> {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x.min(y)).collect()
+}
+
+/// Element-wise maximum of two slices.
+pub fn element_wise_max(a: &[f32], b: &[f32]) -> Vec<f32> {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x.max(y)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

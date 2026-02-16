@@ -1,5 +1,4 @@
-use super::compacted::CompactedVersion;
-use super::config::VectorConfig;
+use super::config::{SegmentConfig, VectorConfig};
 use super::distance::{
     resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
 };
@@ -7,11 +6,15 @@ use super::error::Error;
 use super::hnsw::HnswBuilder;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
 use super::io::{
-    ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir, version_dir,
-    write_current_atomic, write_postings, FORMAT_VERSION,
+    ensure_segment_dir, ensure_version_dir, list_segment_dirs, list_version_dirs, read_current,
+    remove_version_dir, segment_data_dir, sync_dir, version_dir, write_current_atomic,
+    write_delete_file, write_manifest, ManifestEntry, FORMAT_VERSION,
 };
 use super::live::{LiveLayer, LiveSnapshot};
-use super::quantization::QuantizationParams;
+use super::quantization::{
+    compute_min_max, element_wise_max, element_wise_min, range_contains, QuantizationParams,
+};
+use super::segment::SegmentList;
 use arc_swap::ArcSwap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -19,22 +22,27 @@ use std::sync::{Arc, Mutex, RwLock};
 
 pub struct VectorStorage {
     base_path: PathBuf,
-    version: ArcSwap<CompactedVersion>,
+    segments: ArcSwap<SegmentList>,
     live: RwLock<LiveLayer>,
     compaction_lock: Mutex<()>,
     config: VectorConfig,
+    segment_config: SegmentConfig,
     distance_fn: DistanceFn,
     quantized_distance_fn: QuantizedDistanceFn,
 }
 
 impl VectorStorage {
-    pub fn new(base_path: PathBuf, config: VectorConfig) -> Result<Self, Error> {
+    pub fn new(
+        base_path: PathBuf,
+        config: VectorConfig,
+        segment_config: SegmentConfig,
+    ) -> Result<Self, Error> {
         std::fs::create_dir_all(&base_path)?;
 
         let distance_fn = resolve_distance_fn(config.metric);
         let quantized_distance_fn = resolve_quantized_distance_fn(config.metric);
 
-        let version = match read_current(&base_path)? {
+        let segment_list = match read_current(&base_path)? {
             Some((format_version, version_number)) => {
                 if format_version != FORMAT_VERSION {
                     return Err(Error::FormatVersionMismatch {
@@ -42,17 +50,18 @@ impl VectorStorage {
                         found: format_version,
                     });
                 }
-                CompactedVersion::load(&base_path, version_number)?
+                SegmentList::load(&base_path, version_number)?
             }
-            None => CompactedVersion::empty(),
+            None => SegmentList::empty(),
         };
 
         Ok(Self {
             base_path,
-            version: ArcSwap::new(Arc::new(version)),
+            segments: ArcSwap::new(Arc::new(segment_list)),
             live: RwLock::new(LiveLayer::new()),
             compaction_lock: Mutex::new(()),
             config,
+            segment_config,
             distance_fn,
             quantized_distance_fn,
         })
@@ -117,20 +126,27 @@ impl VectorStorage {
         }
 
         let snapshot = self.fresh_snapshot();
-        let compacted = self.version.load();
+        let segment_list = self.segments.load();
         let ef = ef_search.unwrap_or(self.config.ef_search);
 
-        // Merge deletes from both layers
-        let compacted_deletes = compacted.deletes_slice();
-        let merged_deletes = merge_sorted_u64(compacted_deletes, &snapshot.deletes);
+        let mut all_results: Vec<(u64, f32)> = Vec::new();
 
-        // Search compacted HNSW
-        let mut compacted_results = if compacted.config.is_some() {
+        for segment in &segment_list.segments {
+            // Per-segment quantization: quantize query with THIS segment's params
             let mut query_quantized = vec![0i8; self.config.dimensions];
-            if let Some(ref params) = compacted.quantization_params {
-                params.quantize(query, &mut query_quantized);
-            }
-            compacted.search(
+            segment
+                .quantization_params
+                .quantize(query, &mut query_quantized);
+
+            // Targeted live deletes for this segment's doc_id range
+            let merged_deletes = merge_segment_deletes(
+                segment.deletes_slice(),
+                &snapshot.deletes,
+                segment.min_doc_id,
+                segment.max_doc_id,
+            );
+
+            let segment_results = segment.search(
                 query,
                 &query_quantized,
                 k,
@@ -138,155 +154,283 @@ impl VectorStorage {
                 self.distance_fn,
                 self.quantized_distance_fn,
                 &merged_deletes,
-            )
-        } else {
-            Vec::new()
-        };
+            );
+            all_results.extend(segment_results);
+        }
 
         // Search live layer (brute force)
-        let live_results = snapshot.search(query, k, self.distance_fn, &merged_deletes);
+        let live_results =
+            snapshot.search(query, k, self.distance_fn, &snapshot.deletes);
+        all_results.extend(live_results);
 
-        // Merge results
-        compacted_results.extend(live_results);
-        compacted_results
+        // Merge: sort by distance, deduplicate by doc_id, take top-k
+        all_results
             .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Deduplicate by doc_id (keep closest)
-        let mut seen = std::collections::HashSet::new();
-        compacted_results.retain(|(doc_id, _)| seen.insert(*doc_id));
-
-        compacted_results.truncate(k);
-        Ok(compacted_results)
+        deduplicate_and_truncate(&mut all_results, k);
+        Ok(all_results)
     }
 
-    /// Compact the index.
+    /// Compact the index using multi-segment architecture.
     pub fn compact(&self, version_number: u64) -> Result<(), Error> {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
 
         let snapshot = self.fresh_snapshot();
+        let current = self.segments.load();
 
         // Early return if nothing to do
-        if snapshot.is_empty() {
-            let current = self.version.load();
-            if current.config.is_none() {
-                let mut live = self.live.write().unwrap();
-                live.ops.drain(..snapshot.ops_len);
-                live.ops.shrink_to_fit();
-                live.refresh_snapshot();
-                return Ok(());
-            }
+        if snapshot.is_empty() && current.segments.is_empty() {
+            let mut live = self.live.write().unwrap();
+            live.ops.drain(..snapshot.ops_len);
+            live.ops.shrink_to_fit();
+            live.refresh_snapshot();
+            return Ok(());
         }
-
-        let current = self.version.load();
 
         let new_version_dir = ensure_version_dir(&self.base_path, version_number)?;
+        let mut new_manifest_entries: Vec<ManifestEntry> = Vec::new();
+        let mut next_seg_id = current
+            .segments
+            .iter()
+            .map(|s| s.segment_id)
+            .max()
+            .unwrap_or(0)
+            + 1;
 
-        // Collect all vectors
+        // Step 1: Distribute live deletes to segments
+        let per_segment_new_deletes =
+            distribute_deletes(&current.segments, &snapshot.deletes);
+
+        let last_idx = current.segments.len().checked_sub(1);
         let dimensions = self.config.dimensions;
-        let mut all_vectors: Vec<f32> = Vec::new();
-        let mut all_doc_ids: Vec<u64> = Vec::new();
 
-        // From compacted: skip deleted
-        if let Some(ref config) = current.config {
-            let compacted_deletes = current.deletes_slice();
-            let merged_deletes = merge_sorted_u64(compacted_deletes, &snapshot.deletes);
+        // Track whether live entries were absorbed
+        let mut live_absorbed = false;
 
-            for i in 0..config.num_nodes {
-                let doc_id = current.doc_id_at_unchecked(i as u32);
-                if merged_deletes.binary_search(&doc_id).is_ok() {
+        // Step 2: Process each segment
+        for (i, segment) in current.segments.iter().enumerate() {
+            let new_deletes = &per_segment_new_deletes[i];
+            let updated_deletes = merge_sorted_u64(segment.deletes_slice(), new_deletes);
+            let updated_num_deletes = updated_deletes.len();
+            let deletion_ratio = if segment.num_nodes > 0 {
+                updated_num_deletes as f64 / segment.num_nodes as f64
+            } else {
+                0.0
+            };
+
+            let is_last = Some(i) == last_idx;
+            let surviving = surviving_count(segment.num_nodes, segment.doc_ids_slice(), &updated_deletes);
+            let can_absorb = is_last
+                && !snapshot.entries.is_empty()
+                && (surviving + snapshot.entries.len())
+                    <= self.segment_config.max_nodes_per_segment as usize;
+
+            if can_absorb {
+                live_absorbed = true;
+
+                // Determine: incremental insert or full rebuild?
+                let future_insertion_ratio = if segment.nodes_at_last_rebuild > 0 {
+                    (segment.insertions_since_rebuild + snapshot.entries.len()) as f64
+                        / segment.nodes_at_last_rebuild as f64
+                } else {
+                    f64::INFINITY
+                };
+
+                let needs_full_rebuild = future_insertion_ratio
+                    > self.segment_config.insertion_rebuild_threshold
+                    || deletion_ratio > self.segment_config.deletion_threshold.value();
+
+                let seg_id = next_seg_id;
+                next_seg_id += 1;
+
+                if needs_full_rebuild {
+                    // FULL REBUILD with absorb
+                    let (mut all_vecs, mut all_ids) =
+                        collect_surviving(segment, &updated_deletes, dimensions, &snapshot);
+
+                    for (doc_id, vector) in &snapshot.entries {
+                        if snapshot.deletes.binary_search(doc_id).is_ok() {
+                            continue;
+                        }
+                        all_vecs.extend_from_slice(vector);
+                        all_ids.push(*doc_id);
+                    }
+
+                    if all_ids.is_empty() {
+                        continue;
+                    }
+
+                    let params =
+                        QuantizationParams::calibrate(&all_vecs, dimensions);
+                    build_and_write_segment(
+                        &self.base_path,
+                        seg_id,
+                        &all_vecs,
+                        &all_ids,
+                        &self.config,
+                        &params,
+                        self.distance_fn,
+                    )?;
+                    write_delete_file(&new_version_dir, seg_id, &[])?;
+
+                    new_manifest_entries.push(ManifestEntry {
+                        segment_id: seg_id,
+                        num_nodes: all_ids.len(),
+                        num_deletes: 0,
+                        min_doc_id: all_ids[0],
+                        max_doc_id: *all_ids.last().unwrap(),
+                        nodes_at_last_rebuild: all_ids.len(),
+                        insertions_since_rebuild: 0,
+                    });
+                } else {
+                    // INCREMENTAL INSERT
+                    let new_num_nodes = segment.num_nodes + snapshot.entries.len();
+                    incremental_insert_segment(
+                        &self.base_path,
+                        segment,
+                        seg_id,
+                        &snapshot.entries,
+                        &self.config,
+                        self.distance_fn,
+                    )?;
+
+                    // Carry forward deletes (not applied, just kept)
+                    write_delete_file(&new_version_dir, seg_id, &updated_deletes)?;
+
+                    let new_max_doc_id = snapshot
+                        .entries
+                        .last()
+                        .map(|(id, _)| *id)
+                        .unwrap_or(segment.max_doc_id);
+
+                    new_manifest_entries.push(ManifestEntry {
+                        segment_id: seg_id,
+                        num_nodes: new_num_nodes,
+                        num_deletes: updated_num_deletes,
+                        min_doc_id: segment.min_doc_id,
+                        max_doc_id: new_max_doc_id,
+                        nodes_at_last_rebuild: segment.nodes_at_last_rebuild,
+                        insertions_since_rebuild: segment.insertions_since_rebuild
+                            + snapshot.entries.len(),
+                    });
+                }
+            } else if deletion_ratio > self.segment_config.deletion_threshold.value() {
+                // FULL REBUILD (non-absorb): apply deletes
+                let (vectors, doc_ids) =
+                    collect_surviving(segment, &updated_deletes, dimensions, &snapshot);
+
+                if doc_ids.is_empty() {
                     continue;
                 }
-                // Also skip if the doc is re-inserted in live (we'll use the live version)
-                if snapshot
-                    .entries
-                    .binary_search_by_key(&doc_id, |(id, _)| *id)
-                    .is_ok()
-                {
-                    continue;
-                }
-                let raw_vec = current.raw_vector_unchecked(i as u32, dimensions);
-                all_vectors.extend_from_slice(raw_vec);
-                all_doc_ids.push(doc_id);
+
+                let seg_id = next_seg_id;
+                next_seg_id += 1;
+
+                let params = QuantizationParams::calibrate(&vectors, dimensions);
+                build_and_write_segment(
+                    &self.base_path,
+                    seg_id,
+                    &vectors,
+                    &doc_ids,
+                    &self.config,
+                    &params,
+                    self.distance_fn,
+                )?;
+                write_delete_file(&new_version_dir, seg_id, &[])?;
+
+                new_manifest_entries.push(ManifestEntry {
+                    segment_id: seg_id,
+                    num_nodes: doc_ids.len(),
+                    num_deletes: 0,
+                    min_doc_id: doc_ids[0],
+                    max_doc_id: *doc_ids.last().unwrap(),
+                    nodes_at_last_rebuild: doc_ids.len(),
+                    insertions_since_rebuild: 0,
+                });
+            } else {
+                // CARRY FORWARD: keep segment data, write updated delete file
+                write_delete_file(
+                    &new_version_dir,
+                    segment.segment_id,
+                    &updated_deletes,
+                )?;
+
+                new_manifest_entries.push(ManifestEntry {
+                    segment_id: segment.segment_id,
+                    num_nodes: segment.num_nodes,
+                    num_deletes: updated_num_deletes,
+                    min_doc_id: segment.min_doc_id,
+                    max_doc_id: segment.max_doc_id,
+                    nodes_at_last_rebuild: segment.nodes_at_last_rebuild,
+                    insertions_since_rebuild: segment.insertions_since_rebuild,
+                });
             }
         }
 
-        // From live snapshot: entries (already excludes live deletes)
-        for (doc_id, vector) in &snapshot.entries {
-            if snapshot.deletes.binary_search(doc_id).is_ok() {
-                continue;
+        // Step 3: If live entries weren't absorbed, create new segment
+        if !live_absorbed && !snapshot.entries.is_empty() {
+            let mut live_vecs: Vec<f32> = Vec::new();
+            let mut live_ids: Vec<u64> = Vec::new();
+            for (doc_id, vector) in &snapshot.entries {
+                if snapshot.deletes.binary_search(doc_id).is_ok() {
+                    continue;
+                }
+                live_vecs.extend_from_slice(vector);
+                live_ids.push(*doc_id);
             }
-            all_vectors.extend_from_slice(vector);
-            all_doc_ids.push(*doc_id);
+
+            if !live_ids.is_empty() {
+                let seg_id = next_seg_id;
+
+                let params =
+                    QuantizationParams::calibrate(&live_vecs, dimensions);
+                build_and_write_segment(
+                    &self.base_path,
+                    seg_id,
+                    &live_vecs,
+                    &live_ids,
+                    &self.config,
+                    &params,
+                    self.distance_fn,
+                )?;
+                write_delete_file(&new_version_dir, seg_id, &[])?;
+
+                new_manifest_entries.push(ManifestEntry {
+                    segment_id: seg_id,
+                    num_nodes: live_ids.len(),
+                    num_deletes: 0,
+                    min_doc_id: live_ids[0],
+                    max_doc_id: *live_ids.last().unwrap(),
+                    nodes_at_last_rebuild: live_ids.len(),
+                    insertions_since_rebuild: 0,
+                });
+            }
         }
 
-        let num_nodes = all_doc_ids.len();
-
-        if num_nodes == 0 {
-            // Write empty files
-            write_postings(&new_version_dir.join("deleted.bin"), &[])?;
-            Self::write_meta(&new_version_dir, &self.config, 0, 0, 0)?;
-
+        // Handle edge case: all segments fully deleted and no live entries
+        if new_manifest_entries.is_empty() {
+            // Write an empty manifest
+            write_manifest(&new_version_dir, &new_manifest_entries)?;
             sync_dir(&new_version_dir)?;
             write_current_atomic(&self.base_path, version_number)?;
 
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
-            self.version.store(Arc::new(new_version));
+            let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
+            self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
             return Ok(());
         }
 
-        if num_nodes > u32::MAX as usize {
-            return Err(Error::TooManyNodes {
-                count: num_nodes,
-                max: u32::MAX as usize,
-            });
-        }
-
-        // Build HNSW graph
-        let mut builder = HnswBuilder::new(&self.config, self.distance_fn);
-        builder.build(&all_vectors, &all_doc_ids, dimensions)?;
-
-        // Write raw vectors
-        Self::write_raw_vectors(&new_version_dir.join("vectors.raw"), &all_vectors)?;
-
-        // Calibrate quantization and write quantized vectors
-        let quant_params = QuantizationParams::calibrate(&all_vectors, dimensions);
-        let quantized = quant_params.quantize_all(&all_vectors, dimensions);
-        Self::write_quantized_vectors(&new_version_dir.join("vectors.quantized"), &quantized)?;
-        quant_params.write_to_file(&new_version_dir.join("quantization.bin"))?;
-
-        // Write graph
-        builder.write_graph(&new_version_dir.join("hnsw.graph"))?;
-
-        // Write doc_ids
-        Self::write_doc_ids(&new_version_dir.join("doc_ids.bin"), &all_doc_ids)?;
-
-        // Write levels
-        builder.write_levels(&new_version_dir.join("levels.bin"))?;
-
-        // Write empty deleted.bin
-        write_postings(&new_version_dir.join("deleted.bin"), &[])?;
-
-        // Write meta (use config.max_level, not builder.max_level(),
-        // because the graph is written with config.max_level for block sizing)
-        Self::write_meta(
-            &new_version_dir,
-            &self.config,
-            num_nodes,
-            self.config.max_level,
-            builder.entry_point(),
-        )?;
-
+        // Step 4: Write manifest and finalize
+        write_manifest(&new_version_dir, &new_manifest_entries)?;
         sync_dir(&new_version_dir)?;
         write_current_atomic(&self.base_path, version_number)?;
 
-        // Atomic swap
         {
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
-            self.version.store(Arc::new(new_version));
+            let new_segment_list =
+                SegmentList::load(&self.base_path, version_number)?;
+            self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
         }
@@ -294,65 +438,20 @@ impl VectorStorage {
         Ok(())
     }
 
-    fn write_raw_vectors(path: &std::path::Path, vectors: &[f32]) -> Result<(), Error> {
-        let mut file = std::fs::File::create(path)?;
-        for &v in vectors {
-            file.write_all(&v.to_ne_bytes())?;
-        }
-        file.sync_all()?;
-        Ok(())
-    }
-
-    fn write_quantized_vectors(path: &std::path::Path, vectors: &[i8]) -> Result<(), Error> {
-        let mut file = std::fs::File::create(path)?;
-        let bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len()) };
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
-    }
-
-    fn write_doc_ids(path: &std::path::Path, doc_ids: &[u64]) -> Result<(), Error> {
-        let mut file = std::fs::File::create(path)?;
-        for &id in doc_ids {
-            file.write_all(&id.to_ne_bytes())?;
-        }
-        file.sync_all()?;
-        Ok(())
-    }
-
-    fn write_meta(
-        dir: &std::path::Path,
-        config: &VectorConfig,
-        num_nodes: usize,
-        max_level: usize,
-        entry_point: u32,
-    ) -> Result<(), Error> {
-        let meta = serde_json::json!({
-            "dimensions": config.dimensions,
-            "metric": config.metric.to_string(),
-            "m": config.m,
-            "m0": config.m0,
-            "ef_construction": config.ef_construction,
-            "num_nodes": num_nodes,
-            "max_level": max_level,
-            "entry_point": entry_point,
-        });
-        let json = serde_json::to_string_pretty(&meta)
-            .map_err(|e| Error::CorruptedFile(format!("failed to serialize meta: {e}")))?;
-        let mut file = std::fs::File::create(dir.join("hnsw.meta"))?;
-        file.write_all(json.as_bytes())?;
-        file.sync_all()?;
-        Ok(())
-    }
-
     pub fn current_version_number(&self) -> u64 {
-        self.version.load().version_number
+        self.segments.load().version_number
     }
 
     pub fn cleanup(&self) {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
-        let current_version = self.version.load().version_number;
+        let current = self.segments.load();
+        let current_version = current.version_number;
+
+        // Collect segment_ids referenced by the current manifest
+        let referenced_seg_ids: std::collections::HashSet<u64> =
+            current.segments.iter().map(|s| s.segment_id).collect();
+
+        // Clean up old version directories
         let version_numbers = match list_version_dirs(&self.base_path) {
             Ok(v) => v,
             Err(e) => {
@@ -360,25 +459,42 @@ impl VectorStorage {
                 return;
             }
         };
-        for version_number in version_numbers {
-            if version_number != current_version {
-                if let Err(e) = remove_version_dir(&self.base_path, version_number) {
-                    tracing::error!("Failed to remove old version {version_number}: {e}");
+        for vn in version_numbers {
+            if vn != current_version {
+                if let Err(e) = remove_version_dir(&self.base_path, vn) {
+                    tracing::error!("Failed to remove old version {vn}: {e}");
+                }
+            }
+        }
+
+        // Clean up old segment directories not referenced by current manifest
+        let all_seg_ids = match list_segment_dirs(&self.base_path) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to list segment directories: {e}");
+                return;
+            }
+        };
+        for seg_id in all_seg_ids {
+            if !referenced_seg_ids.contains(&seg_id) {
+                let seg_dir = segment_data_dir(&self.base_path, seg_id);
+                if let Err(e) = std::fs::remove_dir_all(&seg_dir) {
+                    tracing::error!("Failed to remove old segment {seg_id}: {e}");
                 }
             }
         }
     }
 
     pub fn info(&self) -> IndexInfo {
-        let version = self.version.load();
+        let current = self.segments.load();
         let live = self.live.read().unwrap();
-        let ver_dir = version_dir(&self.base_path, version.version_number);
+        let ver_dir = version_dir(&self.base_path, current.version_number);
 
-        let num_vectors = version.config.as_ref().map(|c| c.num_nodes).unwrap_or(0);
+        let num_vectors = current.total_vectors();
 
         IndexInfo {
             format_version: FORMAT_VERSION,
-            current_version_number: version.version_number,
+            current_version_number: current.version_number,
             version_dir: ver_dir,
             num_vectors,
             dimensions: self.config.dimensions,
@@ -411,7 +527,9 @@ impl VectorStorage {
                 if format_version != FORMAT_VERSION {
                     checks.push(IntegrityCheck::failed(
                         "format version",
-                        Some(format!("Expected {FORMAT_VERSION}, found {format_version}")),
+                        Some(format!(
+                            "Expected {FORMAT_VERSION}, found {format_version}"
+                        )),
                     ));
                     return IntegrityCheckResult::new(checks);
                 }
@@ -420,7 +538,10 @@ impl VectorStorage {
                 if !ver_dir.exists() || !ver_dir.is_dir() {
                     checks.push(IntegrityCheck::failed(
                         "version directory",
-                        Some(format!("Missing or invalid: {}", ver_dir.display())),
+                        Some(format!(
+                            "Missing or invalid: {}",
+                            ver_dir.display()
+                        )),
                     ));
                     return IntegrityCheckResult::new(checks);
                 }
@@ -429,32 +550,57 @@ impl VectorStorage {
                     Some(ver_dir.display().to_string()),
                 ));
 
-                // Check required files
-                let required = [
-                    "hnsw.meta",
-                    "vectors.raw",
-                    "vectors.quantized",
-                    "hnsw.graph",
-                    "doc_ids.bin",
-                    "levels.bin",
-                    "deleted.bin",
-                    "quantization.bin",
-                ];
-                let missing: Vec<&str> = required
-                    .iter()
-                    .filter(|f| !ver_dir.join(f).exists())
-                    .copied()
-                    .collect();
-
-                if missing.is_empty() {
-                    checks.push(IntegrityCheck::ok(
-                        "data files",
-                        Some("All present".to_string()),
-                    ));
-                } else {
+                // Check manifest.json
+                let manifest_path = ver_dir.join("manifest.json");
+                if !manifest_path.exists() {
                     checks.push(IntegrityCheck::failed(
-                        "data files",
-                        Some(format!("Missing: {}", missing.join(", "))),
+                        "manifest.json",
+                        Some("File does not exist".to_string()),
+                    ));
+                    return IntegrityCheckResult::new(checks);
+                }
+                checks.push(IntegrityCheck::ok(
+                    "manifest.json",
+                    Some("Present".to_string()),
+                ));
+
+                // Check segment directories
+                let current = self.segments.load();
+                let mut all_seg_ok = true;
+                for segment in &current.segments {
+                    let seg_dir = segment_data_dir(
+                        &self.base_path,
+                        segment.segment_id,
+                    );
+                    let required = [
+                        "hnsw.meta",
+                        "vectors.raw",
+                        "vectors.quantized",
+                        "hnsw.graph",
+                        "doc_ids.bin",
+                        "levels.bin",
+                        "quantization.bin",
+                    ];
+                    let missing: Vec<&str> = required
+                        .iter()
+                        .filter(|f| !seg_dir.join(f).exists())
+                        .copied()
+                        .collect();
+                    if !missing.is_empty() {
+                        checks.push(IntegrityCheck::failed(
+                            &format!("seg_{}", segment.segment_id),
+                            Some(format!("Missing: {}", missing.join(", "))),
+                        ));
+                        all_seg_ok = false;
+                    }
+                }
+                if all_seg_ok {
+                    checks.push(IntegrityCheck::ok(
+                        "segments",
+                        Some(format!(
+                            "{} segment(s), all files present",
+                            current.segments.len()
+                        )),
                     ));
                 }
             }
@@ -476,22 +622,370 @@ impl VectorStorage {
     }
 }
 
-impl CompactedVersion {
-    /// Unchecked doc_id access (for internal use during compaction).
-    pub(crate) fn doc_id_at_unchecked(&self, node_idx: u32) -> u64 {
-        let mmap = self.doc_ids.as_ref().expect("doc_ids mmap missing");
-        let offset = node_idx as usize * 8;
-        let bytes: [u8; 8] = mmap[offset..offset + 8].try_into().unwrap();
-        u64::from_ne_bytes(bytes)
+// ──────────────────────────────────────────────────
+// Helper functions
+// ──────────────────────────────────────────────────
+
+/// Merge segment-level deletes with targeted live deletes for a segment's doc_id range.
+fn merge_segment_deletes(
+    segment_deletes: &[u64],
+    live_deletes: &[u64],
+    min_doc_id: u64,
+    max_doc_id: u64,
+) -> Vec<u64> {
+    // Extract live deletes that fall within this segment's range
+    let start = live_deletes.partition_point(|&d| d < min_doc_id);
+    let end = live_deletes.partition_point(|&d| d <= max_doc_id);
+    let targeted = &live_deletes[start..end];
+    merge_sorted_u64(segment_deletes, targeted)
+}
+
+/// Deduplicate results by doc_id (keeping first/closest) and truncate to k.
+fn deduplicate_and_truncate(results: &mut Vec<(u64, f32)>, k: usize) {
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|(doc_id, _)| seen.insert(*doc_id));
+    results.truncate(k);
+}
+
+/// Distribute live deletes to segments by doc_id range using binary search.
+fn distribute_deletes(
+    segments: &[super::segment::Segment],
+    deletes: &[u64],
+) -> Vec<Vec<u64>> {
+    let mut per_segment: Vec<Vec<u64>> = vec![Vec::new(); segments.len()];
+    for &doc_id in deletes {
+        // Find which segment this doc_id belongs to
+        for (i, seg) in segments.iter().enumerate() {
+            if doc_id >= seg.min_doc_id && doc_id <= seg.max_doc_id {
+                per_segment[i].push(doc_id);
+                break;
+            }
+        }
+    }
+    // Each per-segment list is already sorted because deletes is sorted
+    per_segment
+}
+
+/// Count surviving nodes in a segment (total - nodes that are deleted).
+fn surviving_count(num_nodes: usize, doc_ids: &[u64], deletes: &[u64]) -> usize {
+    if deletes.is_empty() {
+        return num_nodes;
+    }
+    let mut deleted = 0;
+    for &doc_id in doc_ids {
+        if deletes.binary_search(&doc_id).is_ok() {
+            deleted += 1;
+        }
+    }
+    num_nodes - deleted
+}
+
+/// Collect surviving vectors from a segment (skip deleted and re-inserted in live).
+fn collect_surviving(
+    segment: &super::segment::Segment,
+    deletes: &[u64],
+    dimensions: usize,
+    snapshot: &LiveSnapshot,
+) -> (Vec<f32>, Vec<u64>) {
+    let mut vectors = Vec::new();
+    let mut doc_ids = Vec::new();
+
+    for i in 0..segment.num_nodes {
+        let doc_id = segment.doc_id_at_unchecked(i as u32);
+        if deletes.binary_search(&doc_id).is_ok() {
+            continue;
+        }
+        // Skip if re-inserted in live (we'll use the live version)
+        if snapshot
+            .entries
+            .binary_search_by_key(&doc_id, |(id, _)| *id)
+            .is_ok()
+        {
+            continue;
+        }
+        let raw_vec = segment.raw_vector_unchecked(i as u32, dimensions);
+        vectors.extend_from_slice(raw_vec);
+        doc_ids.push(doc_id);
     }
 
-    /// Unchecked raw vector access (for internal use during compaction).
-    pub(crate) fn raw_vector_unchecked(&self, node_idx: u32, dimensions: usize) -> &[f32] {
-        let mmap = self.raw_vectors.as_ref().expect("raw_vectors mmap missing");
-        let offset = node_idx as usize * dimensions * 4;
-        let ptr = mmap[offset..].as_ptr() as *const f32;
-        unsafe { std::slice::from_raw_parts(ptr, dimensions) }
+    (vectors, doc_ids)
+}
+
+/// Build an HNSW graph and write all segment files to disk.
+fn build_and_write_segment(
+    base_path: &std::path::Path,
+    seg_id: u64,
+    vectors: &[f32],
+    doc_ids: &[u64],
+    config: &VectorConfig,
+    quant_params: &QuantizationParams,
+    distance_fn: DistanceFn,
+) -> Result<(), Error> {
+    let seg_dir = ensure_segment_dir(base_path, seg_id)?;
+    let dimensions = config.dimensions;
+    let num_nodes = doc_ids.len();
+
+    // Build HNSW graph
+    let mut builder = HnswBuilder::new(config, distance_fn);
+    builder.build(vectors, doc_ids, dimensions)?;
+
+    // Write raw vectors
+    write_raw_vectors(&seg_dir.join("vectors.raw"), vectors)?;
+
+    // Quantize and write quantized vectors
+    let quantized = quant_params.quantize_all(vectors, dimensions);
+    write_quantized_vectors(&seg_dir.join("vectors.quantized"), &quantized)?;
+    quant_params.write_to_file(&seg_dir.join("quantization.bin"))?;
+
+    // Write graph
+    builder.write_graph(&seg_dir.join("hnsw.graph"))?;
+
+    // Write doc_ids
+    write_doc_ids(&seg_dir.join("doc_ids.bin"), doc_ids)?;
+
+    // Write levels
+    builder.write_levels(&seg_dir.join("levels.bin"))?;
+
+    // Write meta
+    write_meta(
+        &seg_dir,
+        config,
+        num_nodes,
+        config.max_level,
+        builder.entry_point(),
+    )?;
+
+    Ok(())
+}
+
+/// Incremental insert: append live entries to an existing segment, producing a new segment.
+fn incremental_insert_segment(
+    base_path: &std::path::Path,
+    old_segment: &super::segment::Segment,
+    new_seg_id: u64,
+    live_entries: &[(u64, Vec<f32>)],
+    config: &VectorConfig,
+    distance_fn: DistanceFn,
+) -> Result<(), Error> {
+    let seg_dir = ensure_segment_dir(base_path, new_seg_id)?;
+    let dimensions = config.dimensions;
+    let old_num_nodes = old_segment.num_nodes;
+    let new_count = live_entries.len();
+    let total_nodes = old_num_nodes + new_count;
+
+    // 1. Write raw vectors: old ++ new
+    let old_raw = old_segment.raw_vectors_slice();
+    let new_raw: Vec<f32> = live_entries
+        .iter()
+        .flat_map(|(_, v)| v.iter().copied())
+        .collect();
+    write_raw_vectors_concat(&seg_dir.join("vectors.raw"), old_raw, &new_raw)?;
+
+    // 2. Write doc_ids: old ++ new
+    let old_doc_ids = old_segment.doc_ids_slice();
+    let new_doc_ids: Vec<u64> = live_entries.iter().map(|(id, _)| *id).collect();
+    write_doc_ids_concat(&seg_dir.join("doc_ids.bin"), old_doc_ids, &new_doc_ids)?;
+
+    // 3. Assign levels to new nodes
+    let old_levels = old_segment.levels_slice();
+    let new_levels = assign_random_levels(new_count, config.max_level, config.m);
+
+    // 4. Handle quantization (fast path or extend path)
+    let old_params = &old_segment.quantization_params;
+    let (new_mins, new_maxs) = compute_min_max(&new_raw, dimensions);
+    let params_fit = range_contains(old_params, &new_mins, &new_maxs);
+
+    if params_fit {
+        // FAST PATH: quantize only new vectors with existing params, append
+        let old_quantized = old_segment.quantized_vectors_slice();
+        let new_quantized = old_params.quantize_all(&new_raw, dimensions);
+        write_quantized_vectors_concat(
+            &seg_dir.join("vectors.quantized"),
+            old_quantized,
+            &new_quantized,
+        )?;
+        old_params.write_to_file(&seg_dir.join("quantization.bin"))?;
+    } else {
+        // EXTEND PATH: widen params, re-quantize everything
+        let extended_params = QuantizationParams {
+            mins: element_wise_min(&old_params.mins, &new_mins),
+            maxs: element_wise_max(&old_params.maxs, &new_maxs),
+            dimensions,
+        };
+        let all_raw: Vec<f32> = old_raw
+            .iter()
+            .chain(new_raw.iter())
+            .copied()
+            .collect();
+        let quantized = extended_params.quantize_all(&all_raw, dimensions);
+        write_quantized_vectors(&seg_dir.join("vectors.quantized"), &quantized)?;
+        extended_params.write_to_file(&seg_dir.join("quantization.bin"))?;
     }
+
+    // 5. Load old graph, insert new nodes, write updated graph
+    let mut builder = HnswBuilder::load_from_graph(
+        old_segment.graph_bytes(),
+        old_levels,
+        config,
+        distance_fn,
+    )?;
+
+    // All raw vectors (old + new) needed for distance calculations
+    let all_raw: Vec<f32> = old_raw
+        .iter()
+        .chain(new_raw.iter())
+        .copied()
+        .collect();
+    builder.insert_nodes(old_num_nodes, &new_levels, &all_raw, dimensions)?;
+
+    builder.write_graph(&seg_dir.join("hnsw.graph"))?;
+
+    // 6. Write levels: old ++ new
+    write_levels_concat(
+        &seg_dir.join("levels.bin"),
+        old_levels,
+        &new_levels.iter().map(|&l| l as u8).collect::<Vec<u8>>(),
+    )?;
+
+    // 7. Write metadata
+    write_meta(
+        &seg_dir,
+        config,
+        total_nodes,
+        config.max_level,
+        builder.entry_point(),
+    )?;
+
+    Ok(())
+}
+
+/// Assign random levels to new nodes (same distribution as HnswBuilder).
+fn assign_random_levels(count: usize, max_level: usize, m: usize) -> Vec<usize> {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let ml = 1.0 / (m as f64).ln();
+    (0..count)
+        .map(|_| {
+            let r: f64 = rng.random();
+            ((-r.ln() * ml).floor() as usize).min(max_level - 1)
+        })
+        .collect()
+}
+
+// ──────────────────────────────────────────────────
+// I/O helper functions
+// ──────────────────────────────────────────────────
+
+fn write_raw_vectors(path: &std::path::Path, vectors: &[f32]) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    for &v in vectors {
+        file.write_all(&v.to_ne_bytes())?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_raw_vectors_concat(
+    path: &std::path::Path,
+    old: &[f32],
+    new: &[f32],
+) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    for &v in old {
+        file.write_all(&v.to_ne_bytes())?;
+    }
+    for &v in new {
+        file.write_all(&v.to_ne_bytes())?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_quantized_vectors(path: &std::path::Path, vectors: &[i8]) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len()) };
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_quantized_vectors_concat(
+    path: &std::path::Path,
+    old: &[i8],
+    new: &[i8],
+) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    let old_bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(old.as_ptr() as *const u8, old.len()) };
+    let new_bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(new.as_ptr() as *const u8, new.len()) };
+    file.write_all(old_bytes)?;
+    file.write_all(new_bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_doc_ids(path: &std::path::Path, doc_ids: &[u64]) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    for &id in doc_ids {
+        file.write_all(&id.to_ne_bytes())?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_doc_ids_concat(
+    path: &std::path::Path,
+    old: &[u64],
+    new: &[u64],
+) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    for &id in old {
+        file.write_all(&id.to_ne_bytes())?;
+    }
+    for &id in new {
+        file.write_all(&id.to_ne_bytes())?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_levels_concat(
+    path: &std::path::Path,
+    old: &[u8],
+    new: &[u8],
+) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(old)?;
+    file.write_all(new)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_meta(
+    dir: &std::path::Path,
+    config: &VectorConfig,
+    num_nodes: usize,
+    max_level: usize,
+    entry_point: u32,
+) -> Result<(), Error> {
+    let meta = serde_json::json!({
+        "dimensions": config.dimensions,
+        "metric": config.metric.to_string(),
+        "m": config.m,
+        "m0": config.m0,
+        "ef_construction": config.ef_construction,
+        "num_nodes": num_nodes,
+        "max_level": max_level,
+        "entry_point": entry_point,
+    });
+    let json = serde_json::to_string_pretty(&meta)
+        .map_err(|e| Error::CorruptedFile(format!("failed to serialize meta: {e}")))?;
+    let mut file = std::fs::File::create(dir.join("hnsw.meta"))?;
+    file.write_all(json.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Merge two sorted u64 slices into a sorted Vec.
@@ -527,7 +1021,9 @@ mod tests {
     fn test_new_empty() {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(tmp.path().to_path_buf(), config).unwrap();
+        let storage =
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
         assert_eq!(storage.current_version_number(), 0);
     }
 
@@ -535,7 +1031,9 @@ mod tests {
     fn test_insert_validation() {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(tmp.path().to_path_buf(), config).unwrap();
+        let storage =
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
 
         // Valid insert
         assert!(storage.insert(1, &[1.0, 2.0, 3.0]).is_ok());
@@ -555,7 +1053,9 @@ mod tests {
     fn test_search_live_only() {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(tmp.path().to_path_buf(), config).unwrap();
+        let storage =
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
 
         storage.insert(1, &[0.0, 0.0]).unwrap();
         storage.insert(2, &[1.0, 0.0]).unwrap();

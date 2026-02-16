@@ -3,6 +3,74 @@ use super::error::Error;
 #[cfg(feature = "cli")]
 use serde::Serialize;
 
+/// Deletion ratio threshold (0.0–1.0).
+/// When a segment's `num_deletes / num_nodes` exceeds this, the segment is fully rebuilt.
+#[derive(Debug, Clone, Copy)]
+pub struct DeletionThreshold(f64);
+
+impl DeletionThreshold {
+    #[inline]
+    pub fn value(&self) -> f64 {
+        self.0
+    }
+}
+
+impl Default for DeletionThreshold {
+    fn default() -> Self {
+        DeletionThreshold(0.1)
+    }
+}
+
+impl TryFrom<f64> for DeletionThreshold {
+    type Error = &'static str;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(DeletionThreshold(value))
+        } else {
+            Err("threshold must be between 0.0 and 1.0")
+        }
+    }
+}
+
+impl TryFrom<f32> for DeletionThreshold {
+    type Error = &'static str;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
+        DeletionThreshold::try_from(value as f64)
+    }
+}
+
+/// Configuration for multi-segment compaction behaviour.
+#[derive(Debug, Clone)]
+pub struct SegmentConfig {
+    /// Maximum number of nodes per segment.
+    /// When the last segment + live insertions would exceed this, a new segment is created.
+    /// Must be <= u32::MAX. Default: 1_000_000.
+    pub max_nodes_per_segment: u32,
+
+    /// Deletion ratio threshold (0.0–1.0).
+    /// When a segment's `num_deletes / num_nodes` exceeds this, it is fully rebuilt.
+    /// Default: 0.1.
+    pub deletion_threshold: DeletionThreshold,
+
+    /// Insertion ratio threshold (0.0–1.0).
+    /// When `insertions_since_rebuild / nodes_at_last_rebuild` exceeds this,
+    /// the last segment is fully rebuilt instead of incrementally updated.
+    /// Default: 0.3.
+    pub insertion_rebuild_threshold: f64,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            max_nodes_per_segment: 1_000_000,
+            deletion_threshold: DeletionThreshold::default(),
+            insertion_rebuild_threshold: 0.3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(Serialize))]
 pub enum DistanceMetric {

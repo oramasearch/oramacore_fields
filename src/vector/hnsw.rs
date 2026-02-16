@@ -408,6 +408,113 @@ impl HnswBuilder {
         Ok(())
     }
 
+    /// Load an existing HNSW graph from its binary format for incremental updates.
+    pub fn load_from_graph(
+        graph_bytes: &[u8],
+        levels_bytes: &[u8],
+        config: &VectorConfig,
+        distance_fn: DistanceFn,
+    ) -> Result<Self, Error> {
+        if graph_bytes.len() < GRAPH_HEADER_SIZE {
+            return Err(Error::CorruptedFile(
+                "graph too small for header".into(),
+            ));
+        }
+
+        let num_nodes =
+            u32::from_ne_bytes(graph_bytes[0..4].try_into().unwrap()) as usize;
+        let entry_point =
+            u32::from_ne_bytes(graph_bytes[10..14].try_into().unwrap()) as usize;
+
+        if num_nodes == 0 {
+            return Ok(Self {
+                config: config.clone(),
+                nodes: Vec::new(),
+                entry_point: 0,
+                current_max_level: 0,
+                distance_fn,
+            });
+        }
+
+        let node_block_size = config.node_block_size();
+        let m0 = config.m0;
+        let m = config.m;
+
+        let mut nodes = Vec::with_capacity(num_nodes);
+        let mut current_max_level: usize = 0;
+
+        for i in 0..num_nodes {
+            let level = levels_bytes[i] as usize;
+            if level > current_max_level {
+                current_max_level = level;
+            }
+
+            let base = GRAPH_HEADER_SIZE + i * node_block_size;
+            let mut neighbors: Vec<Vec<u32>> = Vec::with_capacity(level + 1);
+
+            for lv in 0..=level {
+                let (offset, count) = if lv == 0 {
+                    (base, m0)
+                } else {
+                    (base + m0 * 4 + (lv - 1) * m * 4, m)
+                };
+
+                let mut layer_neighbors = Vec::new();
+                for j in 0..count {
+                    let pos = offset + j * 4;
+                    let idx = u32::from_ne_bytes(
+                        graph_bytes[pos..pos + 4].try_into().unwrap(),
+                    );
+                    if idx != SENTINEL {
+                        layer_neighbors.push(idx);
+                    }
+                }
+                neighbors.push(layer_neighbors);
+            }
+
+            nodes.push(HnswNode { level, neighbors });
+        }
+
+        Ok(Self {
+            config: config.clone(),
+            nodes,
+            entry_point,
+            current_max_level,
+            distance_fn,
+        })
+    }
+
+    /// Insert new nodes into an existing graph (incremental update).
+    /// `start_index` is the first index of the new nodes in the combined vectors buffer.
+    /// `new_levels` are the assigned levels for each new node.
+    /// `all_vectors` is the flat f32 buffer of ALL vectors (old + new).
+    pub fn insert_nodes(
+        &mut self,
+        start_index: usize,
+        new_levels: &[usize],
+        all_vectors: &[f32],
+        dimensions: usize,
+    ) -> Result<(), Error> {
+        // Extend self.nodes with placeholder entries for new nodes
+        for &level in new_levels {
+            self.nodes.push(HnswNode {
+                level,
+                neighbors: (0..=level).map(|_| Vec::new()).collect(),
+            });
+        }
+
+        // Build a combined levels array for insert_node
+        let all_levels: Vec<usize> = self.nodes.iter().map(|n| n.level).collect();
+
+        // Insert each new node using the existing insert_node method
+        for i in 0..new_levels.len() {
+            let idx = start_index + i;
+            self.insert_node(idx, &all_levels, all_vectors, dimensions);
+        }
+
+        Ok(())
+    }
+
     pub fn entry_point(&self) -> u32 {
         self.entry_point as u32
     }
