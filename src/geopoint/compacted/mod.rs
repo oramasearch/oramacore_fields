@@ -361,11 +361,6 @@ impl Segment {
         })
     }
 
-    #[allow(dead_code)]
-    pub fn collect_all_points(&self) -> Vec<(EncodedPoint, u64)> {
-        self.iter_all_points()
-            .map_or_else(Vec::new, |it| it.collect())
-    }
 }
 
 pub(crate) struct SegmentPointIter<'a> {
@@ -631,11 +626,6 @@ impl CompactedVersion {
         iter
     }
 
-    #[allow(dead_code)]
-    pub fn collect_all_points(&self) -> Vec<(EncodedPoint, u64)> {
-        self.iter_all_points().collect()
-    }
-
     pub fn total_point_count(&self) -> u64 {
         self.segments.iter().map(|s| s.point_count).sum()
     }
@@ -760,7 +750,7 @@ mod tests {
         write_u64_slice(&ver_dir.join("deleted.bin"), &[]).unwrap();
 
         let version = CompactedVersion::load(base_path, 1).unwrap();
-        let all = version.collect_all_points();
+        let all: Vec<_> = version.iter_all_points().collect();
         assert_eq!(all.len(), 2);
         let doc_ids: Vec<u64> = all.iter().map(|(_, id)| *id).collect();
         assert!(doc_ids.contains(&1));
@@ -820,17 +810,12 @@ mod tests {
 
         let version = CompactedVersion::load(base_path, 1).unwrap();
 
-        let collected = version.collect_all_points();
         let iterated: Vec<(EncodedPoint, u64)> = version.iter_all_points().collect();
 
-        assert_eq!(collected.len(), iterated.len());
-        // Both should contain the same elements (order may differ across methods)
-        for item in &collected {
-            assert!(iterated.contains(item));
-        }
-        for item in &iterated {
-            assert!(collected.contains(item));
-        }
+        assert_eq!(iterated.len(), 2);
+        let doc_ids: Vec<u64> = iterated.iter().map(|(_, id)| *id).collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&2));
     }
 
     #[test]
