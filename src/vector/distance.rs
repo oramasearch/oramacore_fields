@@ -16,10 +16,7 @@ pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
 
 pub fn dot_product_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    -a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| x * y)
-        .sum::<f32>()
+    -a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum::<f32>()
 }
 
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {

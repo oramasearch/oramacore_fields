@@ -143,13 +143,7 @@ impl HnswBuilder {
         Ok(())
     }
 
-    fn insert_node(
-        &mut self,
-        idx: usize,
-        levels: &[usize],
-        vectors: &[f32],
-        dimensions: usize,
-    ) {
+    fn insert_node(&mut self, idx: usize, levels: &[usize], vectors: &[f32], dimensions: usize) {
         let node_level = levels[idx];
         let node_vec = &vectors[idx * dimensions..(idx + 1) * dimensions];
 
@@ -197,8 +191,7 @@ impl HnswBuilder {
                 self.nodes[ni].neighbors[level].push(idx as u32);
                 // Prune if over capacity
                 if self.nodes[ni].neighbors[level].len() > max_neighbors {
-                    let neighbor_vec =
-                        &vectors[ni * dimensions..(ni + 1) * dimensions];
+                    let neighbor_vec = &vectors[ni * dimensions..(ni + 1) * dimensions];
                     let neighbor_candidates: Vec<(u32, f32)> = self.nodes[ni].neighbors[level]
                         .iter()
                         .map(|&n| {
@@ -304,8 +297,7 @@ impl HnswBuilder {
             distance: c_dist,
         }) = candidates.pop()
         {
-            let worst_result_dist =
-                results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            let worst_result_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
             if c_dist > worst_result_dist && results.len() >= ef {
                 break;
             }
@@ -328,8 +320,7 @@ impl HnswBuilder {
                 let nv = &vectors[n * dimensions..(n + 1) * dimensions];
                 let d = (self.distance_fn)(query, nv);
 
-                let worst_result_dist =
-                    results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                let worst_result_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                 if d < worst_result_dist || results.len() < ef {
                     candidates.push(MinHeapItem {
                         index: neighbor_idx,

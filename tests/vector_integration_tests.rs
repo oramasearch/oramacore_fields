@@ -346,9 +346,7 @@ fn test_concurrent_search() {
     let storage = Arc::new(VectorStorage::new(tmp.path().to_path_buf(), config).unwrap());
 
     for i in 0..100u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 

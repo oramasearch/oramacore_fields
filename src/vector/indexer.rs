@@ -20,10 +20,8 @@ impl VectorIndexer {
                 if arr.len() != self.dimensions {
                     return None;
                 }
-                let floats: Option<Vec<f32>> = arr
-                    .iter()
-                    .map(|v| v.as_f64().map(|f| f as f32))
-                    .collect();
+                let floats: Option<Vec<f32>> =
+                    arr.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
                 floats.map(IndexedValue::Single)
             }
             _ => None,

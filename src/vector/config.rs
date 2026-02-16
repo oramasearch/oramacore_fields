@@ -1,6 +1,10 @@
 use super::error::Error;
 
+#[cfg(feature = "cli")]
+use serde::Serialize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub enum DistanceMetric {
     L2,
     DotProduct,

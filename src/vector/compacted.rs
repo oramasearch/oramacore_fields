@@ -107,28 +107,34 @@ impl CompactedVersion {
         };
 
         Ok(CompactedConfig {
-            dimensions: v["dimensions"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing dimensions in hnsw.meta".into())
-            })? as usize,
+            dimensions: v["dimensions"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing dimensions in hnsw.meta".into()))?
+                as usize,
             metric,
-            m: v["m"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing m in hnsw.meta".into())
-            })? as usize,
-            m0: v["m0"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing m0 in hnsw.meta".into())
-            })? as usize,
+            m: v["m"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing m in hnsw.meta".into()))?
+                as usize,
+            m0: v["m0"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing m0 in hnsw.meta".into()))?
+                as usize,
             ef_construction: v["ef_construction"].as_u64().ok_or_else(|| {
                 Error::CorruptedFile("missing ef_construction in hnsw.meta".into())
             })? as usize,
-            num_nodes: v["num_nodes"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing num_nodes in hnsw.meta".into())
-            })? as usize,
-            max_level: v["max_level"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing max_level in hnsw.meta".into())
-            })? as usize,
-            entry_point: v["entry_point"].as_u64().ok_or_else(|| {
-                Error::CorruptedFile("missing entry_point in hnsw.meta".into())
-            })? as u32,
+            num_nodes: v["num_nodes"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing num_nodes in hnsw.meta".into()))?
+                as usize,
+            max_level: v["max_level"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing max_level in hnsw.meta".into()))?
+                as usize,
+            entry_point: v["entry_point"]
+                .as_u64()
+                .ok_or_else(|| Error::CorruptedFile("missing entry_point in hnsw.meta".into()))?
+                as u32,
         })
     }
 
@@ -136,10 +142,7 @@ impl CompactedVersion {
         Self::load_mmap_with_advice(path, advise_sequential)
     }
 
-    fn load_mmap_with_advice(
-        path: &Path,
-        advice_fn: fn(&Mmap),
-    ) -> Result<Option<Mmap>, Error> {
+    fn load_mmap_with_advice(path: &Path, advice_fn: fn(&Mmap)) -> Result<Option<Mmap>, Error> {
         if !path.exists() {
             return Ok(None);
         }
@@ -188,10 +191,7 @@ impl CompactedVersion {
         let (offset, count) = if level == 0 {
             (base, config.m0)
         } else {
-            (
-                base + config.m0 * 4 + (level - 1) * config.m * 4,
-                config.m,
-            )
+            (base + config.m0 * 4 + (level - 1) * config.m * 4, config.m)
         };
 
         let end = offset + count * 4;

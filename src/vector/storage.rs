@@ -1,12 +1,14 @@
 use super::compacted::CompactedVersion;
 use super::config::VectorConfig;
-use super::distance::{resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn};
+use super::distance::{
+    resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
+};
 use super::error::Error;
 use super::hnsw::HnswBuilder;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
 use super::io::{
-    ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir,
-    version_dir, write_current_atomic, write_postings, FORMAT_VERSION,
+    ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir, version_dir,
+    write_current_atomic, write_postings, FORMAT_VERSION,
 };
 use super::live::{LiveLayer, LiveSnapshot};
 use super::quantization::QuantizationParams;
@@ -142,8 +144,7 @@ impl VectorStorage {
         };
 
         // Search live layer (brute force)
-        let live_results =
-            snapshot.search(query, k, self.distance_fn, &merged_deletes);
+        let live_results = snapshot.search(query, k, self.distance_fn, &merged_deletes);
 
         // Merge results
         compacted_results.extend(live_results);
@@ -304,9 +305,8 @@ impl VectorStorage {
 
     fn write_quantized_vectors(path: &std::path::Path, vectors: &[i8]) -> Result<(), Error> {
         let mut file = std::fs::File::create(path)?;
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len())
-        };
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len()) };
         file.write_all(bytes)?;
         file.sync_all()?;
         Ok(())
@@ -374,11 +374,7 @@ impl VectorStorage {
         let live = self.live.read().unwrap();
         let ver_dir = version_dir(&self.base_path, version.version_number);
 
-        let num_vectors = version
-            .config
-            .as_ref()
-            .map(|c| c.num_nodes)
-            .unwrap_or(0);
+        let num_vectors = version.config.as_ref().map(|c| c.num_nodes).unwrap_or(0);
 
         IndexInfo {
             format_version: FORMAT_VERSION,
@@ -407,7 +403,9 @@ impl VectorStorage {
             Ok(Some((format_version, version_number))) => {
                 checks.push(IntegrityCheck::ok(
                     "CURRENT",
-                    Some(format!("version: {format_version}, version_number: {version_number}")),
+                    Some(format!(
+                        "version: {format_version}, version_number: {version_number}"
+                    )),
                 ));
 
                 if format_version != FORMAT_VERSION {
@@ -570,7 +568,10 @@ mod tests {
 
     #[test]
     fn test_merge_sorted_u64() {
-        assert_eq!(merge_sorted_u64(&[1, 3, 5], &[2, 4, 6]), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            merge_sorted_u64(&[1, 3, 5], &[2, 4, 6]),
+            vec![1, 2, 3, 4, 5, 6]
+        );
         assert_eq!(merge_sorted_u64(&[1, 2], &[2, 3]), vec![1, 2, 3]);
         assert_eq!(merge_sorted_u64(&[], &[1, 2]), vec![1, 2]);
         assert_eq!(merge_sorted_u64(&[1, 2], &[]), vec![1, 2]);
