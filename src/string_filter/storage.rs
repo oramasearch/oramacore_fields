@@ -100,13 +100,19 @@ impl StringFilterStorage {
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
 
-        // Refresh snapshot (ops_len is captured inside the snapshot)
+        // Take snapshot (double-check locking to avoid blocking readers)
         let snapshot = {
-            let mut live = self.live.write().unwrap();
-            if live.is_snapshot_dirty() {
-                live.refresh_snapshot();
+            let live = self.live.read().unwrap();
+            if !live.is_snapshot_dirty() {
+                live.get_snapshot()
+            } else {
+                drop(live);
+                let mut live = self.live.write().unwrap();
+                if live.is_snapshot_dirty() {
+                    live.refresh_snapshot();
+                }
+                live.get_snapshot()
             }
-            live.get_snapshot()
         };
 
         // Nothing to compact — free memory and return early

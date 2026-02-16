@@ -108,14 +108,7 @@ impl StringStorage {
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let _compaction_guard = self.compaction_lock.lock().unwrap();
 
-        // Refresh snapshot (ops_len is captured inside the snapshot)
-        let snapshot = {
-            let mut live = self.live.write().unwrap();
-            if live.is_snapshot_dirty() {
-                live.refresh_snapshot();
-            }
-            live.get_snapshot()
-        };
+        let snapshot = self.get_fresh_snapshot();
 
         // Nothing to compact — free memory and return early
         if snapshot.term_postings.is_empty() && snapshot.deletes.is_empty() {
