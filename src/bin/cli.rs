@@ -37,6 +37,11 @@ enum TopLevel {
         #[command(subcommand)]
         command: StringCommands,
     },
+    /// Inspect and search vector (ANN) indexes
+    Vector {
+        #[command(subcommand)]
+        command: VectorCommands,
+    },
 }
 
 // ── Output format (shared) ──────────────────────────────────────────────────
@@ -983,6 +988,227 @@ fn string_search(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Vector subcommands
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MetricArg {
+    L2,
+    DotProduct,
+    Cosine,
+}
+
+impl MetricArg {
+    fn into_metric(self) -> oramacore_fields::vector::DistanceMetric {
+        use oramacore_fields::vector::DistanceMetric;
+        match self {
+            MetricArg::L2 => DistanceMetric::L2,
+            MetricArg::DotProduct => DistanceMetric::DotProduct,
+            MetricArg::Cosine => DistanceMetric::Cosine,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum VectorCommands {
+    /// Check index integrity and validate files
+    Check {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Vector dimensions
+        #[arg(short, long)]
+        dimensions: usize,
+        /// Distance metric
+        #[arg(short, long, value_enum)]
+        metric: MetricArg,
+        /// Show detailed validation information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Display index information and statistics
+    Info {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Vector dimensions
+        #[arg(short, long)]
+        dimensions: usize,
+        /// Distance metric
+        #[arg(short = 'M', long, value_enum)]
+        metric: MetricArg,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Search for nearest neighbors
+    Search {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Vector dimensions
+        #[arg(short, long)]
+        dimensions: usize,
+        /// Distance metric
+        #[arg(short = 'M', long, value_enum)]
+        metric: MetricArg,
+        /// Query vector as comma-separated floats (e.g. "0.1,0.2,0.3")
+        #[arg(short, long, allow_hyphen_values = true)]
+        query: String,
+        /// Number of nearest neighbors to return
+        #[arg(short, long)]
+        k: usize,
+        /// Search expansion factor (ef_search override)
+        #[arg(long)]
+        ef_search: Option<usize>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+}
+
+fn open_vector_storage(
+    path: &Path,
+    dimensions: usize,
+    metric: MetricArg,
+) -> Result<oramacore_fields::vector::VectorStorage, String> {
+    use oramacore_fields::vector::{SegmentConfig, VectorConfig, VectorStorage};
+
+    let config = VectorConfig::new(dimensions, metric.into_metric())
+        .map_err(|e| format!("Invalid config: {e}"))?;
+    VectorStorage::new(path.to_path_buf(), config, SegmentConfig::default())
+        .map_err(|e| format!("Failed to open index: {e}"))
+}
+
+fn vector_check(
+    path: &Path,
+    dimensions: usize,
+    metric: MetricArg,
+    verbose: bool,
+) -> Result<(), String> {
+    use oramacore_fields::vector::CheckStatus;
+
+    let storage = open_vector_storage(path, dimensions, metric)?;
+    let result = storage.integrity_check();
+
+    for check in &result.checks {
+        let status_str = match check.status {
+            CheckStatus::Ok => "[OK]",
+            CheckStatus::Failed => "[FAIL]",
+        };
+
+        if check.status == CheckStatus::Failed || verbose {
+            if let Some(ref details) = check.details {
+                println!("{status_str} {}: {details}", check.name);
+            } else {
+                println!("{status_str} {}", check.name);
+            }
+        }
+    }
+
+    if result.passed {
+        println!("\nIndex validation PASSED");
+        Ok(())
+    } else {
+        println!("\nIndex validation FAILED");
+        process::exit(1);
+    }
+}
+
+fn vector_info(
+    path: &Path,
+    dimensions: usize,
+    metric: MetricArg,
+    format: OutputFormat,
+) -> Result<(), String> {
+    let storage = open_vector_storage(path, dimensions, metric)?;
+    let info = storage.info();
+
+    match format {
+        OutputFormat::Human => {
+            println!("Index Information");
+            println!("=================");
+            println!("Format version:    {}", info.format_version);
+            println!("Current version:   {}", info.current_version_number);
+            println!("Version dir:       {}", info.version_dir.display());
+            println!();
+            println!("Dimensions:        {}", info.dimensions);
+            println!("Metric:            {}", info.metric);
+            println!("Num vectors:       {}", info.num_vectors);
+            println!();
+            println!("Pending ops:       {}", info.pending_ops);
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&info).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct VectorSearchResult {
+    count: usize,
+    results: Vec<VectorSearchHit>,
+}
+
+#[derive(Serialize)]
+struct VectorSearchHit {
+    doc_id: u64,
+    distance: f32,
+}
+
+fn vector_search(
+    path: &Path,
+    dimensions: usize,
+    metric: MetricArg,
+    query_str: &str,
+    k: usize,
+    ef_search: Option<usize>,
+    format: OutputFormat,
+) -> Result<(), String> {
+    let storage = open_vector_storage(path, dimensions, metric)?;
+
+    let query: Vec<f32> = query_str
+        .split(',')
+        .map(|s| {
+            s.trim()
+                .parse::<f32>()
+                .map_err(|e| format!("Failed to parse query component '{s}': {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let results = storage
+        .search(&query, k, ef_search)
+        .map_err(|e| format!("Search failed: {e}"))?;
+
+    let result = VectorSearchResult {
+        count: results.len(),
+        results: results
+            .iter()
+            .map(|(doc_id, distance)| VectorSearchHit {
+                doc_id: *doc_id,
+                distance: *distance,
+            })
+            .collect(),
+    };
+
+    match format {
+        OutputFormat::Human => {
+            println!("Found {} result(s)", result.count);
+            println!();
+            for hit in &result.results {
+                println!("{}\t{:.6}", hit.doc_id, hit.distance);
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1063,6 +1289,29 @@ fn main() {
                 limit,
                 format,
             ),
+        },
+        TopLevel::Vector { command } => match command {
+            VectorCommands::Check {
+                path,
+                dimensions,
+                metric,
+                verbose,
+            } => vector_check(&path, dimensions, metric, verbose),
+            VectorCommands::Info {
+                path,
+                dimensions,
+                metric,
+                format,
+            } => vector_info(&path, dimensions, metric, format),
+            VectorCommands::Search {
+                path,
+                dimensions,
+                metric,
+                query,
+                k,
+                ef_search,
+                format,
+            } => vector_search(&path, dimensions, metric, &query, k, ef_search, format),
         },
     };
 
@@ -1425,5 +1674,122 @@ mod tests_cli {
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Unsupported format version"));
+    }
+
+    // ── Vector CLI tests ────────────────────────────────────────────────────
+
+    fn create_test_vector_index() -> (TempDir, PathBuf) {
+        use oramacore_fields::vector::{
+            DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        let index = VectorStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
+
+        index.insert(1, &[0.1, 0.2, 0.3]).unwrap();
+        index.insert(2, &[0.4, 0.5, 0.6]).unwrap();
+        index.insert(3, &[0.9, 0.8, 0.7]).unwrap();
+        index.compact(1).unwrap();
+
+        (tmp, path)
+    }
+
+    #[test]
+    fn test_vector_cmd_check() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_check(&path, 3, MetricArg::Cosine, false).unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_check_verbose() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_check(&path, 3, MetricArg::Cosine, true).unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_info() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_info(&path, 3, MetricArg::Cosine, OutputFormat::Human).unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_info_json() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_info(&path, 3, MetricArg::Cosine, OutputFormat::Json).unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_search() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_search(
+            &path,
+            3,
+            MetricArg::Cosine,
+            "0.1,0.2,0.3",
+            2,
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_search_json() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_search(
+            &path,
+            3,
+            MetricArg::Cosine,
+            "0.1,0.2,0.3",
+            2,
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_search_with_ef() {
+        let (_tmp, path) = create_test_vector_index();
+        vector_search(
+            &path,
+            3,
+            MetricArg::Cosine,
+            "0.1,0.2,0.3",
+            2,
+            Some(128),
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_vector_cmd_check_uncompacted_index() {
+        use oramacore_fields::vector::{
+            DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
+        let index = VectorStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
+        let result = index.integrity_check();
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_vector_cmd_check_wrong_format_version() {
+        let (_tmp, path) = create_test_vector_index();
+
+        let current_path = path.join("CURRENT");
+        std::fs::write(&current_path, "999\n1").unwrap();
+
+        let result = vector_check(&path, 3, MetricArg::Cosine, false);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("format version"));
     }
 }
