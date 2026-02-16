@@ -125,7 +125,7 @@ pub fn write_deleted(path: &Path, doc_ids: &[u64]) -> Result<()> {
     let mut writer = BufWriter::new(file);
     for &v in doc_ids {
         writer
-            .write_all(&v.to_le_bytes())
+            .write_all(&v.to_ne_bytes())
             .with_context(|| format!("Failed to write to: {path:?}"))?;
     }
 
@@ -150,7 +150,7 @@ where
     let mut writer = BufWriter::new(file);
     for v in iter {
         writer
-            .write_all(&v.to_le_bytes())
+            .write_all(&v.to_ne_bytes())
             .with_context(|| format!("Failed to write to: {path:?}"))?;
     }
 
@@ -171,8 +171,8 @@ pub fn write_doc_lengths(path: &Path, entries: &[(u64, u32)]) -> Result<()> {
 
     let mut writer = BufWriter::new(file);
     for &(doc_id, field_length) in entries {
-        writer.write_all(&doc_id.to_le_bytes())?;
-        writer.write_all(&field_length.to_le_bytes())?;
+        writer.write_all(&doc_id.to_ne_bytes())?;
+        writer.write_all(&field_length.to_ne_bytes())?;
     }
 
     writer
@@ -195,8 +195,8 @@ pub fn write_global_info(
         .with_context(|| format!("Failed to create global_info file: {path:?}"))?;
 
     let mut writer = BufWriter::new(file);
-    writer.write_all(&total_document_length.to_le_bytes())?;
-    writer.write_all(&total_documents.to_le_bytes())?;
+    writer.write_all(&total_document_length.to_ne_bytes())?;
+    writer.write_all(&total_documents.to_ne_bytes())?;
 
     writer
         .into_inner()
@@ -223,8 +223,8 @@ pub fn read_global_info(path: &Path) -> Result<(u64, u64)> {
         ));
     }
 
-    let total_document_length = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-    let total_documents = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    let total_document_length = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+    let total_documents = u64::from_ne_bytes(bytes[8..16].try_into().unwrap());
 
     Ok((total_document_length, total_documents))
 }
@@ -302,7 +302,7 @@ mod tests {
 
         let read_back: Vec<u64> = bytes
             .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+            .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))
             .collect();
         assert_eq!(read_back, doc_ids);
     }

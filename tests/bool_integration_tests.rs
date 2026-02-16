@@ -2490,7 +2490,7 @@ fn test_integrity_check_unsorted_binary_file() {
 
     // Overwrite true.bin with valid-length but unsorted u64 values
     let true_bin = tmp.path().join("versions").join("1").join("true.bin");
-    let unsorted: Vec<u8> = [10u64, 5u64].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let unsorted: Vec<u8> = [10u64, 5u64].iter().flat_map(|v| v.to_ne_bytes()).collect();
     std::fs::write(&true_bin, &unsorted).unwrap();
 
     let result = index.integrity_check();

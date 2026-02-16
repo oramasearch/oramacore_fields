@@ -398,7 +398,7 @@ fn validate_deleted_file(path: &std::path::Path) -> Result<()> {
 
     let values: Vec<u64> = bytes
         .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+        .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))
         .collect();
 
     for i in 1..values.len() {

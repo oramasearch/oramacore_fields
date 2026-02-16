@@ -129,7 +129,7 @@ impl CompactedVersion {
             return None;
         }
 
-        let doc_count = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+        let doc_count = u32::from_ne_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
         // Skip 4-byte pad
         let entries_start = offset + 8;
 
@@ -157,11 +157,11 @@ impl CompactedVersion {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let offset = mid * entry_size;
-            let mid_doc_id = u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
+            let mid_doc_id = u64::from_ne_bytes(data[offset..offset + 8].try_into().ok()?);
             match mid_doc_id.cmp(&doc_id) {
                 std::cmp::Ordering::Equal => {
                     let field_len =
-                        u32::from_le_bytes(data[offset + 8..offset + 12].try_into().ok()?);
+                        u32::from_ne_bytes(data[offset + 8..offset + 12].try_into().ok()?);
                     return Some(field_len);
                 }
                 std::cmp::Ordering::Less => lo = mid + 1,
@@ -246,7 +246,7 @@ impl CompactedVersion {
             }
 
             let doc_count = match data[offset..offset + 4].try_into() {
-                Ok(bytes) => u32::from_le_bytes(bytes) as usize,
+                Ok(bytes) => u32::from_ne_bytes(bytes) as usize,
                 Err(_) => continue,
             };
             let entries_start = offset + 8;
@@ -683,7 +683,7 @@ impl<'a> CompactedTermIterator<'a> {
             });
         }
 
-        let doc_count = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+        let doc_count = u32::from_ne_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
         let entries_start = offset + 8;
 
         Some(PostingsReader {
@@ -708,8 +708,8 @@ impl<'a> Iterator for DocLengthIterator<'a> {
             return None;
         }
 
-        let doc_id = u64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
-        let field_len = u32::from_le_bytes(self.data[self.pos + 8..self.pos + 12].try_into().ok()?);
+        let doc_id = u64::from_ne_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
+        let field_len = u32::from_ne_bytes(self.data[self.pos + 8..self.pos + 12].try_into().ok()?);
         self.pos += 12;
 
         Some((doc_id, field_len))
@@ -719,14 +719,14 @@ impl<'a> Iterator for DocLengthIterator<'a> {
 /// Serialize a single posting entry (doc_id + positions) into a byte buffer.
 #[inline]
 fn write_entry_to_buf(buf: &mut Vec<u8>, doc_id: u64, exact: &[u32], stemmed: &[u32]) {
-    buf.extend_from_slice(&doc_id.to_le_bytes());
-    buf.extend_from_slice(&(exact.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(stemmed.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&doc_id.to_ne_bytes());
+    buf.extend_from_slice(&(exact.len() as u32).to_ne_bytes());
+    buf.extend_from_slice(&(stemmed.len() as u32).to_ne_bytes());
     for &pos in exact {
-        buf.extend_from_slice(&pos.to_le_bytes());
+        buf.extend_from_slice(&pos.to_ne_bytes());
     }
     for &pos in stemmed {
-        buf.extend_from_slice(&pos.to_le_bytes());
+        buf.extend_from_slice(&pos.to_ne_bytes());
     }
 }
 
@@ -743,8 +743,8 @@ fn flush_term_buf(
         .insert(key, *current_offset)
         .map_err(|e| anyhow::anyhow!("Failed to insert key into FST: {e}"))?;
 
-    postings_writer.write_all(&count.to_le_bytes())?;
-    postings_writer.write_all(&0u32.to_le_bytes())?; // pad
+    postings_writer.write_all(&count.to_ne_bytes())?;
+    postings_writer.write_all(&0u32.to_ne_bytes())?; // pad
     postings_writer.write_all(entries_buf)?;
 
     *current_offset += 8 + entries_buf.len() as u64;
@@ -780,8 +780,8 @@ fn merge_and_write_doc_lengths(
             (None, None) => break,
             (Some((c_id, c_len)), None) => {
                 if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
-                    writer.write_all(&c_id.to_le_bytes())?;
-                    writer.write_all(&c_len.to_le_bytes())?;
+                    writer.write_all(&c_id.to_ne_bytes())?;
+                    writer.write_all(&c_len.to_ne_bytes())?;
                     total_doc_length += c_len as u64;
                     total_documents += 1;
                 }
@@ -789,8 +789,8 @@ fn merge_and_write_doc_lengths(
             }
             (None, Some((l_id, l_len))) => {
                 if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                    writer.write_all(&l_id.to_le_bytes())?;
-                    writer.write_all(&l_len.to_le_bytes())?;
+                    writer.write_all(&l_id.to_ne_bytes())?;
+                    writer.write_all(&l_len.to_ne_bytes())?;
                     total_doc_length += l_len as u64;
                     total_documents += 1;
                 }
@@ -799,8 +799,8 @@ fn merge_and_write_doc_lengths(
             (Some((c_id, c_len)), Some((l_id, l_len))) => match c_id.cmp(&l_id) {
                 std::cmp::Ordering::Less => {
                     if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
-                        writer.write_all(&c_id.to_le_bytes())?;
-                        writer.write_all(&c_len.to_le_bytes())?;
+                        writer.write_all(&c_id.to_ne_bytes())?;
+                        writer.write_all(&c_len.to_ne_bytes())?;
                         total_doc_length += c_len as u64;
                         total_documents += 1;
                     }
@@ -808,8 +808,8 @@ fn merge_and_write_doc_lengths(
                 }
                 std::cmp::Ordering::Greater => {
                     if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                        writer.write_all(&l_id.to_le_bytes())?;
-                        writer.write_all(&l_len.to_le_bytes())?;
+                        writer.write_all(&l_id.to_ne_bytes())?;
+                        writer.write_all(&l_len.to_ne_bytes())?;
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
@@ -818,8 +818,8 @@ fn merge_and_write_doc_lengths(
                 std::cmp::Ordering::Equal => {
                     // Live wins
                     if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
-                        writer.write_all(&l_id.to_le_bytes())?;
-                        writer.write_all(&l_len.to_le_bytes())?;
+                        writer.write_all(&l_id.to_ne_bytes())?;
+                        writer.write_all(&l_len.to_ne_bytes())?;
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }

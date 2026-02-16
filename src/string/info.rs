@@ -1,7 +1,11 @@
+#[cfg(feature = "cli")]
+use serde::Serialize;
+
 use std::path::PathBuf;
 
 /// Metadata and size statistics about a string index.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub struct IndexInfo {
     pub format_version: u32,
     pub current_version_number: u64,

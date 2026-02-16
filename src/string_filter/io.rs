@@ -13,7 +13,7 @@ pub fn write_postings(path: &Path, postings: &[u64]) -> Result<()> {
     let mut writer = BufWriter::new(file);
     for &v in postings {
         writer
-            .write_all(&v.to_le_bytes())
+            .write_all(&v.to_ne_bytes())
             .with_context(|| format!("Failed to write postings to: {path:?}"))?;
     }
 
@@ -38,7 +38,7 @@ where
     let mut writer = BufWriter::new(file);
     for v in iter {
         writer
-            .write_all(&v.to_le_bytes())
+            .write_all(&v.to_ne_bytes())
             .with_context(|| format!("Failed to write postings to: {path:?}"))?;
     }
 
@@ -199,7 +199,7 @@ mod tests {
 
         let read_back: Vec<u64> = bytes
             .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+            .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))
             .collect();
 
         assert_eq!(read_back, postings);

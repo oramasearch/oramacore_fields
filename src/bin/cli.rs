@@ -32,6 +32,11 @@ enum TopLevel {
         #[command(subcommand)]
         command: GeoCommands,
     },
+    /// Inspect and search string (full-text) indexes
+    String {
+        #[command(subcommand)]
+        command: StringCommands,
+    },
 }
 
 // ── Output format (shared) ──────────────────────────────────────────────────
@@ -755,6 +760,229 @@ fn geo_filter(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  String (full-text) subcommands
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Subcommand)]
+enum StringCommands {
+    /// Check index integrity and validate files
+    Check {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Show detailed validation information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Display index information and statistics
+    Info {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Search the index for matching documents
+    Search {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Search query (space-separated tokens)
+        #[arg(short, long)]
+        query: String,
+        /// Tolerance: 0 = exact, omit for prefix, N = Levenshtein distance
+        #[arg(short, long)]
+        tolerance: Option<u8>,
+        /// Use prefix matching (overrides tolerance)
+        #[arg(long)]
+        prefix: bool,
+        /// Only match exact (unstemmed) positions
+        #[arg(long)]
+        exact_match: bool,
+        /// Field boost multiplier
+        #[arg(long)]
+        boost: Option<f32>,
+        /// Phrase boost multiplier for consecutive tokens
+        #[arg(long)]
+        phrase_boost: Option<f32>,
+        /// Maximum number of results to return
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+}
+
+fn string_check(path: &Path, verbose: bool) -> Result<(), String> {
+    use oramacore_fields::string::{CheckStatus, StringStorage, Threshold};
+
+    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let result = index.integrity_check();
+
+    for check in &result.checks {
+        let status_str = match check.status {
+            CheckStatus::Ok => "[OK]",
+            CheckStatus::Failed => "[FAIL]",
+            CheckStatus::Skipped => "[SKIP]",
+        };
+
+        if check.status == CheckStatus::Failed || verbose {
+            if let Some(ref details) = check.details {
+                println!("{status_str} {}: {details}", check.name);
+            } else {
+                println!("{status_str} {}", check.name);
+            }
+        }
+    }
+
+    if result.passed {
+        println!("\nIndex validation PASSED");
+        Ok(())
+    } else {
+        println!("\nIndex validation FAILED");
+        process::exit(1);
+    }
+}
+
+fn string_info(path: &Path, format: OutputFormat) -> Result<(), String> {
+    use oramacore_fields::string::{StringStorage, Threshold};
+
+    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let info = index.info();
+
+    match format {
+        OutputFormat::Human => {
+            println!("Index Information");
+            println!("=================");
+            println!("Format version:    {}", info.format_version);
+            println!("Current version:   {}", info.current_version_number);
+            println!("Version dir:       {}", info.version_dir.display());
+            println!();
+            println!("Unique terms:      {}", info.unique_terms_count);
+            println!("Total postings:    {}", info.total_postings_count);
+            println!("Total documents:   {}", info.total_documents);
+            println!("Avg field length:  {:.2}", info.avg_field_length);
+            println!("Deleted entries:   {}", info.deleted_count);
+            println!();
+            println!("FST size:          {} bytes", info.fst_size_bytes);
+            println!("Postings size:     {} bytes", info.postings_size_bytes);
+            println!("Doc lengths size:  {} bytes", info.doc_lengths_size_bytes);
+            println!("Deleted size:      {} bytes", info.deleted_size_bytes);
+            println!("Global info size:  {} bytes", info.global_info_size_bytes);
+            println!("Total size:        {} bytes", info.total_size_bytes());
+            println!();
+            println!("Pending ops:       {}", info.pending_ops);
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&info).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SearchResultOutput {
+    count: usize,
+    docs: Vec<SearchResultDoc>,
+}
+
+#[derive(Serialize)]
+struct SearchResultDoc {
+    doc_id: u64,
+    score: f32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn string_search(
+    path: &Path,
+    query: &str,
+    tolerance: Option<u8>,
+    prefix: bool,
+    exact_match: bool,
+    boost: Option<f32>,
+    phrase_boost: Option<f32>,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<(), String> {
+    use oramacore_fields::string::{
+        BM25Scorer, Bm25Params, NoFilter, SearchParams, StringStorage, Threshold,
+    };
+
+    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let tokens: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
+    if tokens.is_empty() {
+        return Err("Query must contain at least one token".to_string());
+    }
+
+    let tol = if prefix {
+        None
+    } else {
+        Some(tolerance.unwrap_or(0))
+    };
+
+    let params = SearchParams {
+        tokens: &tokens,
+        exact_match,
+        boost: boost.unwrap_or(1.0),
+        bm25_params: Bm25Params::default(),
+        tolerance: tol,
+        phrase_boost,
+    };
+
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(&params, None, &mut scorer)
+        .map_err(|e| format!("Search failed: {e}"))?;
+
+    let mut search_result = scorer.into_search_result();
+    search_result.sort_by_score();
+
+    let total_count = search_result.docs.len();
+    let docs: Vec<SearchResultDoc> = search_result
+        .docs
+        .iter()
+        .take(limit.unwrap_or(usize::MAX))
+        .map(|d| SearchResultDoc {
+            doc_id: d.doc_id,
+            score: d.score,
+        })
+        .collect();
+
+    let result = SearchResultOutput {
+        count: total_count,
+        docs,
+    };
+
+    match format {
+        OutputFormat::Human => {
+            println!("Found {} result(s)", result.count);
+            if let Some(limit) = limit {
+                if result.count > limit {
+                    println!("(showing first {limit})");
+                }
+            }
+            println!();
+            for doc in &result.docs {
+                println!("{}\t{:.6}", doc.doc_id, doc.score);
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -811,6 +1039,31 @@ fn main() {
             }
             return;
         }
+        TopLevel::String { command } => match command {
+            StringCommands::Check { path, verbose } => string_check(&path, verbose),
+            StringCommands::Info { path, format } => string_info(&path, format),
+            StringCommands::Search {
+                path,
+                query,
+                tolerance,
+                prefix,
+                exact_match,
+                boost,
+                phrase_boost,
+                limit,
+                format,
+            } => string_search(
+                &path,
+                &query,
+                tolerance,
+                prefix,
+                exact_match,
+                boost,
+                phrase_boost,
+                limit,
+                format,
+            ),
+        },
     };
 
     if let Err(e) = result {
@@ -922,6 +1175,253 @@ mod tests_cli {
         std::fs::write(&current_path, "999\n1").unwrap();
 
         let result = bool_check(&path, false);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Unsupported format version"));
+    }
+
+    // ── String CLI tests ─────────────────────────────────────────────────────
+
+    fn create_test_string_index() -> (TempDir, PathBuf) {
+        use oramacore_fields::string::{
+            IndexedValue as StringIndexedValue, StringStorage, TermData, Threshold,
+        };
+        use std::collections::HashMap;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+
+        let mut terms1 = HashMap::new();
+        terms1.insert(
+            "hello".to_string(),
+            TermData {
+                exact_positions: vec![0],
+                stemmed_positions: vec![],
+            },
+        );
+        terms1.insert(
+            "world".to_string(),
+            TermData {
+                exact_positions: vec![1],
+                stemmed_positions: vec![],
+            },
+        );
+        index.insert(
+            1,
+            StringIndexedValue {
+                field_length: 2,
+                terms: terms1,
+            },
+        );
+
+        let mut terms2 = HashMap::new();
+        terms2.insert(
+            "hello".to_string(),
+            TermData {
+                exact_positions: vec![0],
+                stemmed_positions: vec![],
+            },
+        );
+        terms2.insert(
+            "rust".to_string(),
+            TermData {
+                exact_positions: vec![1],
+                stemmed_positions: vec![],
+            },
+        );
+        index.insert(
+            2,
+            StringIndexedValue {
+                field_length: 2,
+                terms: terms2,
+            },
+        );
+
+        let mut terms3 = HashMap::new();
+        terms3.insert(
+            "goodbye".to_string(),
+            TermData {
+                exact_positions: vec![0],
+                stemmed_positions: vec![],
+            },
+        );
+        index.insert(
+            3,
+            StringIndexedValue {
+                field_length: 1,
+                terms: terms3,
+            },
+        );
+
+        index.compact(1).unwrap();
+
+        (tmp, path)
+    }
+
+    #[test]
+    fn test_string_cmd_check() {
+        let (_tmp, path) = create_test_string_index();
+        string_check(&path, false).unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_check_verbose() {
+        let (_tmp, path) = create_test_string_index();
+        string_check(&path, true).unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_info() {
+        let (_tmp, path) = create_test_string_index();
+        string_info(&path, OutputFormat::Human).unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_info_json() {
+        let (_tmp, path) = create_test_string_index();
+        string_info(&path, OutputFormat::Json).unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello",
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_json() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello",
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_with_limit() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello",
+            None,
+            false,
+            false,
+            None,
+            None,
+            Some(1),
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_prefix() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hel",
+            None,
+            true,
+            false,
+            None,
+            None,
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_exact_match() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello",
+            None,
+            false,
+            true,
+            None,
+            None,
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_with_boost() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello",
+            None,
+            false,
+            false,
+            Some(2.0),
+            None,
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_search_with_phrase_boost() {
+        let (_tmp, path) = create_test_string_index();
+        string_search(
+            &path,
+            "hello world",
+            None,
+            false,
+            false,
+            None,
+            Some(1.5),
+            None,
+            OutputFormat::Human,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_string_cmd_check_uncompacted_index() {
+        use oramacore_fields::string::{StringStorage, Threshold};
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+        let result = index.integrity_check();
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_string_cmd_check_wrong_format_version() {
+        let (_tmp, path) = create_test_string_index();
+
+        let current_path = path.join("CURRENT");
+        std::fs::write(&current_path, "999\n1").unwrap();
+
+        let result = string_check(&path, false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Unsupported format version"));

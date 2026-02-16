@@ -111,7 +111,7 @@ impl CompactedVersion {
             return None;
         }
 
-        let count = u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?) as usize;
+        let count = u64::from_ne_bytes(data[offset..offset + 8].try_into().ok()?) as usize;
 
         let start = offset + 8;
         let end = start + count * 8;
@@ -324,12 +324,12 @@ fn write_entry(
 
     let count = ids_to_write.len() as u64;
     postings_writer
-        .write_all(&count.to_le_bytes())
+        .write_all(&count.to_ne_bytes())
         .with_context(|| "Failed to write posting count")?;
 
     for &doc_id in ids_to_write {
         postings_writer
-            .write_all(&doc_id.to_le_bytes())
+            .write_all(&doc_id.to_ne_bytes())
             .with_context(|| "Failed to write doc_id")?;
     }
 
@@ -361,7 +361,7 @@ impl<'a> CompactedIterator<'a> {
             return Some(&[]);
         }
 
-        let count = u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?) as usize;
+        let count = u64::from_ne_bytes(data[offset..offset + 8].try_into().ok()?) as usize;
         let start = offset + 8;
         let end = start + count * 8;
 
