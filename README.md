@@ -1,6 +1,6 @@
 # oramacore_fields
 
-On-disk field indexes for search engines. Provides five specialized index types with a shared architecture: in-memory live layer for fast writes, memory-mapped compacted storage for efficient reads, and periodic compaction with concurrent access.
+On-disk field indexes for search engines. Provides six specialized index types with a shared architecture: in-memory live layer for fast writes, memory-mapped compacted storage for efficient reads, and periodic compaction with concurrent access.
 
 ## Modules
 
@@ -11,6 +11,7 @@ On-disk field indexes for search engines. Provides five specialized index types 
 | `string` | Full-text (BM25 scoring) | Search by tokens (exact, fuzzy, prefix) |
 | `string_filter` | String (exact match) | Filter by key |
 | `geopoint` | Geographic (lat/lon) | Bounding box, radius |
+| `vector` | Vector (f32 embeddings) | Approximate nearest neighbor (HNSW) |
 
 ## Usage
 
@@ -265,6 +266,33 @@ let results: Vec<u64> = storage.filter(GeoFilterOp::BoundingBox {
 # }
 ```
 
+### Vector Index
+
+```rust,no_run
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use tempfile::tempdir;
+use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig};
+# let dir = tempdir()?;
+
+let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+let storage = VectorStorage::new(dir.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+
+// Insert vectors
+storage.insert(1, &[0.1, 0.2, 0.3]).unwrap();
+storage.insert(2, &[0.4, 0.5, 0.6]).unwrap();
+storage.insert(3, &[0.9, 0.1, 0.0]).unwrap();
+
+// Search for nearest neighbors (returns Vec<(doc_id, distance)>)
+let results = storage.search(&[0.1, 0.2, 0.3], 2, None).unwrap();
+assert_eq!(results[0].0, 1); // closest doc_id
+
+// Delete and compact
+storage.delete(3);
+storage.compact(1).unwrap();
+# Ok(())
+# }
+```
+
 ## CLI
 
 Build the CLI with:
@@ -279,11 +307,12 @@ Commands:
 oramacore_fields bool check|info|show <path>
 oramacore_fields number check|info|search <args>
 oramacore_fields geopoint check|info|search <args>
+oramacore_fields string check|info|search <args>
 ```
 
 ## Architecture
 
-All five modules share a common two-layer design:
+All six modules share a common two-layer design:
 
 - **LiveLayer**: In-memory storage for fast inserts and deletes. Thread-safe via `RwLock`.
 - **CompactedVersion**: Memory-mapped disk storage loaded via `memmap2`. Swapped atomically using `ArcSwap` for lock-free reads during compaction.

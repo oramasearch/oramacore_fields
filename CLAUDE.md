@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-On-disk field indexes for search engines. Four specialized index types (bool, number, string_filter, geopoint) supporting full persistence via memory-mapped reads and concurrent access without blocking readers.
+On-disk field indexes for search engines. Six specialized index types (bool, number, string, string_filter, geopoint, vector) supporting full persistence via memory-mapped reads and concurrent access without blocking readers.
 
 License: AGPL-3.0-or-later. Rust 1.88.0, edition 2021.
 
@@ -24,8 +24,10 @@ cargo test --features alloc-tests    # Run allocation profiling tests
 src/
   bool/           # Boolean (true/false) postings index
   number/         # Numeric range index (u64, f64)
+  string/         # Full-text string index (BM25 scoring)
   string_filter/  # Exact-match string postings index (FST-backed)
   geopoint/       # Geographic point spatial index (BKD tree)
+  vector/         # Vector ANN index (HNSW, quantized)
   bin/cli.rs      # Optional CLI tool (feature-gated)
 tests/            # Integration, concurrency, and allocation tests
 examples/         # Usage demonstrations per module
@@ -37,10 +39,17 @@ Each module follows the same internal layout:
 - `live.rs` — In-memory mutable layer (LiveLayer, LiveSnapshot)
 - `compacted.rs` — On-disk immutable layer (CompactedVersion, mmap)
 - `error.rs` — Module-specific error types
+- `io.rs` — File I/O helpers (version dirs, CURRENT file, atomic writes)
+- `indexer.rs` — JSON-to-IndexedValue conversion
+- `config.rs` — Threshold and module-specific configuration
+- `info.rs` — Info/integrity-check reporting
+- `iterator.rs` — Lazy result iterators
+- `merge.rs` — Merge logic for compaction
+- `platform.rs` — Platform-specific optimizations (madvise, etc.)
 
 ## Architecture: Shared Two-Layer Pattern
 
-All four modules implement the same concurrency architecture:
+All six modules implement the same concurrency architecture:
 
 ```
 Storage {
@@ -94,6 +103,8 @@ In steady state (no mutations), `filter()` never acquires write lock.
 - **NaN rejection**: `f64` values are validated; `NaN` is rejected at insert time
 - **GeoPoint validation**: Latitude must be -90..=90, longitude must be -180..=180
 - **Deletion threshold**: Controls whether compaction applies deletes (rewrites data) or carries them forward (cheaper but slower reads). Ratio = deletes / total entries
+- **Vector dimension validation**: Dimensions must be 1..=4096; dimension mismatch at insert time is rejected
+- **Vector multi-segment**: Uses segment-based architecture with configurable max nodes per segment; segments are rebuilt when deletion or insertion thresholds are exceeded
 - **Format versioning**: CURRENT file stores `(format_version, version_number)`. Mismatched format_version errors immediately
 
 ## Key Dependencies
@@ -101,8 +112,12 @@ In steady state (no mutations), `filter()` never acquires write lock.
 - `arc-swap` — Lock-free atomic pointer swap (central to compaction)
 - `memmap2` — Memory-mapped file I/O for zero-copy reads
 - `fst` — Finite State Transducer for string_filter key lookup
+- `xtri` — Trie for string module prefix/fuzzy matching
 - `anyhow` — Error propagation (bool module)
 - `serde_json` — JSON helpers for indexing
+- `tracing` — Structured logging
+- `rand` — Random number generation (HNSW level selection, etc.)
+- `libc` — Unix-specific madvise calls (unix only)
 
 ## Conventions
 
@@ -111,4 +126,4 @@ In steady state (no mutations), `filter()` never acquires write lock.
 - Doc IDs are `u64`
 - Persistence uses append-only version directories with atomic CURRENT file swaps
 - All modules implement `.integrity_check()` for validation
-- Tests follow pattern: `tests/{module}_integration_tests.rs`, `tests/{module}_concurrency_tests.rs`
+- Tests follow pattern: `tests/{module}_integration_tests.rs`, `tests/{module}_concurrency_tests.rs`, `tests/{module}_alloc_count.rs`
