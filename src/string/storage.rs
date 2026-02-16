@@ -182,14 +182,13 @@ impl StringStorage {
         .collect();
 
         let mut compacted_terms = current.iter_terms();
-        let live_sorted = snapshot.iter_terms_sorted();
-        let mut live_terms: Vec<_> = live_sorted.iter().map(|(k, v)| (*k, *v)).collect();
+        let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
         let mut compacted_dl = current.iter_doc_lengths();
         let live_dl = snapshot.iter_doc_lengths_sorted();
 
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
-            &mut live_terms,
+            &live_terms,
             &mut compacted_dl,
             &live_dl,
             Some(&deleted_set),
@@ -208,8 +207,7 @@ impl StringStorage {
         new_version_dir: &std::path::Path,
     ) -> Result<()> {
         let mut compacted_terms = current.iter_terms();
-        let live_sorted = snapshot.iter_terms_sorted();
-        let mut live_terms: Vec<_> = live_sorted.iter().map(|(k, v)| (*k, *v)).collect();
+        let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
         let mut compacted_dl = current.iter_doc_lengths();
         let live_dl = snapshot.iter_doc_lengths_sorted();
 
@@ -221,7 +219,7 @@ impl StringStorage {
 
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
-            &mut live_terms,
+            &live_terms,
             &mut compacted_dl,
             &live_dl,
             None,

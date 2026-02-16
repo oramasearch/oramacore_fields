@@ -309,7 +309,7 @@ impl CompactedVersion {
     #[allow(clippy::too_many_arguments)]
     pub fn build_from_sorted_sources<'a>(
         compacted_terms: &mut CompactedTermIterator<'a>,
-        live_terms: &mut [(&str, &[PostingTuple])],
+        live_terms: &[(&str, &[PostingTuple])],
         compacted_doc_lengths: &mut DocLengthIterator<'_>,
         live_doc_lengths: &[(u64, u16)],
         deleted_set: Option<&HashSet<u64>>,
@@ -856,12 +856,12 @@ mod tests {
     ) {
         let empty = CompactedVersion::empty();
         let mut compacted_terms = empty.iter_terms();
-        let mut live: Vec<_> = entries.iter().map(|(k, v)| (*k, v.as_slice())).collect();
+        let live: Vec<_> = entries.iter().map(|(k, v)| (*k, v.as_slice())).collect();
         let mut compacted_dl = empty.iter_doc_lengths();
 
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
-            &mut live,
+            &live,
             &mut compacted_dl,
             doc_lengths,
             None,
@@ -1079,13 +1079,13 @@ mod tests {
         let v2_path = ensure_version_dir(base_path, 2).unwrap();
         let mut compacted_terms = v1.iter_terms();
         let live_postings = vec![(2u64, vec![0u32], vec![1u32])];
-        let mut live_terms: Vec<_> = vec![("hello", live_postings.as_slice())];
+        let live_terms: Vec<_> = vec![("hello", live_postings.as_slice())];
         let mut compacted_dl = v1.iter_doc_lengths();
         let live_doc_lengths = &[(2u64, 4u16)];
 
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
-            &mut live_terms,
+            &live_terms,
             &mut compacted_dl,
             live_doc_lengths,
             None,

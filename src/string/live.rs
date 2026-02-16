@@ -204,14 +204,14 @@ impl LiveSnapshot {
     }
 
     /// Iterate over all terms and their postings in sorted order.
-    pub fn iter_terms_sorted(&self) -> Vec<(&str, &[PostingTuple])> {
-        let mut entries: Vec<_> = self
-            .term_postings
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_slice()))
-            .collect();
-        entries.sort_unstable_by_key(|(k, _)| *k);
-        entries
+    pub fn iter_terms_sorted(&self) -> impl Iterator<Item = (&str, &[PostingTuple])> {
+        self.term_tree
+            .search_iter("", xtri::SearchMode::Prefix)
+            .filter_map(|(key_bytes, _)| {
+                let key_str = std::str::from_utf8(&key_bytes).ok()?;
+                let (stored_key, postings) = self.term_postings.get_key_value(key_str)?;
+                Some((stored_key.as_str(), postings.as_slice()))
+            })
     }
 
     /// Iterate over all doc_lengths sorted by doc_id.
@@ -396,8 +396,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let terms = snapshot.iter_terms_sorted();
-        let keys: Vec<&str> = terms.iter().map(|(k, _)| *k).collect();
+        let keys: Vec<&str> = snapshot.iter_terms_sorted().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["apple", "banana", "cherry"]);
     }
 
