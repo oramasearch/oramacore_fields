@@ -416,15 +416,11 @@ impl HnswBuilder {
         distance_fn: DistanceFn,
     ) -> Result<Self, Error> {
         if graph_bytes.len() < GRAPH_HEADER_SIZE {
-            return Err(Error::CorruptedFile(
-                "graph too small for header".into(),
-            ));
+            return Err(Error::CorruptedFile("graph too small for header".into()));
         }
 
-        let num_nodes =
-            u32::from_ne_bytes(graph_bytes[0..4].try_into().unwrap()) as usize;
-        let entry_point =
-            u32::from_ne_bytes(graph_bytes[10..14].try_into().unwrap()) as usize;
+        let num_nodes = u32::from_ne_bytes(graph_bytes[0..4].try_into().unwrap()) as usize;
+        let entry_point = u32::from_ne_bytes(graph_bytes[10..14].try_into().unwrap()) as usize;
 
         if num_nodes == 0 {
             return Ok(Self {
@@ -443,8 +439,8 @@ impl HnswBuilder {
         let mut nodes = Vec::with_capacity(num_nodes);
         let mut current_max_level: usize = 0;
 
-        for i in 0..num_nodes {
-            let level = levels_bytes[i] as usize;
+        for (i, &level_byte) in levels_bytes.iter().enumerate().take(num_nodes) {
+            let level = level_byte as usize;
             if level > current_max_level {
                 current_max_level = level;
             }
@@ -462,9 +458,7 @@ impl HnswBuilder {
                 let mut layer_neighbors = Vec::new();
                 for j in 0..count {
                     let pos = offset + j * 4;
-                    let idx = u32::from_ne_bytes(
-                        graph_bytes[pos..pos + 4].try_into().unwrap(),
-                    );
+                    let idx = u32::from_ne_bytes(graph_bytes[pos..pos + 4].try_into().unwrap());
                     if idx != SENTINEL {
                         layer_neighbors.push(idx);
                     }

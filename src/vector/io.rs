@@ -92,9 +92,7 @@ pub fn remove_version_dir(base_path: &Path, version_number: u64) -> Result<(), E
 
 /// Segment data directory: `base_path/segments/seg_{id}/`.
 pub fn segment_data_dir(base_path: &Path, segment_id: u64) -> PathBuf {
-    base_path
-        .join("segments")
-        .join(format!("seg_{segment_id}"))
+    base_path.join("segments").join(format!("seg_{segment_id}"))
 }
 
 /// Create the segment data directory if it doesn't exist.
@@ -160,16 +158,12 @@ pub fn read_manifest(version_dir: &Path) -> Result<Vec<ManifestEntry>, Error> {
             max_doc_id: seg["max_doc_id"]
                 .as_u64()
                 .ok_or_else(|| Error::CorruptedFile("missing max_doc_id in manifest".into()))?,
-            nodes_at_last_rebuild: seg["nodes_at_last_rebuild"]
-                .as_u64()
-                .ok_or_else(|| {
-                    Error::CorruptedFile("missing nodes_at_last_rebuild in manifest".into())
-                })? as usize,
-            insertions_since_rebuild: seg["insertions_since_rebuild"]
-                .as_u64()
-                .ok_or_else(|| {
-                    Error::CorruptedFile("missing insertions_since_rebuild in manifest".into())
-                })? as usize,
+            nodes_at_last_rebuild: seg["nodes_at_last_rebuild"].as_u64().ok_or_else(|| {
+                Error::CorruptedFile("missing nodes_at_last_rebuild in manifest".into())
+            })? as usize,
+            insertions_since_rebuild: seg["insertions_since_rebuild"].as_u64().ok_or_else(|| {
+                Error::CorruptedFile("missing insertions_since_rebuild in manifest".into())
+            })? as usize,
         });
     }
     Ok(entries)

@@ -400,22 +400,20 @@ fn test_multiple_segments_created() {
 
     // Insert 15 vectors and compact — should create 1 segment
     for i in 0..15u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
     // Insert 10 more and compact — should create second segment since first is full
     for i in 15..25u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(2).unwrap();
 
     // Verify all 25 vectors are searchable
-    let results = storage.search(&[0.0, 0.0, 0.0, 0.0], 25, Some(200)).unwrap();
+    let results = storage
+        .search(&[0.0, 0.0, 0.0, 0.0], 25, Some(200))
+        .unwrap();
     assert_eq!(results.len(), 25);
 
     // Verify the segment structure on disk
@@ -443,17 +441,13 @@ fn test_incremental_insert() {
 
     // Round 1: create segment with 50 nodes
     for i in 0..50u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
     // Round 2: insert 10 more (20% of 50 = below 30% threshold => incremental insert)
     for i in 50..60u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(2).unwrap();
 
@@ -467,7 +461,9 @@ fn test_incremental_insert() {
     assert_eq!(seg["nodes_at_last_rebuild"].as_u64().unwrap(), 50);
 
     // All 60 vectors should be searchable
-    let results = storage.search(&[0.0, 0.0, 0.0, 0.0], 60, Some(200)).unwrap();
+    let results = storage
+        .search(&[0.0, 0.0, 0.0, 0.0], 60, Some(200))
+        .unwrap();
     assert_eq!(results.len(), 60);
 }
 
@@ -482,26 +478,20 @@ fn test_full_rebuild_on_insertion_threshold() {
 
     // Round 1: create segment with 50 nodes
     for i in 0..50u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
     // Round 2: incremental insert 10 (20% < 30%)
     for i in 50..60u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(2).unwrap();
 
     // Round 3: insert 8 more. insertions_since_rebuild=10+8=18, nodes_at_last_rebuild=50.
     // ratio = 18/50 = 0.36 > 0.3 -> FULL REBUILD
     for i in 60..68u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(3).unwrap();
 
@@ -515,7 +505,9 @@ fn test_full_rebuild_on_insertion_threshold() {
     assert_eq!(seg["nodes_at_last_rebuild"].as_u64().unwrap(), 68); // Reset
 
     // All vectors searchable
-    let results = storage.search(&[0.0, 0.0, 0.0, 0.0], 68, Some(200)).unwrap();
+    let results = storage
+        .search(&[0.0, 0.0, 0.0, 0.0], 68, Some(200))
+        .unwrap();
     assert_eq!(results.len(), 68);
 }
 
@@ -530,9 +522,7 @@ fn test_full_rebuild_on_deletion_threshold() {
 
     // Insert 20 vectors and compact
     for i in 0..20u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
@@ -551,8 +541,12 @@ fn test_full_rebuild_on_deletion_threshold() {
     assert_eq!(seg["num_nodes"].as_u64().unwrap(), 17); // 20 - 3
 
     // Deleted vectors should not be searchable
-    let results = storage.search(&[5.0, 0.0, 0.0, 0.0], 20, Some(200)).unwrap();
-    assert!(results.iter().all(|(id, _)| *id != 5 && *id != 10 && *id != 15));
+    let results = storage
+        .search(&[5.0, 0.0, 0.0, 0.0], 20, Some(200))
+        .unwrap();
+    assert!(results
+        .iter()
+        .all(|(id, _)| *id != 5 && *id != 10 && *id != 15));
     assert_eq!(results.len(), 17);
 }
 
@@ -567,9 +561,7 @@ fn test_carry_forward_deletes() {
 
     // Insert 20 vectors and compact
     for i in 0..20u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
@@ -585,7 +577,9 @@ fn test_carry_forward_deletes() {
     assert_eq!(seg["num_nodes"].as_u64().unwrap(), 20); // Nodes unchanged — just delete carried
 
     // But the deleted vector should not appear in results
-    let results = storage.search(&[5.0, 0.0, 0.0, 0.0], 20, Some(200)).unwrap();
+    let results = storage
+        .search(&[5.0, 0.0, 0.0, 0.0], 20, Some(200))
+        .unwrap();
     assert!(results.iter().all(|(id, _)| *id != 5));
 }
 
@@ -602,22 +596,17 @@ fn test_persistence_multi_segment() {
     // Create with multiple segments
     {
         let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let storage =
-            VectorStorage::new(base_path.clone(), config, seg_config.clone()).unwrap();
+        let storage = VectorStorage::new(base_path.clone(), config, seg_config.clone()).unwrap();
 
         // Fill first segment
         for i in 0..12u64 {
-            storage
-                .insert(i, &[i as f32, 0.0, 0.0])
-                .unwrap();
+            storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
         }
         storage.compact(1).unwrap();
 
         // Create second segment
         for i in 12..24u64 {
-            storage
-                .insert(i, &[i as f32, 0.0, 0.0])
-                .unwrap();
+            storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
         }
         storage.compact(2).unwrap();
     }
@@ -642,23 +631,18 @@ fn test_cleanup_removes_old_segments() {
         deletion_threshold: DeletionThreshold::default(),
         insertion_rebuild_threshold: 0.0, // Always full rebuild for predictability
     };
-    let storage =
-        VectorStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap();
+    let storage = VectorStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap();
 
     // Round 1: creates seg_1
     for i in 0..5u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
     assert!(tmp.path().join("segments/seg_1").exists());
 
     // Round 2: full rebuild creates seg_2 (since insertion_rebuild_threshold=0.0)
     for i in 5..8u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
     }
     storage.compact(2).unwrap();
     // seg_1 should still exist (not cleaned up yet), seg_2 is new
@@ -683,9 +667,7 @@ fn test_worked_example() {
     // Round 1: Insert 50 vectors (doc_ids 0-49), compact
     // Expected: CREATE NEW segment (seg_1)
     for i in 0..50u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(1).unwrap();
 
@@ -698,9 +680,7 @@ fn test_worked_example() {
     // Round 2: Insert 10 vectors (doc_ids 50-59), compact
     // insertion_ratio = 10/50 = 0.2 < 0.3 → INCREMENTAL INSERT
     for i in 50..60u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(2).unwrap();
 
@@ -717,9 +697,7 @@ fn test_worked_example() {
     // Round 3: Insert 8 vectors (doc_ids 60-67), compact
     // insertion_ratio = (10+8)/50 = 0.36 > 0.3 → FULL REBUILD
     for i in 60..68u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(3).unwrap();
 
@@ -732,9 +710,7 @@ fn test_worked_example() {
     // Round 4: Insert 40 vectors (doc_ids 68-107), compact
     // 68 + 40 = 108 > 100 (can't absorb) → CARRY FORWARD seg_3 + CREATE NEW seg_4
     for i in 68..108u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(4).unwrap();
 
@@ -750,9 +726,7 @@ fn test_worked_example() {
         storage.delete(doc_id);
     }
     for i in 108..113u64 {
-        storage
-            .insert(i, &[i as f32, 0.0, 0.0, 0.0])
-            .unwrap();
+        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
     }
     storage.compact(5).unwrap();
 

@@ -159,13 +159,11 @@ impl VectorStorage {
         }
 
         // Search live layer (brute force)
-        let live_results =
-            snapshot.search(query, k, self.distance_fn, &snapshot.deletes);
+        let live_results = snapshot.search(query, k, self.distance_fn, &snapshot.deletes);
         all_results.extend(live_results);
 
         // Merge: sort by distance, deduplicate by doc_id, take top-k
-        all_results
-            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        all_results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         deduplicate_and_truncate(&mut all_results, k);
         Ok(all_results)
     }
@@ -197,8 +195,7 @@ impl VectorStorage {
             + 1;
 
         // Step 1: Distribute live deletes to segments
-        let per_segment_new_deletes =
-            distribute_deletes(&current.segments, &snapshot.deletes);
+        let per_segment_new_deletes = distribute_deletes(&current.segments, &snapshot.deletes);
 
         let last_idx = current.segments.len().checked_sub(1);
         let dimensions = self.config.dimensions;
@@ -218,7 +215,8 @@ impl VectorStorage {
             };
 
             let is_last = Some(i) == last_idx;
-            let surviving = surviving_count(segment.num_nodes, segment.doc_ids_slice(), &updated_deletes);
+            let surviving =
+                surviving_count(segment.num_nodes, segment.doc_ids_slice(), &updated_deletes);
             let can_absorb = is_last
                 && !snapshot.entries.is_empty()
                 && (surviving + snapshot.entries.len())
@@ -259,8 +257,7 @@ impl VectorStorage {
                         continue;
                     }
 
-                    let params =
-                        QuantizationParams::calibrate(&all_vecs, dimensions);
+                    let params = QuantizationParams::calibrate(&all_vecs, dimensions);
                     build_and_write_segment(
                         &self.base_path,
                         seg_id,
@@ -348,11 +345,7 @@ impl VectorStorage {
                 });
             } else {
                 // CARRY FORWARD: keep segment data, write updated delete file
-                write_delete_file(
-                    &new_version_dir,
-                    segment.segment_id,
-                    &updated_deletes,
-                )?;
+                write_delete_file(&new_version_dir, segment.segment_id, &updated_deletes)?;
 
                 new_manifest_entries.push(ManifestEntry {
                     segment_id: segment.segment_id,
@@ -381,8 +374,7 @@ impl VectorStorage {
             if !live_ids.is_empty() {
                 let seg_id = next_seg_id;
 
-                let params =
-                    QuantizationParams::calibrate(&live_vecs, dimensions);
+                let params = QuantizationParams::calibrate(&live_vecs, dimensions);
                 build_and_write_segment(
                     &self.base_path,
                     seg_id,
@@ -428,8 +420,7 @@ impl VectorStorage {
 
         {
             let mut live = self.live.write().unwrap();
-            let new_segment_list =
-                SegmentList::load(&self.base_path, version_number)?;
+            let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
             self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
@@ -527,9 +518,7 @@ impl VectorStorage {
                 if format_version != FORMAT_VERSION {
                     checks.push(IntegrityCheck::failed(
                         "format version",
-                        Some(format!(
-                            "Expected {FORMAT_VERSION}, found {format_version}"
-                        )),
+                        Some(format!("Expected {FORMAT_VERSION}, found {format_version}")),
                     ));
                     return IntegrityCheckResult::new(checks);
                 }
@@ -538,10 +527,7 @@ impl VectorStorage {
                 if !ver_dir.exists() || !ver_dir.is_dir() {
                     checks.push(IntegrityCheck::failed(
                         "version directory",
-                        Some(format!(
-                            "Missing or invalid: {}",
-                            ver_dir.display()
-                        )),
+                        Some(format!("Missing or invalid: {}", ver_dir.display())),
                     ));
                     return IntegrityCheckResult::new(checks);
                 }
@@ -568,10 +554,7 @@ impl VectorStorage {
                 let current = self.segments.load();
                 let mut all_seg_ok = true;
                 for segment in &current.segments {
-                    let seg_dir = segment_data_dir(
-                        &self.base_path,
-                        segment.segment_id,
-                    );
+                    let seg_dir = segment_data_dir(&self.base_path, segment.segment_id);
                     let required = [
                         "hnsw.meta",
                         "vectors.raw",
@@ -588,7 +571,7 @@ impl VectorStorage {
                         .collect();
                     if !missing.is_empty() {
                         checks.push(IntegrityCheck::failed(
-                            &format!("seg_{}", segment.segment_id),
+                            format!("seg_{}", segment.segment_id),
                             Some(format!("Missing: {}", missing.join(", "))),
                         ));
                         all_seg_ok = false;
@@ -648,10 +631,7 @@ fn deduplicate_and_truncate(results: &mut Vec<(u64, f32)>, k: usize) {
 }
 
 /// Distribute live deletes to segments by doc_id range using binary search.
-fn distribute_deletes(
-    segments: &[super::segment::Segment],
-    deletes: &[u64],
-) -> Vec<Vec<u64>> {
+fn distribute_deletes(segments: &[super::segment::Segment], deletes: &[u64]) -> Vec<Vec<u64>> {
     let mut per_segment: Vec<Vec<u64>> = vec![Vec::new(); segments.len()];
     for &doc_id in deletes {
         // Find which segment this doc_id belongs to
@@ -812,30 +792,18 @@ fn incremental_insert_segment(
             maxs: element_wise_max(&old_params.maxs, &new_maxs),
             dimensions,
         };
-        let all_raw: Vec<f32> = old_raw
-            .iter()
-            .chain(new_raw.iter())
-            .copied()
-            .collect();
+        let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
         let quantized = extended_params.quantize_all(&all_raw, dimensions);
         write_quantized_vectors(&seg_dir.join("vectors.quantized"), &quantized)?;
         extended_params.write_to_file(&seg_dir.join("quantization.bin"))?;
     }
 
     // 5. Load old graph, insert new nodes, write updated graph
-    let mut builder = HnswBuilder::load_from_graph(
-        old_segment.graph_bytes(),
-        old_levels,
-        config,
-        distance_fn,
-    )?;
+    let mut builder =
+        HnswBuilder::load_from_graph(old_segment.graph_bytes(), old_levels, config, distance_fn)?;
 
     // All raw vectors (old + new) needed for distance calculations
-    let all_raw: Vec<f32> = old_raw
-        .iter()
-        .chain(new_raw.iter())
-        .copied()
-        .collect();
+    let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
     builder.insert_nodes(old_num_nodes, &new_levels, &all_raw, dimensions)?;
 
     builder.write_graph(&seg_dir.join("hnsw.graph"))?;
@@ -885,11 +853,7 @@ fn write_raw_vectors(path: &std::path::Path, vectors: &[f32]) -> Result<(), Erro
     Ok(())
 }
 
-fn write_raw_vectors_concat(
-    path: &std::path::Path,
-    old: &[f32],
-    new: &[f32],
-) -> Result<(), Error> {
+fn write_raw_vectors_concat(path: &std::path::Path, old: &[f32], new: &[f32]) -> Result<(), Error> {
     let mut file = std::fs::File::create(path)?;
     for &v in old {
         file.write_all(&v.to_ne_bytes())?;
@@ -935,11 +899,7 @@ fn write_doc_ids(path: &std::path::Path, doc_ids: &[u64]) -> Result<(), Error> {
     Ok(())
 }
 
-fn write_doc_ids_concat(
-    path: &std::path::Path,
-    old: &[u64],
-    new: &[u64],
-) -> Result<(), Error> {
+fn write_doc_ids_concat(path: &std::path::Path, old: &[u64], new: &[u64]) -> Result<(), Error> {
     let mut file = std::fs::File::create(path)?;
     for &id in old {
         file.write_all(&id.to_ne_bytes())?;
@@ -951,11 +911,7 @@ fn write_doc_ids_concat(
     Ok(())
 }
 
-fn write_levels_concat(
-    path: &std::path::Path,
-    old: &[u8],
-    new: &[u8],
-) -> Result<(), Error> {
+fn write_levels_concat(path: &std::path::Path, old: &[u8], new: &[u8]) -> Result<(), Error> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(old)?;
     file.write_all(new)?;
@@ -1022,8 +978,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
-                .unwrap();
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
         assert_eq!(storage.current_version_number(), 0);
     }
 
@@ -1032,8 +987,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
-                .unwrap();
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
         // Valid insert
         assert!(storage.insert(1, &[1.0, 2.0, 3.0]).is_ok());
@@ -1054,8 +1008,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
-                .unwrap();
+            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
         storage.insert(1, &[0.0, 0.0]).unwrap();
         storage.insert(2, &[1.0, 0.0]).unwrap();

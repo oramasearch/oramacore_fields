@@ -2,9 +2,7 @@ use super::config::DistanceMetric;
 use super::distance::{DistanceFn, QuantizedDistanceFn};
 use super::error::Error;
 use super::hnsw::{GRAPH_HEADER_SIZE, SENTINEL};
-use super::io::{
-    load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry,
-};
+use super::io::{load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry};
 use super::platform::{advise_random, advise_sequential};
 use super::quantization::QuantizationParams;
 use memmap2::Mmap;
@@ -38,7 +36,6 @@ pub struct Segment {
     pub deletes: Option<Mmap>,
     pub quantization_params: QuantizationParams,
     pub num_nodes: usize,
-    pub num_deletes: usize,
     pub min_doc_id: u64,
     pub max_doc_id: u64,
     pub nodes_at_last_rebuild: usize,
@@ -89,7 +86,6 @@ impl Segment {
             deletes,
             quantization_params,
             num_nodes: entry.num_nodes,
-            num_deletes: entry.num_deletes,
             min_doc_id: entry.min_doc_id,
             max_doc_id: entry.max_doc_id,
             nodes_at_last_rebuild: entry.nodes_at_last_rebuild,
@@ -168,8 +164,7 @@ impl Segment {
 
     /// Get neighbors of a node at a given level from the graph mmap.
     fn get_neighbors(&self, node_idx: u32, level: usize) -> &[u8] {
-        let node_block_size =
-            self.config.m0 * 4 + self.config.max_level * self.config.m * 4;
+        let node_block_size = self.config.m0 * 4 + self.config.max_level * self.config.m * 4;
         let base = GRAPH_HEADER_SIZE + node_idx as usize * node_block_size;
 
         let (offset, count) = if level == 0 {
@@ -200,6 +195,7 @@ impl Segment {
     /// Two-phase HNSW search on this segment.
     /// Phase 1: Quantized distance for beam search.
     /// Phase 2: Rescore top candidates with raw f32 distance.
+    #[allow(clippy::too_many_arguments)]
     pub fn search(
         &self,
         query_raw: &[f32],
@@ -402,9 +398,10 @@ pub fn parse_meta(contents: &str) -> Result<CompactedConfig, Error> {
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing m0 in hnsw.meta".into()))?
             as usize,
-        ef_construction: v["ef_construction"].as_u64().ok_or_else(|| {
-            Error::CorruptedFile("missing ef_construction in hnsw.meta".into())
-        })? as usize,
+        ef_construction: v["ef_construction"]
+            .as_u64()
+            .ok_or_else(|| Error::CorruptedFile("missing ef_construction in hnsw.meta".into()))?
+            as usize,
         num_nodes: v["num_nodes"]
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing num_nodes in hnsw.meta".into()))?
@@ -424,10 +421,7 @@ pub fn load_mmap(path: &Path) -> Result<Option<Mmap>, Error> {
     load_mmap_with_advice(path, advise_sequential)
 }
 
-pub fn load_mmap_with_advice(
-    path: &Path,
-    advice_fn: fn(&Mmap),
-) -> Result<Option<Mmap>, Error> {
+pub fn load_mmap_with_advice(path: &Path, advice_fn: fn(&Mmap)) -> Result<Option<Mmap>, Error> {
     if !path.exists() {
         return Ok(None);
     }
