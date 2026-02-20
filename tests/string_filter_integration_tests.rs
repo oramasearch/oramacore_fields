@@ -327,7 +327,10 @@ fn test_delete_all_docs_for_key() {
     index.delete(3);
 
     let results: Vec<u64> = index.filter("target").iter().collect();
-    assert!(results.is_empty(), "Expected empty results after deleting all docs for key");
+    assert!(
+        results.is_empty(),
+        "Expected empty results after deleting all docs for key"
+    );
 
     // "other" key should be unaffected
     let other: Vec<u64> = index.filter("other").iter().collect();
@@ -337,7 +340,10 @@ fn test_delete_all_docs_for_key() {
     index.compact(1).unwrap();
 
     let results: Vec<u64> = index.filter("target").iter().collect();
-    assert!(results.is_empty(), "Expected empty results after compaction");
+    assert!(
+        results.is_empty(),
+        "Expected empty results after compaction"
+    );
 
     let other: Vec<u64> = index.filter("other").iter().collect();
     assert_eq!(other, vec![10]);
@@ -346,5 +352,8 @@ fn test_delete_all_docs_for_key() {
     index.compact(2).unwrap();
 
     let results: Vec<u64> = index.filter("target").iter().collect();
-    assert!(results.is_empty(), "Expected empty results after second compaction");
+    assert!(
+        results.is_empty(),
+        "Expected empty results after second compaction"
+    );
 }

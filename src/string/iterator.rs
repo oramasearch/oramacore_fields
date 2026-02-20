@@ -1318,6 +1318,7 @@ mod tests {
 
     // ---- Coverage: phrase boost against compacted layer ----
 
+    #[allow(clippy::type_complexity)]
     fn build_compacted_simple(
         entries: &[(&str, Vec<(u64, Vec<u32>, Vec<u32>)>)],
         doc_lengths: &[(u64, u16)],

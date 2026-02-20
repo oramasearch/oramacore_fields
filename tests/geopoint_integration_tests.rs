@@ -403,7 +403,10 @@ fn test_concurrent_reads_writes() {
         results.len()
     );
     for i in 0..100u64 {
-        assert!(results.contains(&i), "Missing original doc_id {i} in final state");
+        assert!(
+            results.contains(&i),
+            "Missing original doc_id {i} in final state"
+        );
     }
 }
 

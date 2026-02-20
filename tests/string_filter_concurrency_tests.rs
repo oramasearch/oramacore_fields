@@ -55,7 +55,11 @@ fn test_concurrent_reads_during_writes() {
 
     // Final state: all 200 items (1..=200) must be present
     let results: Vec<u64> = index.filter("key").iter().collect();
-    assert_eq!(results.len(), 200, "Expected all 200 items after writers finished");
+    assert_eq!(
+        results.len(),
+        200,
+        "Expected all 200 items after writers finished"
+    );
     for i in 1..=200u64 {
         assert!(results.contains(&i), "Missing doc_id {i} in final results");
     }
@@ -96,7 +100,11 @@ fn test_reads_during_compaction() {
 
     // Final state: all 100 items must survive compaction
     let results: Vec<u64> = index.filter("key").iter().collect();
-    assert_eq!(results.len(), 100, "Expected all 100 items after compaction");
+    assert_eq!(
+        results.len(),
+        100,
+        "Expected all 100 items after compaction"
+    );
     for i in 1..=100u64 {
         assert!(results.contains(&i), "Missing doc_id {i} after compaction");
     }
@@ -276,7 +284,10 @@ fn test_concurrent_deletes_during_reads() {
     let mut results: Vec<u64> = index.filter("key").iter().collect();
     results.sort_unstable();
     let expected: Vec<u64> = (1..=200u64).step_by(2).collect();
-    assert_eq!(results, expected, "Only odd doc_ids should remain after deletes");
+    assert_eq!(
+        results, expected,
+        "Only odd doc_ids should remain after deletes"
+    );
 }
 
 #[test]
@@ -306,9 +317,16 @@ fn test_concurrent_compaction_serialization() {
 
     // All data must survive regardless of which thread won the compaction
     let results: Vec<u64> = index.filter("key").iter().collect();
-    assert_eq!(results.len(), 100, "All 100 items must survive concurrent compactions");
+    assert_eq!(
+        results.len(),
+        100,
+        "All 100 items must survive concurrent compactions"
+    );
     for i in 1..=100u64 {
-        assert!(results.contains(&i), "Missing doc_id {i} after concurrent compactions");
+        assert!(
+            results.contains(&i),
+            "Missing doc_id {i} after concurrent compactions"
+        );
     }
 
     // Insert more data and compact again to verify the index is still functional
@@ -318,5 +336,9 @@ fn test_concurrent_compaction_serialization() {
     index.compact(2).unwrap();
 
     let results: Vec<u64> = index.filter("key").iter().collect();
-    assert_eq!(results.len(), 150, "All 150 items must be present after second compaction");
+    assert_eq!(
+        results.len(),
+        150,
+        "All 150 items must be present after second compaction"
+    );
 }
