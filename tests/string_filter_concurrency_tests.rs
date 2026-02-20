@@ -52,6 +52,13 @@ fn test_concurrent_reads_during_writes() {
     for h in handles {
         h.join().unwrap();
     }
+
+    // Final state: all 200 items (1..=200) must be present
+    let results: Vec<u64> = index.filter("key").iter().collect();
+    assert_eq!(results.len(), 200, "Expected all 200 items after writers finished");
+    for i in 1..=200u64 {
+        assert!(results.contains(&i), "Missing doc_id {i} in final results");
+    }
 }
 
 #[test]
@@ -86,6 +93,13 @@ fn test_reads_during_compaction() {
 
     stop.store(true, Ordering::Relaxed);
     reader.join().unwrap();
+
+    // Final state: all 100 items must survive compaction
+    let results: Vec<u64> = index.filter("key").iter().collect();
+    assert_eq!(results.len(), 100, "Expected all 100 items after compaction");
+    for i in 1..=100u64 {
+        assert!(results.contains(&i), "Missing doc_id {i} after compaction");
+    }
 }
 
 #[test]
@@ -159,7 +173,7 @@ fn test_stress_concurrent_operations() {
         h.join().unwrap();
     }
 
-    // Verify all data is present
+    // Verify all data is present with correct doc_id values
     for t in 0..num_writers {
         let key = format!("writer_{t}");
         let results: Vec<u64> = index.filter(&key).iter().collect();
@@ -168,6 +182,13 @@ fn test_stress_concurrent_operations() {
             inserts_per_writer as usize,
             "Writer {t} data incomplete"
         );
+        let mut expected: Vec<u64> = (0..inserts_per_writer)
+            .map(|i| (t * inserts_per_writer + i) as u64)
+            .collect();
+        expected.sort_unstable();
+        let mut actual = results.clone();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "Writer {t} doc_ids don't match");
     }
 }
 
@@ -195,11 +216,107 @@ fn test_concurrent_compaction_and_writes() {
 
     compactor.join().unwrap();
 
-    // All data should be present
+    // All data should be present: both pre-populated (1..=50) and concurrent writes (51..=100)
     let results: Vec<u64> = index.filter("key").iter().collect();
-    assert!(
-        results.len() >= 50,
-        "Should have at least the pre-populated data, got {}",
+    assert_eq!(
+        results.len(),
+        100,
+        "Expected all 100 items after compaction and writes completed, got {}",
         results.len()
     );
+}
+
+#[test]
+fn test_concurrent_deletes_during_reads() {
+    let tmp = TempDir::new().unwrap();
+    let index =
+        Arc::new(StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+
+    // Pre-populate: doc_ids 1..=200 under "key"
+    for i in 1..=200u64 {
+        index.insert(&p("key"), i);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Spawn reader threads — count should never increase and should always be >= 100
+    // (we only delete even doc_ids, so at least the 100 odd ones remain)
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let idx = Arc::clone(&index);
+        let stop = Arc::clone(&stop);
+        handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let results: Vec<u64> = idx.filter("key").iter().collect();
+                assert!(
+                    results.len() >= 100,
+                    "Reader saw only {} items, expected >= 100 (odd docs always present)",
+                    results.len()
+                );
+            }
+        }));
+    }
+
+    // Deleter thread — delete all even doc_ids
+    let idx = Arc::clone(&index);
+    let deleter = thread::spawn(move || {
+        for i in (2..=200u64).step_by(2) {
+            idx.delete(i);
+        }
+    });
+
+    deleter.join().unwrap();
+    stop.store(true, Ordering::Relaxed);
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Final state: only odd doc_ids (1, 3, 5, ..., 199) should remain
+    let mut results: Vec<u64> = index.filter("key").iter().collect();
+    results.sort_unstable();
+    let expected: Vec<u64> = (1..=200u64).step_by(2).collect();
+    assert_eq!(results, expected, "Only odd doc_ids should remain after deletes");
+}
+
+#[test]
+fn test_concurrent_compaction_serialization() {
+    let tmp = TempDir::new().unwrap();
+    let index =
+        Arc::new(StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+
+    // Pre-populate
+    for i in 1..=100u64 {
+        index.insert(&p("key"), i);
+    }
+
+    // Launch multiple threads all attempting compaction at the same version
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let idx = Arc::clone(&index);
+        handles.push(thread::spawn(move || {
+            // compact(1) may succeed or be a no-op if another thread already compacted
+            let _ = idx.compact(1);
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // All data must survive regardless of which thread won the compaction
+    let results: Vec<u64> = index.filter("key").iter().collect();
+    assert_eq!(results.len(), 100, "All 100 items must survive concurrent compactions");
+    for i in 1..=100u64 {
+        assert!(results.contains(&i), "Missing doc_id {i} after concurrent compactions");
+    }
+
+    // Insert more data and compact again to verify the index is still functional
+    for i in 101..=150u64 {
+        index.insert(&p("key"), i);
+    }
+    index.compact(2).unwrap();
+
+    let results: Vec<u64> = index.filter("key").iter().collect();
+    assert_eq!(results.len(), 150, "All 150 items must be present after second compaction");
 }

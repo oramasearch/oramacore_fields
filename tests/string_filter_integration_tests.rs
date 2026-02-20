@@ -309,3 +309,42 @@ fn test_same_doc_id_different_keys() {
     let b: Vec<u64> = index.filter("tag_b").iter().collect();
     assert!(b.is_empty());
 }
+
+#[test]
+fn test_delete_all_docs_for_key() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // Insert several doc_ids under one key, plus another key to verify isolation
+    index.insert(&p("target"), 1);
+    index.insert(&p("target"), 2);
+    index.insert(&p("target"), 3);
+    index.insert(&p("other"), 10);
+
+    // Delete all docs for "target"
+    index.delete(1);
+    index.delete(2);
+    index.delete(3);
+
+    let results: Vec<u64> = index.filter("target").iter().collect();
+    assert!(results.is_empty(), "Expected empty results after deleting all docs for key");
+
+    // "other" key should be unaffected
+    let other: Vec<u64> = index.filter("other").iter().collect();
+    assert_eq!(other, vec![10]);
+
+    // Compact and verify still empty
+    index.compact(1).unwrap();
+
+    let results: Vec<u64> = index.filter("target").iter().collect();
+    assert!(results.is_empty(), "Expected empty results after compaction");
+
+    let other: Vec<u64> = index.filter("other").iter().collect();
+    assert_eq!(other, vec![10]);
+
+    // Second compaction round to verify stability
+    index.compact(2).unwrap();
+
+    let results: Vec<u64> = index.filter("target").iter().collect();
+    assert!(results.is_empty(), "Expected empty results after second compaction");
+}

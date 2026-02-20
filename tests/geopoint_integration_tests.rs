@@ -388,6 +388,23 @@ fn test_concurrent_reads_writes() {
     stop.store(true, Ordering::Relaxed);
     reader.join().unwrap();
     writer.join().unwrap();
+
+    // Final state: all original 100 doc_ids (0..100) must be present
+    let op = GeoFilterOp::BoundingBox {
+        min_lat: -90.0,
+        max_lat: 90.0,
+        min_lon: -180.0,
+        max_lon: 180.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert!(
+        results.len() >= 100,
+        "Expected at least 100 items in final state, got {}",
+        results.len()
+    );
+    for i in 0..100u64 {
+        assert!(results.contains(&i), "Missing original doc_id {i} in final state");
+    }
 }
 
 #[test]
