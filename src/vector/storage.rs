@@ -965,7 +965,7 @@ fn merge_sorted_u64(a: &[u64], b: &[u64]) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::{VectorIndexer, config::DistanceMetric};
+    use crate::vector::{config::DistanceMetric, VectorIndexer};
     use tempfile::TempDir;
 
     #[test]

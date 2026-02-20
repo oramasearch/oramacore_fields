@@ -27,7 +27,9 @@ impl VectorIndexer {
             }
         }
 
-        Some(IndexedValue::Single(Embedding { vector: vector.to_vec() }))
+        Some(IndexedValue::Single(Embedding {
+            vector: vector.to_vec(),
+        }))
     }
 
     /// Index a JSON value, expecting an array of numbers.
@@ -44,9 +46,10 @@ impl VectorIndexer {
         }
 
         Some(IndexedValue::Array(
-            vectors.iter()
+            vectors
+                .iter()
                 .map(|v| Embedding { vector: v.clone() })
-                .collect()
+                .collect(),
         ))
     }
 }
