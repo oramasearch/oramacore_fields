@@ -1443,66 +1443,18 @@ mod tests_cli {
         let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
 
         let mut terms1 = HashMap::new();
-        terms1.insert(
-            "hello".to_string(),
-            TermData {
-                exact_positions: vec![0],
-                stemmed_positions: vec![],
-            },
-        );
-        terms1.insert(
-            "world".to_string(),
-            TermData {
-                exact_positions: vec![1],
-                stemmed_positions: vec![],
-            },
-        );
-        index.insert(
-            1,
-            StringIndexedValue {
-                field_length: 2,
-                terms: terms1,
-            },
-        );
+        terms1.insert("hello".to_string(), TermData::new(vec![0], vec![]));
+        terms1.insert("world".to_string(), TermData::new(vec![1], vec![]));
+        index.insert(1, StringIndexedValue::new(2, terms1));
 
         let mut terms2 = HashMap::new();
-        terms2.insert(
-            "hello".to_string(),
-            TermData {
-                exact_positions: vec![0],
-                stemmed_positions: vec![],
-            },
-        );
-        terms2.insert(
-            "rust".to_string(),
-            TermData {
-                exact_positions: vec![1],
-                stemmed_positions: vec![],
-            },
-        );
-        index.insert(
-            2,
-            StringIndexedValue {
-                field_length: 2,
-                terms: terms2,
-            },
-        );
+        terms2.insert("hello".to_string(), TermData::new(vec![0], vec![]));
+        terms2.insert("rust".to_string(), TermData::new(vec![1], vec![]));
+        index.insert(2, StringIndexedValue::new(2, terms2));
 
         let mut terms3 = HashMap::new();
-        terms3.insert(
-            "goodbye".to_string(),
-            TermData {
-                exact_positions: vec![0],
-                stemmed_positions: vec![],
-            },
-        );
-        index.insert(
-            3,
-            StringIndexedValue {
-                field_length: 1,
-                terms: terms3,
-            },
-        );
+        terms3.insert("goodbye".to_string(), TermData::new(vec![0], vec![]));
+        index.insert(3, StringIndexedValue::new(1, terms3));
 
         index.compact(1).unwrap();
 
@@ -1680,7 +1632,7 @@ mod tests_cli {
 
     fn create_test_vector_index() -> (TempDir, PathBuf) {
         use oramacore_fields::vector::{
-            DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+            DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
         };
 
         let tmp = TempDir::new().unwrap();
@@ -1688,10 +1640,11 @@ mod tests_cli {
 
         let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
         let index = VectorStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
+        let indexer = VectorIndexer::new(3);
 
-        index.insert(1, &[0.1, 0.2, 0.3]).unwrap();
-        index.insert(2, &[0.4, 0.5, 0.6]).unwrap();
-        index.insert(3, &[0.9, 0.8, 0.7]).unwrap();
+        index.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());
+        index.insert(2, indexer.index_vec(&[0.4, 0.5, 0.6]).unwrap());
+        index.insert(3, indexer.index_vec(&[0.9, 0.8, 0.7]).unwrap());
         index.compact(1).unwrap();
 
         (tmp, path)
