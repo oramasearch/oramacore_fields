@@ -222,7 +222,7 @@ impl Segment {
                 let mut changed = false;
                 let neighbor_bytes = self.get_neighbors(current, level);
                 let current_qvec = self.quantized_vector(current, dimensions);
-                let current_dist = quantized_distance_fn(query_quantized, current_qvec);
+                let mut best_dist = quantized_distance_fn(query_quantized, current_qvec);
 
                 for neighbor_idx in Self::parse_neighbors(neighbor_bytes) {
                     if self.node_level(neighbor_idx) < level as u8 {
@@ -230,10 +230,10 @@ impl Segment {
                     }
                     let nq = self.quantized_vector(neighbor_idx, dimensions);
                     let d = quantized_distance_fn(query_quantized, nq);
-                    if d < current_dist {
+                    if d < best_dist {
                         current = neighbor_idx;
+                        best_dist = d;
                         changed = true;
-                        break;
                     }
                 }
                 if !changed {

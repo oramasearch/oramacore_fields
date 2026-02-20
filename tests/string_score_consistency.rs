@@ -18,18 +18,9 @@ use oramacore_fields::string::{
 fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> IndexedValue {
     let mut term_map = HashMap::new();
     for (term, exact, stemmed) in terms {
-        term_map.insert(
-            term.to_string(),
-            TermData {
-                exact_positions: exact,
-                stemmed_positions: stemmed,
-            },
-        );
+        term_map.insert(term.to_string(), TermData::new(exact, stemmed));
     }
-    IndexedValue {
-        field_length,
-        terms: term_map,
-    }
+    IndexedValue::new(field_length, term_map)
 }
 
 fn search_scores(index: &StringStorage, token: &str) -> HashMap<u64, f32> {

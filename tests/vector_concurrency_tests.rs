@@ -1,29 +1,38 @@
 use oramacore_fields::vector::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::TempDir;
 
-fn make_storage(dimensions: usize) -> (TempDir, Arc<VectorStorage>) {
+fn make_storage(dimensions: usize) -> (TempDir, Arc<VectorStorage>, VectorIndexer) {
     let tmp = TempDir::new().unwrap();
     let config = VectorConfig::new(dimensions, DistanceMetric::L2).unwrap();
     let storage = Arc::new(
         VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap(),
     );
-    (tmp, storage)
+
+    let indexer = VectorIndexer::new(dimensions);
+
+    (tmp, storage, indexer)
 }
 
 fn make_storage_with_config(
     dimensions: usize,
     seg_config: SegmentConfig,
-) -> (TempDir, Arc<VectorStorage>) {
+) -> (TempDir, Arc<VectorStorage>, VectorIndexer) {
     let tmp = TempDir::new().unwrap();
     let config = VectorConfig::new(dimensions, DistanceMetric::L2).unwrap();
     let storage =
         Arc::new(VectorStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap());
-    (tmp, storage)
+    let indexer = VectorIndexer::new(dimensions);
+    (tmp, storage, indexer)
+}
+
+/// Helper: build an IndexedValue from a float slice.
+fn iv(dims: usize, v: &[f32]) -> oramacore_fields::vector::IndexedValue {
+    VectorIndexer::new(dims).index_vec(v).unwrap()
 }
 
 fn search_count(storage: &VectorStorage, query: &[f32], k: usize) -> usize {
@@ -36,10 +45,10 @@ fn search_count(storage: &VectorStorage, query: &[f32], k: usize) -> usize {
 
 #[test]
 fn test_concurrent_reads_consistency() {
-    let (_tmp, storage) = make_storage(3);
+    let (_tmp, storage, _indexer) = make_storage(3);
 
     for i in 0..100u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -69,10 +78,10 @@ fn test_concurrent_reads_consistency() {
 
 #[test]
 fn test_concurrent_reads_during_dirty_snapshot() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -109,7 +118,7 @@ fn test_concurrent_reads_during_dirty_snapshot() {
         handles.push(thread::spawn(move || {
             b.wait();
             for i in 50..100u64 {
-                s.insert(i, &[i as f32, 0.0]).unwrap();
+                s.insert(i, iv(2, &[i as f32, 0.0]));
                 thread::yield_now();
             }
             st.store(true, Ordering::Relaxed);
@@ -127,7 +136,7 @@ fn test_concurrent_reads_during_dirty_snapshot() {
 
 #[test]
 fn test_concurrent_multi_thread_inserts() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
     let barrier = Arc::new(Barrier::new(4));
     let mut handles = Vec::new();
 
@@ -139,7 +148,7 @@ fn test_concurrent_multi_thread_inserts() {
             let base = t * 100;
             for i in 0..100u64 {
                 let doc_id = base + i;
-                s.insert(doc_id, &[doc_id as f32, 0.0]).unwrap();
+                s.insert(doc_id, iv(2, &[doc_id as f32, 0.0]));
             }
         }));
     }
@@ -156,7 +165,7 @@ fn test_concurrent_multi_thread_inserts() {
 
 #[test]
 fn test_concurrent_inserts_same_doc_id() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
     let barrier = Arc::new(Barrier::new(4));
     let mut handles = Vec::new();
 
@@ -166,7 +175,7 @@ fn test_concurrent_inserts_same_doc_id() {
         handles.push(thread::spawn(move || {
             b.wait();
             // All threads insert the same doc_id with different vectors
-            s.insert(1, &[t as f32, 0.0]).unwrap();
+            s.insert(1, iv(2, &[t as f32, 0.0]));
         }));
     }
 
@@ -186,10 +195,10 @@ fn test_concurrent_inserts_same_doc_id() {
 
 #[test]
 fn test_search_during_compaction() {
-    let (_tmp, storage) = make_storage(3);
+    let (_tmp, storage, _indexer) = make_storage(3);
 
     for i in 0..100u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -225,7 +234,7 @@ fn test_search_during_compaction() {
             for round in 0..5u64 {
                 let base = 100 + round * 20;
                 for i in 0..20u64 {
-                    s.insert(base + i, &[(base + i) as f32, 0.0, 0.0]).unwrap();
+                    s.insert(base + i, iv(3, &[(base + i) as f32, 0.0, 0.0]));
                 }
                 s.compact(2 + round).unwrap();
                 thread::yield_now();
@@ -245,10 +254,10 @@ fn test_search_during_compaction() {
 
 #[test]
 fn test_search_result_stability_across_version_swap() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -258,7 +267,7 @@ fn test_search_result_stability_across_version_swap() {
 
     // Insert more and compact (swaps version)
     for i in 50..100u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(2).unwrap();
 
@@ -276,10 +285,10 @@ fn test_search_result_stability_across_version_swap() {
 
 #[test]
 fn test_writes_preserved_during_compaction() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -292,7 +301,7 @@ fn test_writes_preserved_during_compaction() {
         thread::spawn(move || {
             b.wait();
             for i in 50..100u64 {
-                s.insert(i, &[i as f32, 0.0]).unwrap();
+                s.insert(i, iv(2, &[i as f32, 0.0]));
                 thread::yield_now();
             }
         })
@@ -317,10 +326,10 @@ fn test_writes_preserved_during_compaction() {
 
 #[test]
 fn test_deletes_preserved_during_compaction() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..100u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -365,10 +374,10 @@ fn test_deletes_preserved_during_compaction() {
 
 #[test]
 fn test_concurrent_compaction_serialization() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
 
     let barrier = Arc::new(Barrier::new(4));
@@ -401,11 +410,11 @@ fn test_concurrent_compaction_serialization() {
 
 #[test]
 fn test_mixed_insert_delete_search() {
-    let (_tmp, storage) = make_storage(3);
+    let (_tmp, storage, _indexer) = make_storage(3);
 
     // Pre-populate
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -426,7 +435,7 @@ fn test_mixed_insert_delete_search() {
             let base = 1000 + t * 1000;
             let mut i = 0u64;
             while !st.load(Ordering::Relaxed) {
-                s.insert(base + i, &[(base + i) as f32, 0.0, 0.0]).unwrap();
+                s.insert(base + i, iv(3, &[(base + i) as f32, 0.0, 0.0]));
                 ic.fetch_add(1, Ordering::Relaxed);
                 i += 1;
                 thread::yield_now();
@@ -480,7 +489,7 @@ fn test_mixed_insert_delete_search() {
 
 #[test]
 fn test_high_write_contention() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
     let barrier = Arc::new(Barrier::new(8));
     let mut handles = Vec::new();
 
@@ -491,7 +500,7 @@ fn test_high_write_contention() {
             b.wait();
             let base = t * 50;
             for i in 0..50u64 {
-                s.insert(base + i, &[(base + i) as f32, 0.0]).unwrap();
+                s.insert(base + i, iv(2, &[(base + i) as f32, 0.0]));
             }
         }));
     }
@@ -513,10 +522,10 @@ fn test_high_write_contention() {
 
 #[test]
 fn test_snapshot_isolation_during_compaction() {
-    let (_tmp, storage) = make_storage(2);
+    let (_tmp, storage, _indexer) = make_storage(2);
 
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -526,7 +535,7 @@ fn test_snapshot_isolation_during_compaction() {
 
     // Insert more
     for i in 50..100u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
 
     // Compact in a separate thread
@@ -553,16 +562,16 @@ fn test_concurrent_search_multi_segment() {
         deletion_threshold: DeletionThreshold::default(),
         insertion_rebuild_threshold: 0.3,
     };
-    let (_tmp, storage) = make_storage_with_config(3, seg_config);
+    let (_tmp, storage, _indexer) = make_storage_with_config(3, seg_config);
 
     // Create 2 segments
     for i in 0..20u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
     for i in 20..40u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
 
@@ -597,11 +606,11 @@ fn test_concurrent_writes_during_multi_segment_compaction() {
         deletion_threshold: DeletionThreshold::default(),
         insertion_rebuild_threshold: 0.3,
     };
-    let (_tmp, storage) = make_storage_with_config(2, seg_config);
+    let (_tmp, storage, _indexer) = make_storage_with_config(2, seg_config);
 
     // Create initial segment with 10 vectors (small for fast HNSW builds in debug)
     for i in 0..10u64 {
-        storage.insert(i, &[i as f32, 0.0]).unwrap();
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -614,7 +623,7 @@ fn test_concurrent_writes_during_multi_segment_compaction() {
         thread::spawn(move || {
             b.wait();
             for i in 100..115u64 {
-                s.insert(i, &[i as f32, 0.0]).unwrap();
+                s.insert(i, iv(2, &[i as f32, 0.0]));
                 thread::yield_now();
             }
         })

@@ -117,12 +117,7 @@ impl LiveSnapshot {
         let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
 
         for (doc_id, vector) in &self.entries {
-            // Skip if this doc_id is in the excluded set (deleted from compacted)
             if excluded.binary_search(doc_id).is_ok() {
-                continue;
-            }
-            // Skip if deleted in live layer
-            if self.deletes.binary_search(doc_id).is_ok() {
                 continue;
             }
 

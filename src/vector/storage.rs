@@ -1,3 +1,5 @@
+use crate::vector::IndexedValue;
+
 use super::config::{SegmentConfig, VectorConfig};
 use super::distance::{
     resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
@@ -68,24 +70,16 @@ impl VectorStorage {
     }
 
     /// Insert a vector for a doc_id.
-    pub fn insert(&self, doc_id: u64, vector: &[f32]) -> Result<(), Error> {
-        if vector.is_empty() {
-            return Err(Error::EmptyVector);
-        }
-        if vector.len() != self.config.dimensions {
-            return Err(Error::DimensionMismatch {
-                expected: self.config.dimensions,
-                got: vector.len(),
-            });
-        }
-        for &v in vector {
-            if !v.is_finite() {
-                return Err(Error::NonFiniteValue);
+    pub fn insert(&self, doc_id: u64, indexed_value: IndexedValue) {
+        let mut live = self.live.write().unwrap();
+        match indexed_value {
+            IndexedValue::Single(v) => live.insert(doc_id, v.vector),
+            IndexedValue::Array(v) => {
+                for embedding in v {
+                    live.insert(doc_id, embedding.vector);
+                }
             }
         }
-        let mut live = self.live.write().unwrap();
-        live.insert(doc_id, vector.to_vec());
-        Ok(())
     }
 
     /// Delete a doc_id.
@@ -423,6 +417,7 @@ impl VectorStorage {
             let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
             self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
+            live.ops.shrink_to_fit();
             live.refresh_snapshot();
         }
 
@@ -970,7 +965,7 @@ fn merge_sorted_u64(a: &[u64], b: &[u64]) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::config::DistanceMetric;
+    use crate::vector::{VectorIndexer, config::DistanceMetric};
     use tempfile::TempDir;
 
     #[test]
@@ -989,18 +984,11 @@ mod tests {
         let storage =
             VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-        // Valid insert
-        assert!(storage.insert(1, &[1.0, 2.0, 3.0]).is_ok());
+        let indexer = VectorIndexer::new(3);
 
-        // Wrong dimensions
-        assert!(storage.insert(2, &[1.0, 2.0]).is_err());
-
-        // Empty vector
-        assert!(storage.insert(3, &[]).is_err());
-
-        // Non-finite value
-        assert!(storage.insert(4, &[1.0, f32::NAN, 3.0]).is_err());
-        assert!(storage.insert(5, &[1.0, f32::INFINITY, 3.0]).is_err());
+        if let Some(v) = indexer.index_vec(&[1.0, 2.0, 3.0]) {
+            storage.insert(1, v);
+        }
     }
 
     #[test]
@@ -1010,9 +998,18 @@ mod tests {
         let storage =
             VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-        storage.insert(1, &[0.0, 0.0]).unwrap();
-        storage.insert(2, &[1.0, 0.0]).unwrap();
-        storage.insert(3, &[10.0, 10.0]).unwrap();
+        let indexer = VectorIndexer::new(2);
+
+        let values = [
+            (1, vec![0.0, 0.0]),
+            (2, vec![1.0, 0.0]),
+            (3, vec![10.0, 10.0]),
+        ];
+        for (id, vec) in &values {
+            if let Some(v) = indexer.index_vec(vec) {
+                storage.insert(*id, v);
+            }
+        }
 
         let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
         assert_eq!(results.len(), 2);

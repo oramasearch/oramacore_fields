@@ -20,18 +20,9 @@ use oramacore_fields::string::{
 fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> IndexedValue {
     let mut term_map = HashMap::new();
     for (term, exact, stemmed) in terms {
-        term_map.insert(
-            term.to_string(),
-            TermData {
-                exact_positions: exact,
-                stemmed_positions: stemmed,
-            },
-        );
+        term_map.insert(term.to_string(), TermData::new(exact, stemmed));
     }
-    IndexedValue {
-        field_length,
-        terms: term_map,
-    }
+    IndexedValue::new(field_length, term_map)
 }
 
 /// Search with default params (exact match via tolerance=Some(0)) and return doc_ids sorted.

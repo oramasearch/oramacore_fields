@@ -17,11 +17,8 @@
 //!
 //! // Insert a document
 //! let mut terms = HashMap::new();
-//! terms.insert("hello".to_string(), TermData {
-//!     exact_positions: vec![0],
-//!     stemmed_positions: vec![],
-//! });
-//! index.insert(1, IndexedValue { field_length: 1, terms });
+//! terms.insert("hello".to_string(), TermData::new(vec![0], vec![]));
+//! index.insert(1, IndexedValue::new(1, terms));
 //!
 //! // Search
 //! let tokens = vec!["hello".to_string()];

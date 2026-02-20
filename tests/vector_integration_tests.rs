@@ -1,5 +1,5 @@
 use oramacore_fields::vector::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -23,13 +23,18 @@ fn make_storage_with_segment_config(
     (tmp, storage)
 }
 
+/// Helper: build an IndexedValue from a float slice.
+fn iv(dims: usize, v: &[f32]) -> oramacore_fields::vector::IndexedValue {
+    VectorIndexer::new(dims).index_vec(v).unwrap()
+}
+
 #[test]
 fn test_insert_and_search_live_only() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0, 0.0]).unwrap();
-    storage.insert(3, &[10.0, 10.0, 10.0]).unwrap();
+    storage.insert(1, iv(3, &[0.0, 0.0, 0.0]));
+    storage.insert(2, iv(3, &[1.0, 0.0, 0.0]));
+    storage.insert(3, iv(3, &[10.0, 10.0, 10.0]));
 
     let results = storage.search(&[0.0, 0.0, 0.0], 2, None).unwrap();
     assert_eq!(results.len(), 2);
@@ -41,9 +46,9 @@ fn test_insert_and_search_live_only() {
 fn test_insert_compact_search() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0, 0.0]).unwrap();
-    storage.insert(3, &[10.0, 10.0, 10.0]).unwrap();
+    storage.insert(1, iv(3, &[0.0, 0.0, 0.0]));
+    storage.insert(2, iv(3, &[1.0, 0.0, 0.0]));
+    storage.insert(3, iv(3, &[10.0, 10.0, 10.0]));
 
     storage.compact(1).unwrap();
 
@@ -56,9 +61,9 @@ fn test_insert_compact_search() {
 fn test_insert_delete_search() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
-    storage.insert(3, &[2.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
 
     storage.delete(1);
 
@@ -70,9 +75,9 @@ fn test_insert_delete_search() {
 fn test_compact_then_delete() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
-    storage.insert(3, &[2.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
 
     storage.compact(1).unwrap();
 
@@ -87,16 +92,16 @@ fn test_multiple_compactions() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
     // Round 1
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     // Round 2
-    storage.insert(3, &[2.0, 0.0]).unwrap();
+    storage.insert(3, iv(2, &[2.0, 0.0]));
     storage.compact(2).unwrap();
 
     // Round 3
-    storage.insert(4, &[3.0, 0.0]).unwrap();
+    storage.insert(4, iv(2, &[3.0, 0.0]));
     storage.compact(3).unwrap();
 
     let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
@@ -114,9 +119,9 @@ fn test_persistence() {
         let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
         let storage =
             VectorStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
-        storage.insert(1, &[0.0, 0.0, 0.0]).unwrap();
-        storage.insert(2, &[1.0, 0.0, 0.0]).unwrap();
-        storage.insert(3, &[0.0, 1.0, 0.0]).unwrap();
+        storage.insert(1, iv(3, &[0.0, 0.0, 0.0]));
+        storage.insert(2, iv(3, &[1.0, 0.0, 0.0]));
+        storage.insert(3, iv(3, &[0.0, 1.0, 0.0]));
         storage.compact(1).unwrap();
     }
 
@@ -136,9 +141,6 @@ fn test_persistence() {
 fn test_dimension_mismatch() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
 
-    // Insert with wrong dimensions
-    assert!(storage.insert(1, &[1.0, 2.0]).is_err());
-
     // Search with wrong dimensions
     assert!(storage.search(&[1.0, 2.0], 1, None).is_err());
 }
@@ -153,32 +155,32 @@ fn test_empty_index_search() {
 #[test]
 fn test_search_k_zero() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     let results = storage.search(&[0.0, 0.0], 0, None).unwrap();
     assert!(results.is_empty());
 }
 
 #[test]
 fn test_non_finite_value_rejected() {
-    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
-    assert!(storage.insert(1, &[f32::NAN, 0.0]).is_err());
-    assert!(storage.insert(2, &[f32::INFINITY, 0.0]).is_err());
-    assert!(storage.insert(3, &[f32::NEG_INFINITY, 0.0]).is_err());
+    let indexer = VectorIndexer::new(2);
+    assert!(indexer.index_vec(&[f32::NAN, 0.0]).is_none());
+    assert!(indexer.index_vec(&[f32::INFINITY, 0.0]).is_none());
+    assert!(indexer.index_vec(&[f32::NEG_INFINITY, 0.0]).is_none());
 }
 
 #[test]
 fn test_empty_vector_rejected() {
-    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
-    assert!(storage.insert(1, &[]).is_err());
+    let indexer = VectorIndexer::new(2);
+    assert!(indexer.index_vec(&[]).is_none());
 }
 
 #[test]
 fn test_cosine_metric() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::Cosine);
 
-    storage.insert(1, &[1.0, 0.0, 0.0]).unwrap();
-    storage.insert(2, &[0.0, 1.0, 0.0]).unwrap();
-    storage.insert(3, &[0.9, 0.1, 0.0]).unwrap();
+    storage.insert(1, iv(3, &[1.0, 0.0, 0.0]));
+    storage.insert(2, iv(3, &[0.0, 1.0, 0.0]));
+    storage.insert(3, iv(3, &[0.9, 0.1, 0.0]));
 
     let results = storage.search(&[1.0, 0.0, 0.0], 3, None).unwrap();
     assert_eq!(results[0].0, 1); // exact match is closest
@@ -188,9 +190,9 @@ fn test_cosine_metric() {
 fn test_dot_product_metric() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::DotProduct);
 
-    storage.insert(1, &[1.0, 0.0, 0.0]).unwrap();
-    storage.insert(2, &[0.0, 1.0, 0.0]).unwrap();
-    storage.insert(3, &[5.0, 0.0, 0.0]).unwrap(); // highest dot product with query
+    storage.insert(1, iv(3, &[1.0, 0.0, 0.0]));
+    storage.insert(2, iv(3, &[0.0, 1.0, 0.0]));
+    storage.insert(3, iv(3, &[5.0, 0.0, 0.0])); // highest dot product with query
 
     let results = storage.search(&[1.0, 0.0, 0.0], 3, None).unwrap();
     // For dot product distance = -dot, so highest dot product = lowest distance
@@ -201,11 +203,11 @@ fn test_dot_product_metric() {
 fn test_delete_and_reinsert() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
 
     storage.delete(1);
-    storage.insert(1, &[5.0, 5.0]).unwrap(); // reinsert with different vector
+    storage.insert(1, iv(2, &[5.0, 5.0])); // reinsert with different vector
 
     let results = storage.search(&[5.0, 5.0], 1, None).unwrap();
     assert_eq!(results.len(), 1);
@@ -217,9 +219,9 @@ fn test_delete_and_reinsert() {
 fn test_compact_with_deletes() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
-    storage.insert(3, &[2.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
     storage.compact(1).unwrap();
 
     storage.delete(2);
@@ -239,7 +241,7 @@ fn test_compact_empty_index() {
     assert_eq!(storage.current_version_number(), 0);
 
     // Insert and compact
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(2).unwrap();
     assert_eq!(storage.current_version_number(), 2);
 }
@@ -251,13 +253,13 @@ fn test_cleanup() {
     let storage =
         VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
 
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(2).unwrap();
 
-    storage.insert(3, &[2.0, 0.0]).unwrap();
+    storage.insert(3, iv(2, &[2.0, 0.0]));
     storage.compact(3).unwrap();
 
     assert!(tmp.path().join("versions/1").exists());
@@ -275,7 +277,7 @@ fn test_cleanup() {
 fn test_integrity_check() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
 
     let result = storage.integrity_check();
@@ -286,8 +288,8 @@ fn test_integrity_check() {
 fn test_info() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::Cosine);
 
-    storage.insert(1, &[0.0, 0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0, 0.0]).unwrap();
+    storage.insert(1, iv(3, &[0.0, 0.0, 0.0]));
+    storage.insert(2, iv(3, &[1.0, 0.0, 0.0]));
     storage.compact(1).unwrap();
 
     let info = storage.info();
@@ -311,7 +313,7 @@ fn test_large_scale_recall() {
                 rng.random::<f32>()
             })
             .collect();
-        storage.insert(i, &vec).unwrap();
+        storage.insert(i, iv(32, &vec));
         all_vectors.push((i, vec));
     }
 
@@ -364,7 +366,7 @@ fn test_concurrent_search() {
     );
 
     for i in 0..100u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -400,13 +402,13 @@ fn test_multiple_segments_created() {
 
     // Insert 15 vectors and compact — should create 1 segment
     for i in 0..15u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
     // Insert 10 more and compact — should create second segment since first is full
     for i in 15..25u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
 
@@ -441,13 +443,13 @@ fn test_incremental_insert() {
 
     // Round 1: create segment with 50 nodes
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
     // Round 2: insert 10 more (20% of 50 = below 30% threshold => incremental insert)
     for i in 50..60u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
 
@@ -478,20 +480,20 @@ fn test_full_rebuild_on_insertion_threshold() {
 
     // Round 1: create segment with 50 nodes
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
     // Round 2: incremental insert 10 (20% < 30%)
     for i in 50..60u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
 
     // Round 3: insert 8 more. insertions_since_rebuild=10+8=18, nodes_at_last_rebuild=50.
     // ratio = 18/50 = 0.36 > 0.3 -> FULL REBUILD
     for i in 60..68u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(3).unwrap();
 
@@ -522,7 +524,7 @@ fn test_full_rebuild_on_deletion_threshold() {
 
     // Insert 20 vectors and compact
     for i in 0..20u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -561,7 +563,7 @@ fn test_carry_forward_deletes() {
 
     // Insert 20 vectors and compact
     for i in 0..20u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -600,13 +602,13 @@ fn test_persistence_multi_segment() {
 
         // Fill first segment
         for i in 0..12u64 {
-            storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+            storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
         }
         storage.compact(1).unwrap();
 
         // Create second segment
         for i in 12..24u64 {
-            storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+            storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
         }
         storage.compact(2).unwrap();
     }
@@ -635,14 +637,14 @@ fn test_cleanup_removes_old_segments() {
 
     // Round 1: creates seg_1
     for i in 0..5u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
     assert!(tmp.path().join("segments/seg_1").exists());
 
     // Round 2: full rebuild creates seg_2 (since insertion_rebuild_threshold=0.0)
     for i in 5..8u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
     // seg_1 should still exist (not cleaned up yet), seg_2 is new
@@ -667,7 +669,7 @@ fn test_worked_example() {
     // Round 1: Insert 50 vectors (doc_ids 0-49), compact
     // Expected: CREATE NEW segment (seg_1)
     for i in 0..50u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(1).unwrap();
 
@@ -680,7 +682,7 @@ fn test_worked_example() {
     // Round 2: Insert 10 vectors (doc_ids 50-59), compact
     // insertion_ratio = 10/50 = 0.2 < 0.3 → INCREMENTAL INSERT
     for i in 50..60u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(2).unwrap();
 
@@ -690,14 +692,14 @@ fn test_worked_example() {
     assert_eq!(m2[0]["insertions_since_rebuild"].as_u64().unwrap(), 10);
     assert_eq!(m2[0]["nodes_at_last_rebuild"].as_u64().unwrap(), 50);
     // Segment id should be different (copy-on-modify)
-    let seg2_id = m2[0]["segment_id"].as_u64().unwrap();
-    let seg1_id = m1[0]["segment_id"].as_u64().unwrap();
+    let seg2_id = m2[0]["segment_id"].as_u64();
+    let seg1_id = m1[0]["segment_id"].as_u64();
     assert_ne!(seg2_id, seg1_id);
 
     // Round 3: Insert 8 vectors (doc_ids 60-67), compact
     // insertion_ratio = (10+8)/50 = 0.36 > 0.3 → FULL REBUILD
     for i in 60..68u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(3).unwrap();
 
@@ -710,7 +712,7 @@ fn test_worked_example() {
     // Round 4: Insert 40 vectors (doc_ids 68-107), compact
     // 68 + 40 = 108 > 100 (can't absorb) → CARRY FORWARD seg_3 + CREATE NEW seg_4
     for i in 68..108u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(4).unwrap();
 
@@ -726,7 +728,7 @@ fn test_worked_example() {
         storage.delete(doc_id);
     }
     for i in 108..113u64 {
-        storage.insert(i, &[i as f32, 0.0, 0.0, 0.0]).unwrap();
+        storage.insert(i, iv(4, &[i as f32, 0.0, 0.0, 0.0]));
     }
     storage.compact(5).unwrap();
 
@@ -765,8 +767,8 @@ fn test_worked_example() {
 fn test_doc_id_zero() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(0, &[0.0, 0.0]).unwrap();
-    storage.insert(1, &[1.0, 0.0]).unwrap();
+    storage.insert(0, iv(2, &[0.0, 0.0]));
+    storage.insert(1, iv(2, &[1.0, 0.0]));
 
     let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
     assert_eq!(results[0].0, 0);
@@ -788,8 +790,8 @@ fn test_large_doc_ids() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
     let large_id = u64::MAX - 1;
-    storage.insert(large_id, &[0.0, 0.0]).unwrap();
-    storage.insert(large_id - 1, &[1.0, 0.0]).unwrap();
+    storage.insert(large_id, iv(2, &[0.0, 0.0]));
+    storage.insert(large_id - 1, iv(2, &[1.0, 0.0]));
 
     let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
     assert_eq!(results.len(), 2);
@@ -806,8 +808,8 @@ fn test_large_doc_ids() {
 fn test_delete_nonexistent_noop() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     storage.delete(999); // nonexistent
@@ -825,8 +827,8 @@ fn test_delete_nonexistent_noop() {
 fn test_duplicate_inserts_same_doc_id() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(1, &[5.0, 5.0]).unwrap(); // overwrite
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(1, iv(2, &[5.0, 5.0])); // overwrite
 
     let results = storage.search(&[5.0, 5.0], 2, None).unwrap();
     assert_eq!(results.len(), 1);
@@ -849,8 +851,8 @@ fn test_info_empty_index() {
 fn test_info_with_pending_ops() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
 
     let info = storage.info();
     assert_eq!(info.pending_ops, 2);
@@ -867,8 +869,8 @@ fn test_info_with_pending_ops() {
 fn test_info_with_deletes() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     storage.delete(1);
@@ -894,7 +896,7 @@ fn test_integrity_check_corrupted_current_file() {
     let storage =
         VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
 
     // Corrupt the CURRENT file
@@ -913,8 +915,8 @@ fn test_integrity_check_missing_segment_file() {
     let storage =
         VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     assert!(storage.integrity_check().passed);
@@ -940,11 +942,11 @@ fn test_persistence_multiple_compactions() {
         let storage =
             VectorStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
 
-        storage.insert(1, &[0.0, 0.0]).unwrap();
-        storage.insert(2, &[1.0, 0.0]).unwrap();
+        storage.insert(1, iv(2, &[0.0, 0.0]));
+        storage.insert(2, iv(2, &[1.0, 0.0]));
         storage.compact(1).unwrap();
 
-        storage.insert(3, &[2.0, 0.0]).unwrap();
+        storage.insert(3, iv(2, &[2.0, 0.0]));
         storage.compact(2).unwrap();
     }
 
@@ -962,8 +964,8 @@ fn test_persistence_multiple_compactions() {
 fn test_delete_all_docs() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     storage.delete(1);
@@ -974,7 +976,7 @@ fn test_delete_all_docs() {
     assert!(results.is_empty());
 
     // Can still insert after full deletion
-    storage.insert(3, &[0.0, 0.0]).unwrap();
+    storage.insert(3, iv(2, &[0.0, 0.0]));
     storage.compact(3).unwrap();
 
     let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
@@ -986,10 +988,10 @@ fn test_delete_all_docs() {
 fn test_search_returns_distances_sorted_ascending() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[3.0, 0.0]).unwrap();
-    storage.insert(3, &[1.0, 0.0]).unwrap();
-    storage.insert(4, &[5.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[3.0, 0.0]));
+    storage.insert(3, iv(2, &[1.0, 0.0]));
+    storage.insert(4, iv(2, &[5.0, 0.0]));
     storage.compact(1).unwrap();
 
     let results = storage.search(&[0.0, 0.0], 4, None).unwrap();
@@ -1007,8 +1009,8 @@ fn test_search_returns_distances_sorted_ascending() {
 fn test_search_k_larger_than_total() {
     let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
 
-    storage.insert(1, &[0.0, 0.0]).unwrap();
-    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
     storage.compact(1).unwrap();
 
     let results = storage.search(&[0.0, 0.0], 100, None).unwrap();

@@ -57,9 +57,24 @@ pub fn dot_product_distance_i8(a: &[i8], b: &[i8]) -> i32 {
 }
 
 pub fn cosine_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    // For quantized cosine, use dot product as approximation
-    // since vectors are approximately normalized after quantization
-    dot_product_distance_i8(a, b)
+    debug_assert_eq!(a.len(), b.len());
+    let mut dot: i64 = 0;
+    let mut norm_a: i64 = 0;
+    let mut norm_b: i64 = 0;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        let xi = x as i64;
+        let yi = y as i64;
+        dot += xi * yi;
+        norm_a += xi * xi;
+        norm_b += yi * yi;
+    }
+    let denom_sq = norm_a * norm_b;
+    if denom_sq == 0 {
+        return 1_000_000;
+    }
+    let denom = (denom_sq as f64).sqrt();
+    let cos_sim = dot as f64 / denom;
+    ((1.0 - cos_sim) * 1_000_000.0) as i32
 }
 
 pub fn resolve_distance_fn(metric: DistanceMetric) -> DistanceFn {

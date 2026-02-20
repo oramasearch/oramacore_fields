@@ -157,15 +157,9 @@ let storage = StringStorage::new(
 
 // Insert a document with term positions
 let mut terms = HashMap::new();
-terms.insert("hello".to_string(), TermData {
-    exact_positions: vec![0],
-    stemmed_positions: vec![],
-});
-terms.insert("world".to_string(), TermData {
-    exact_positions: vec![1],
-    stemmed_positions: vec![],
-});
-storage.insert(1, IndexedValue { field_length: 2, terms });
+terms.insert("hello".to_string(), TermData::new(vec![0], vec![]));
+terms.insert("world".to_string(), TermData::new(vec![1], vec![]));
+storage.insert(1, IndexedValue::new(2, terms));
 
 // Search for documents matching a token
 let tokens = vec!["hello".to_string()];
@@ -271,16 +265,17 @@ let results: Vec<u64> = storage.filter(GeoFilterOp::BoundingBox {
 ```rust,no_run
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # use tempfile::tempdir;
-use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig};
+use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig, VectorIndexer};
 # let dir = tempdir()?;
 
 let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
 let storage = VectorStorage::new(dir.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+let indexer = VectorIndexer::new(3);
 
 // Insert vectors
-storage.insert(1, &[0.1, 0.2, 0.3]).unwrap();
-storage.insert(2, &[0.4, 0.5, 0.6]).unwrap();
-storage.insert(3, &[0.9, 0.1, 0.0]).unwrap();
+storage.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());
+storage.insert(2, indexer.index_vec(&[0.4, 0.5, 0.6]).unwrap());
+storage.insert(3, indexer.index_vec(&[0.9, 0.1, 0.0]).unwrap());
 
 // Search for nearest neighbors (returns Vec<(doc_id, distance)>)
 let results = storage.search(&[0.1, 0.2, 0.3], 2, None).unwrap();

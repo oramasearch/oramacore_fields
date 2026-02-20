@@ -4,18 +4,36 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct TermData {
     /// Token positions where the exact (unstemmed) form appears.
-    pub exact_positions: Vec<u32>,
+    pub(crate) exact_positions: Vec<u32>,
     /// Token positions where the stemmed form appears.
-    pub stemmed_positions: Vec<u32>,
+    pub(crate) stemmed_positions: Vec<u32>,
+}
+
+impl TermData {
+    pub fn new(exact_positions: Vec<u32>, stemmed_positions: Vec<u32>) -> Self {
+        Self {
+            exact_positions,
+            stemmed_positions,
+        }
+    }
 }
 
 /// The value to insert into the string index for a single document.
 #[derive(Debug, Clone)]
 pub struct IndexedValue {
     /// Number of tokens in the document field.
-    pub field_length: u16,
+    pub(crate) field_length: u16,
     /// Per-term positional data. Keys are the normalized term strings.
-    pub terms: HashMap<String, TermData>,
+    pub(crate) terms: HashMap<String, TermData>,
+}
+
+impl IndexedValue {
+    pub fn new(field_length: u16, terms: HashMap<String, TermData>) -> Self {
+        Self {
+            field_length,
+            terms,
+        }
+    }
 }
 
 /// Tokenization strategy for converting raw text into tokens.
@@ -42,12 +60,6 @@ impl<T: Tokenizer> StringIndexer<T> {
         }
     }
 
-    /// Tokenize a single string and build an [`IndexedValue`] with term positions.
-    pub fn index_str(&self, value: &str) -> IndexedValue {
-        let tokens = self.tokenizer.tokenize_and_stem(value);
-        Self::build_indexed_value(&tokens, 0)
-    }
-
     /// Extract string(s) from a JSON value and build an [`IndexedValue`].
     ///
     /// - If `is_array` is true, expects a JSON array of strings. All elements'
@@ -69,6 +81,12 @@ impl<T: Tokenizer> StringIndexer<T> {
             let s = value.as_str()?;
             Some(self.index_str(s))
         }
+    }
+
+    /// Tokenize a single string and build an [`IndexedValue`] with term positions.
+    fn index_str(&self, value: &str) -> IndexedValue {
+        let tokens = self.tokenizer.tokenize_and_stem(value);
+        Self::build_indexed_value(&tokens, 0)
     }
 
     fn build_indexed_value(

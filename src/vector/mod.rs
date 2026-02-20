@@ -6,15 +6,16 @@
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig};
+//! use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig, VectorIndexer};
 //! use std::path::PathBuf;
 //!
 //! let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
 //! let index = VectorStorage::new(PathBuf::from("/tmp/my_vectors"), config, SegmentConfig::default()).unwrap();
+//! let indexer = VectorIndexer::new(3);
 //!
 //! // Insert vectors
-//! index.insert(1, &[0.1, 0.2, 0.3]).unwrap();
-//! index.insert(2, &[0.4, 0.5, 0.6]).unwrap();
+//! index.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());
+//! index.insert(2, indexer.index_vec(&[0.4, 0.5, 0.6]).unwrap());
 //!
 //! // Search for nearest neighbors
 //! let results = index.search(&[0.1, 0.2, 0.3], 2, None).unwrap();
@@ -40,6 +41,6 @@ mod storage;
 
 pub use config::{DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig};
 pub use error::Error;
-pub use indexer::{IndexedValue, VectorIndexer};
+pub use indexer::{Embedding, IndexedValue, VectorIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use storage::VectorStorage;
