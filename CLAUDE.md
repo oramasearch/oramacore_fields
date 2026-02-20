@@ -47,6 +47,16 @@ Each module follows the same internal layout:
 - `merge.rs` — Merge logic for compaction
 - `platform.rs` — Platform-specific optimizations (madvise, etc.)
 
+## Document ID Invariants
+
+These are fundamental invariants that hold across ALL modules. Never write code that violates them:
+
+1. **Strictly monotonically increasing**: Document IDs are inserted in strictly increasing order. A new doc ID is always greater than all previously inserted doc IDs.
+2. **No re-insertion**: Once a document ID is deleted, it is **never** re-added. Deletion is permanent and irreversible.
+3. **No updates**: A document ID cannot be updated in place. There is no update operation.
+4. **Random deletion order**: Deletions can happen in any order, not necessarily the order of insertion.
+5. **Mutual exclusivity between layers**: A document ID exists in either the live layer OR the compacted layer, **never both**. The two layers are mutually exclusive with respect to document IDs.
+
 ## Architecture: Shared Two-Layer Pattern
 
 All six modules implement the same concurrency architecture:
@@ -94,11 +104,10 @@ In steady state (no mutations), `filter()` never acquires write lock.
 5. `version.store()` atomically swaps in new version
 6. Drain compacted ops from live layer (position-based, not value-based)
 
-**Critical invariant**: `ops.drain(..snapshot.ops_len)` preserves concurrent re-inserts that arrived during compaction.
+**Critical invariant**: `ops.drain(..snapshot.ops_len)` preserves concurrent inserts/deletes that arrived during compaction (only the ops captured in the snapshot are drained).
 
 ## Edge Cases to Be Aware Of
 
-- **Re-insert after delete**: Position-based drain ensures doc_ids re-inserted during compaction are preserved (not lost in drain)
 - **Empty compaction**: If no live changes, compaction is skipped and version number is NOT incremented
 - **NaN rejection**: `f64` values are validated; `NaN` is rejected at insert time
 - **GeoPoint validation**: Latitude must be -90..=90, longitude must be -180..=180

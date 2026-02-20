@@ -1315,4 +1315,145 @@ mod tests {
         let result = scorer.into_search_result();
         assert!(result.docs.is_empty());
     }
+
+    // ---- Coverage: phrase boost against compacted layer ----
+
+    fn build_compacted_simple(
+        entries: &[(&str, Vec<(u64, Vec<u32>, Vec<u32>)>)],
+        doc_lengths: &[(u64, u16)],
+        deleted: &[u64],
+        path: &std::path::Path,
+    ) {
+        let empty = CompactedVersion::empty();
+        let mut compacted_terms = empty.iter_terms();
+        let live: Vec<_> = entries.iter().map(|(k, v)| (*k, v.as_slice())).collect();
+        let mut compacted_dl = empty.iter_doc_lengths();
+
+        CompactedVersion::build_from_sorted_sources(
+            &mut compacted_terms,
+            &live,
+            &mut compacted_dl,
+            doc_lengths,
+            None,
+            None,
+            deleted,
+            path,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_phrase_boost_compacted_layer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = super::super::io::ensure_version_dir(base_path, 1).unwrap();
+
+        // Doc 1: "hello" at pos 0, "world" at pos 1 (adjacent)
+        // Doc 2: "hello" at pos 0, "world" at pos 5 (not adjacent)
+        build_compacted_simple(
+            &[
+                ("hello", vec![(1, vec![0], vec![]), (2, vec![0], vec![])]),
+                ("world", vec![(1, vec![1], vec![]), (2, vec![5], vec![])]),
+            ],
+            &[(1, 4), (2, 6)],
+            &[],
+            &version_path,
+        );
+
+        let version = Arc::new(CompactedVersion::load(base_path, 1).unwrap());
+        let snapshot = Arc::new(LiveSnapshot::empty());
+        let handle = SearchHandle::new(version, snapshot);
+
+        let tokens = vec!["hello".to_string(), "world".to_string()];
+        let params = SearchParams {
+            tokens: &tokens,
+            phrase_boost: Some(2.0),
+            ..Default::default()
+        };
+
+        let mut scorer = BM25Scorer::new();
+        handle
+            .execute::<NoFilter>(&params, None, &mut scorer)
+            .unwrap();
+        let mut result = scorer.into_search_result();
+        result.sort_by_score();
+
+        assert_eq!(result.docs.len(), 2);
+        // Doc 1 should score higher due to phrase boost (adjacent positions)
+        assert_eq!(result.docs[0].doc_id, 1);
+        assert!(result.docs[0].score > result.docs[1].score);
+    }
+
+    #[test]
+    fn test_phrase_boost_with_filter() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        // All 3 docs: "hello" at pos 0, "world" at pos 1 (adjacent)
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
+        layer.insert(
+            2,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
+        layer.insert(
+            3,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let filter = SortedDocumentFilter {
+            doc_ids: vec![1, 3],
+        };
+        let tokens = vec!["hello".to_string(), "world".to_string()];
+        let params = SearchParams {
+            tokens: &tokens,
+            phrase_boost: Some(2.0),
+            ..Default::default()
+        };
+
+        let mut scorer = BM25Scorer::new();
+        handle.execute(&params, Some(&filter), &mut scorer).unwrap();
+        let result = scorer.into_search_result();
+
+        // Only docs 1 and 3 should be returned; doc 2 is excluded by filter
+        assert_eq!(result.docs.len(), 2);
+        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&3));
+        assert!(!doc_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_check_adjacency_greater_branch() {
+        let mut counts = HashMap::new();
+        // prev: doc 2 pos 0, doc 3 pos 0 → targets: (2, 1), (3, 1)
+        // curr: doc 1 pos 5, doc 2 pos 1, doc 3 pos 1
+        //
+        // pi=0 target=(2,1) vs curr[0]=(1,5) → Greater (ci advances)
+        // pi=0 target=(2,1) vs curr[1]=(2,1) → Equal (match doc 2, skip doc 2 in both)
+        // pi=1 target=(3,1) vs curr[2]=(3,1) → Equal (match doc 3)
+        let prev = vec![(2u64, 0u32), (3u64, 0u32)];
+        let curr = vec![(1u64, 5u32), (2u64, 1u32), (3u64, 1u32)];
+        check_adjacency_pairs(&prev, &curr, &mut counts);
+
+        assert_eq!(*counts.get(&2).unwrap(), 1);
+        assert_eq!(*counts.get(&3).unwrap(), 1);
+        // Doc 1 never appeared in prev, so no entry
+        assert!(!counts.contains_key(&1));
+    }
 }
