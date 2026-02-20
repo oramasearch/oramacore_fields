@@ -321,6 +321,7 @@ impl CompactedVersion {
         compacted_doc_lengths: &mut DocLengthIterator<'_>,
         live_doc_lengths: &[(u64, u16)],
         deleted_set: Option<&HashSet<u64>>,
+        count_exclude_set: Option<&HashSet<u64>>,
         deletes_to_write: &[u64],
         path: &Path,
     ) -> Result<()> {
@@ -582,6 +583,7 @@ impl CompactedVersion {
             compacted_doc_lengths,
             live_doc_lengths,
             deleted_set,
+            count_exclude_set,
         )?;
 
         // ── Write deleted.bin ──
@@ -767,6 +769,7 @@ fn merge_and_write_doc_lengths(
     compacted: &mut DocLengthIterator<'_>,
     live: &[(u64, u16)],
     deleted_set: Option<&HashSet<u64>>,
+    count_exclude_set: Option<&HashSet<u64>>,
 ) -> Result<(u64, u64)> {
     let file = File::create(path)
         .with_context(|| format!("Failed to create doc_lengths file: {path:?}"))?;
@@ -790,6 +793,8 @@ fn merge_and_write_doc_lengths(
                 if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
                     writer.write_all(&c_id.to_ne_bytes())?;
                     writer.write_all(&c_len.to_ne_bytes())?;
+                }
+                if count_exclude_set.is_none_or(|s| !s.contains(&c_id)) {
                     total_doc_length += c_len as u64;
                     total_documents += 1;
                 }
@@ -799,6 +804,8 @@ fn merge_and_write_doc_lengths(
                 if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
                     writer.write_all(&l_id.to_ne_bytes())?;
                     writer.write_all(&l_len.to_ne_bytes())?;
+                }
+                if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
                     total_doc_length += l_len as u64;
                     total_documents += 1;
                 }
@@ -809,6 +816,8 @@ fn merge_and_write_doc_lengths(
                     if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
                         writer.write_all(&c_id.to_ne_bytes())?;
                         writer.write_all(&c_len.to_ne_bytes())?;
+                    }
+                    if count_exclude_set.is_none_or(|s| !s.contains(&c_id)) {
                         total_doc_length += c_len as u64;
                         total_documents += 1;
                     }
@@ -818,6 +827,8 @@ fn merge_and_write_doc_lengths(
                     if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
+                    }
+                    if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
@@ -828,6 +839,8 @@ fn merge_and_write_doc_lengths(
                     if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
+                    }
+                    if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
@@ -872,6 +885,7 @@ mod tests {
             &live,
             &mut compacted_dl,
             doc_lengths,
+            None,
             None,
             deleted,
             path,
@@ -1096,6 +1110,7 @@ mod tests {
             &live_terms,
             &mut compacted_dl,
             live_doc_lengths,
+            None,
             None,
             &[],
             &v2_path,

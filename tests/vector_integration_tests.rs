@@ -757,6 +757,264 @@ fn test_worked_example() {
     }
 }
 
+// ============================================================================
+// Additional edge-case, info, and integrity-check tests
+// ============================================================================
+
+#[test]
+fn test_doc_id_zero() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(0, &[0.0, 0.0]).unwrap();
+    storage.insert(1, &[1.0, 0.0]).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
+    assert_eq!(results[0].0, 0);
+
+    storage.compact(1).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
+    assert_eq!(results[0].0, 0);
+
+    storage.delete(0);
+    storage.compact(2).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
+    assert!(results.iter().all(|(id, _)| *id != 0));
+}
+
+#[test]
+fn test_large_doc_ids() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    let large_id = u64::MAX - 1;
+    storage.insert(large_id, &[0.0, 0.0]).unwrap();
+    storage.insert(large_id - 1, &[1.0, 0.0]).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].0, large_id);
+
+    storage.compact(1).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 2, None).unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].0, large_id);
+}
+
+#[test]
+fn test_delete_nonexistent_noop() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    storage.delete(999); // nonexistent
+
+    let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
+    assert_eq!(results.len(), 2);
+
+    storage.compact(2).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_duplicate_inserts_same_doc_id() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(1, &[5.0, 5.0]).unwrap(); // overwrite
+
+    let results = storage.search(&[5.0, 5.0], 2, None).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 1);
+    assert!(results[0].1 < 0.01); // should be near the second insertion point
+}
+
+#[test]
+fn test_info_empty_index() {
+    let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
+
+    let info = storage.info();
+    assert_eq!(info.num_vectors, 0);
+    assert_eq!(info.dimensions, 3);
+    assert_eq!(info.current_version_number, 0);
+    assert_eq!(info.pending_ops, 0);
+}
+
+#[test]
+fn test_info_with_pending_ops() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+
+    let info = storage.info();
+    assert_eq!(info.pending_ops, 2);
+    assert_eq!(info.num_vectors, 0); // not yet compacted
+
+    storage.compact(1).unwrap();
+
+    let info = storage.info();
+    assert_eq!(info.pending_ops, 0);
+    assert_eq!(info.num_vectors, 2);
+}
+
+#[test]
+fn test_info_with_deletes() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    storage.delete(1);
+    let info = storage.info();
+    assert_eq!(info.pending_ops, 1);
+}
+
+#[test]
+fn test_integrity_check_before_compaction() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    let result = storage.integrity_check();
+    assert!(
+        !result.passed,
+        "integrity check should fail before any compaction"
+    );
+}
+
+#[test]
+fn test_integrity_check_corrupted_current_file() {
+    let tmp = TempDir::new().unwrap();
+    let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let storage =
+        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    // Corrupt the CURRENT file
+    std::fs::write(tmp.path().join("CURRENT"), "garbage").unwrap();
+
+    // Recreate storage (will fail to open due to corrupt CURRENT)
+    let config2 = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let result = VectorStorage::new(tmp.path().to_path_buf(), config2, SegmentConfig::default());
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_integrity_check_missing_segment_file() {
+    let tmp = TempDir::new().unwrap();
+    let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let storage =
+        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    assert!(storage.integrity_check().passed);
+
+    // Remove a required segment file
+    let seg_dir = tmp.path().join("segments/seg_1");
+    std::fs::remove_file(seg_dir.join("hnsw.graph")).unwrap();
+
+    let result = storage.integrity_check();
+    assert!(
+        !result.passed,
+        "integrity check should fail with missing segment file"
+    );
+}
+
+#[test]
+fn test_persistence_multiple_compactions() {
+    let tmp = TempDir::new().unwrap();
+    let base_path = tmp.path().to_path_buf();
+
+    {
+        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+        let storage =
+            VectorStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
+
+        storage.insert(1, &[0.0, 0.0]).unwrap();
+        storage.insert(2, &[1.0, 0.0]).unwrap();
+        storage.compact(1).unwrap();
+
+        storage.insert(3, &[2.0, 0.0]).unwrap();
+        storage.compact(2).unwrap();
+    }
+
+    {
+        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+        let storage = VectorStorage::new(base_path, config, SegmentConfig::default()).unwrap();
+        assert_eq!(storage.current_version_number(), 2);
+
+        let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+}
+
+#[test]
+fn test_delete_all_docs() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    storage.delete(1);
+    storage.delete(2);
+    storage.compact(2).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
+    assert!(results.is_empty());
+
+    // Can still insert after full deletion
+    storage.insert(3, &[0.0, 0.0]).unwrap();
+    storage.compact(3).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 10, None).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 3);
+}
+
+#[test]
+fn test_search_returns_distances_sorted_ascending() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[3.0, 0.0]).unwrap();
+    storage.insert(3, &[1.0, 0.0]).unwrap();
+    storage.insert(4, &[5.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 4, None).unwrap();
+    for w in results.windows(2) {
+        assert!(
+            w[0].1 <= w[1].1,
+            "distances not sorted: {} > {}",
+            w[0].1,
+            w[1].1
+        );
+    }
+}
+
+#[test]
+fn test_search_k_larger_than_total() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+
+    storage.insert(1, &[0.0, 0.0]).unwrap();
+    storage.insert(2, &[1.0, 0.0]).unwrap();
+    storage.compact(1).unwrap();
+
+    let results = storage.search(&[0.0, 0.0], 100, None).unwrap();
+    assert_eq!(results.len(), 2);
+}
+
 // Helper to read manifest from disk
 fn read_manifest(base_path: &std::path::Path, version_number: u64) -> Vec<serde_json::Value> {
     let path = base_path

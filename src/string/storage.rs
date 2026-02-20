@@ -202,6 +202,7 @@ impl StringStorage {
             &mut compacted_dl,
             &live_dl,
             Some(&deleted_set),
+            Some(&deleted_set),
             &[],
             new_version_dir,
         )?;
@@ -227,12 +228,15 @@ impl StringStorage {
         )
         .collect();
 
+        let deleted_set: std::collections::HashSet<u64> = deletes_merged.iter().copied().collect();
+
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
             &live_terms,
             &mut compacted_dl,
             &live_dl,
             None,
+            Some(&deleted_set),
             &deletes_merged,
             new_version_dir,
         )?;
