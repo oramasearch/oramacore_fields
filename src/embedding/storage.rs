@@ -72,14 +72,11 @@ impl EmbeddingStorage {
     /// Insert an embedding for a doc_id.
     pub fn insert(&self, doc_id: u64, indexed_value: IndexedValue) {
         let mut live = self.live.write().unwrap();
-        match indexed_value {
-            IndexedValue::Single(v) => live.insert(doc_id, v.embedding),
-            IndexedValue::Array(v) => {
-                for embedding in v {
-                    live.insert(doc_id, embedding.embedding);
-                }
-            }
-        }
+        let vectors = match indexed_value {
+            IndexedValue::Single(v) => vec![v.embedding],
+            IndexedValue::Array(v) => v.into_iter().map(|e| e.embedding).collect(),
+        };
+        live.insert(doc_id, vectors);
     }
 
     /// Delete a doc_id.
@@ -237,7 +234,7 @@ impl EmbeddingStorage {
                 if needs_full_rebuild {
                     // FULL REBUILD with absorb
                     let (mut all_vecs, mut all_ids) =
-                        collect_surviving(segment, &updated_deletes, dimensions, &snapshot);
+                        collect_surviving(segment, &updated_deletes, dimensions);
 
                     for (doc_id, vector) in &snapshot.entries {
                         if snapshot.deletes.binary_search(doc_id).is_ok() {
@@ -307,7 +304,7 @@ impl EmbeddingStorage {
             } else if deletion_ratio > self.segment_config.deletion_threshold.value() {
                 // FULL REBUILD (non-absorb): apply deletes
                 let (vectors, doc_ids) =
-                    collect_surviving(segment, &updated_deletes, dimensions, &snapshot);
+                    collect_surviving(segment, &updated_deletes, dimensions);
 
                 if doc_ids.is_empty() {
                     continue;
@@ -655,12 +652,15 @@ fn surviving_count(num_nodes: usize, doc_ids: &[u64], deletes: &[u64]) -> usize 
     num_nodes - deleted
 }
 
-/// Collect surviving vectors from a segment (skip deleted and re-inserted in live).
+/// Collect surviving vectors from a segment (skip deleted doc_ids).
+///
+/// Note: no check against live snapshot entries is needed because doc_ids are
+/// strictly monotonically increasing — live entries always have doc_ids greater
+/// than any segment doc_id, so they can never overlap.
 fn collect_surviving(
     segment: &super::segment::Segment,
     deletes: &[u64],
     dimensions: usize,
-    snapshot: &LiveSnapshot,
 ) -> (Vec<f32>, Vec<u64>) {
     let mut vectors = Vec::new();
     let mut doc_ids = Vec::new();
@@ -668,14 +668,6 @@ fn collect_surviving(
     for i in 0..segment.num_nodes {
         let doc_id = segment.doc_id_at_unchecked(i as u32);
         if deletes.binary_search(&doc_id).is_ok() {
-            continue;
-        }
-        // Skip if re-inserted in live (we'll use the live version)
-        if snapshot
-            .entries
-            .binary_search_by_key(&doc_id, |(id, _)| *id)
-            .is_ok()
-        {
             continue;
         }
         let raw_vec = segment.raw_vector_unchecked(i as u32, dimensions);
@@ -930,6 +922,7 @@ fn write_meta(
         "num_nodes": num_nodes,
         "max_level": max_level,
         "entry_point": entry_point,
+        "node_block_size": config.node_block_size(),
     });
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| Error::CorruptedFile(format!("failed to serialize meta: {e}")))?;

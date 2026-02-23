@@ -22,6 +22,7 @@ pub struct CompactedConfig {
     pub num_nodes: usize,
     pub max_level: usize,
     pub entry_point: u32,
+    pub node_block_size: usize,
 }
 
 /// One HNSW graph segment with its own mmaps and per-segment quantization.
@@ -164,8 +165,7 @@ impl Segment {
 
     /// Get neighbors of a node at a given level from the graph mmap.
     fn get_neighbors(&self, node_idx: u32, level: usize) -> &[u8] {
-        let node_block_size = self.config.m0 * 4 + self.config.max_level * self.config.m * 4;
-        let base = GRAPH_HEADER_SIZE + node_idx as usize * node_block_size;
+        let base = GRAPH_HEADER_SIZE + node_idx as usize * self.config.node_block_size;
 
         let (offset, count) = if level == 0 {
             (base, self.config.m0)
@@ -384,20 +384,33 @@ pub fn parse_meta(contents: &str) -> Result<CompactedConfig, Error> {
         }
     };
 
+    let m = v["m"]
+        .as_u64()
+        .ok_or_else(|| Error::CorruptedFile("missing m in hnsw.meta".into()))?
+        as usize;
+    let m0 = v["m0"]
+        .as_u64()
+        .ok_or_else(|| Error::CorruptedFile("missing m0 in hnsw.meta".into()))?
+        as usize;
+    let max_level = v["max_level"]
+        .as_u64()
+        .ok_or_else(|| Error::CorruptedFile("missing max_level in hnsw.meta".into()))?
+        as usize;
+
+    // Backward compatibility: old segments without node_block_size use the old (buggy) formula
+    let node_block_size = v["node_block_size"]
+        .as_u64()
+        .map(|v| v as usize)
+        .unwrap_or_else(|| m0 * 4 + max_level * m * 4);
+
     Ok(CompactedConfig {
         dimensions: v["dimensions"]
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing dimensions in hnsw.meta".into()))?
             as usize,
         metric,
-        m: v["m"]
-            .as_u64()
-            .ok_or_else(|| Error::CorruptedFile("missing m in hnsw.meta".into()))?
-            as usize,
-        m0: v["m0"]
-            .as_u64()
-            .ok_or_else(|| Error::CorruptedFile("missing m0 in hnsw.meta".into()))?
-            as usize,
+        m,
+        m0,
         ef_construction: v["ef_construction"]
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing ef_construction in hnsw.meta".into()))?
@@ -406,14 +419,12 @@ pub fn parse_meta(contents: &str) -> Result<CompactedConfig, Error> {
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing num_nodes in hnsw.meta".into()))?
             as usize,
-        max_level: v["max_level"]
-            .as_u64()
-            .ok_or_else(|| Error::CorruptedFile("missing max_level in hnsw.meta".into()))?
-            as usize,
+        max_level,
         entry_point: v["entry_point"]
             .as_u64()
             .ok_or_else(|| Error::CorruptedFile("missing entry_point in hnsw.meta".into()))?
             as u32,
+        node_block_size,
     })
 }
 

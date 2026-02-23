@@ -1,11 +1,16 @@
 use super::distance::DistanceFn;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum LiveOp {
-    Insert { doc_id: u64, vector: Vec<f32> },
-    Delete { doc_id: u64 },
+    Insert {
+        doc_id: u64,
+        vectors: Vec<Vec<f32>>,
+    },
+    Delete {
+        doc_id: u64,
+    },
 }
 
 pub struct LiveLayer {
@@ -38,39 +43,44 @@ impl LiveLayer {
     }
 
     pub fn refresh_snapshot(&mut self) {
-        let mut entries_map: HashMap<u64, Vec<f32>> = HashMap::new();
-        let mut delete_set: Vec<u64> = Vec::new();
+        let mut entries_map: HashMap<u64, Vec<Vec<f32>>> = HashMap::new();
+        let mut delete_set: HashSet<u64> = HashSet::new();
 
         for op in &self.ops {
             match op {
-                LiveOp::Insert { doc_id, vector } => {
-                    entries_map.insert(*doc_id, vector.clone());
+                LiveOp::Insert { doc_id, vectors } => {
+                    entries_map.insert(*doc_id, vectors.clone());
                     // If previously deleted in this batch, un-delete
-                    delete_set.retain(|&id| id != *doc_id);
+                    delete_set.remove(doc_id);
                 }
                 LiveOp::Delete { doc_id } => {
                     entries_map.remove(doc_id);
-                    if !delete_set.contains(doc_id) {
-                        delete_set.push(*doc_id);
-                    }
+                    delete_set.insert(*doc_id);
                 }
             }
         }
 
-        let mut entries: Vec<(u64, Vec<f32>)> = entries_map.into_iter().collect();
+        // Flatten multi-embeddings: each vector gets its own entry with repeated doc_id
+        let mut entries: Vec<(u64, Vec<f32>)> = entries_map
+            .into_iter()
+            .flat_map(|(doc_id, vectors)| {
+                vectors.into_iter().map(move |v| (doc_id, v))
+            })
+            .collect();
         entries.sort_unstable_by_key(|(id, _)| *id);
-        delete_set.sort_unstable();
+        let mut deletes: Vec<u64> = delete_set.into_iter().collect();
+        deletes.sort_unstable();
 
         self.cached_snapshot = Arc::new(LiveSnapshot {
             entries,
-            deletes: delete_set,
+            deletes,
             ops_len: self.ops.len(),
         });
         self.snapshot_dirty = false;
     }
 
-    pub fn insert(&mut self, doc_id: u64, vector: Vec<f32>) {
-        self.ops.push(LiveOp::Insert { doc_id, vector });
+    pub fn insert(&mut self, doc_id: u64, vectors: Vec<Vec<f32>>) {
+        self.ops.push(LiveOp::Insert { doc_id, vectors });
         self.snapshot_dirty = true;
     }
 
@@ -184,8 +194,8 @@ mod tests {
     #[test]
     fn test_live_layer_insert_delete() {
         let mut layer = LiveLayer::new();
-        layer.insert(1, vec![1.0, 0.0]);
-        layer.insert(2, vec![0.0, 1.0]);
+        layer.insert(1, vec![vec![1.0, 0.0]]);
+        layer.insert(2, vec![vec![0.0, 1.0]]);
         layer.delete(1);
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
@@ -197,8 +207,8 @@ mod tests {
     #[test]
     fn test_snapshot_deduplication() {
         let mut layer = LiveLayer::new();
-        layer.insert(1, vec![1.0]);
-        layer.insert(1, vec![2.0]); // overwrites
+        layer.insert(1, vec![vec![1.0]]);
+        layer.insert(1, vec![vec![2.0]]); // overwrites
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.entries.len(), 1);
@@ -208,9 +218,9 @@ mod tests {
     #[test]
     fn test_reinsert_after_delete() {
         let mut layer = LiveLayer::new();
-        layer.insert(1, vec![1.0]);
+        layer.insert(1, vec![vec![1.0]]);
         layer.delete(1);
-        layer.insert(1, vec![2.0]);
+        layer.insert(1, vec![vec![2.0]]);
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.entries.len(), 1);
@@ -219,11 +229,22 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_embedding_insert() {
+        let mut layer = LiveLayer::new();
+        layer.insert(1, vec![vec![1.0], vec![2.0], vec![3.0]]);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+        // All 3 embeddings should survive with the same doc_id
+        assert_eq!(snapshot.entries.len(), 3);
+        assert!(snapshot.entries.iter().all(|(id, _)| *id == 1));
+    }
+
+    #[test]
     fn test_brute_force_search() {
         let mut layer = LiveLayer::new();
-        layer.insert(1, vec![0.0, 0.0]);
-        layer.insert(2, vec![1.0, 0.0]);
-        layer.insert(3, vec![10.0, 0.0]);
+        layer.insert(1, vec![vec![0.0, 0.0]]);
+        layer.insert(2, vec![vec![1.0, 0.0]]);
+        layer.insert(3, vec![vec![10.0, 0.0]]);
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
@@ -237,9 +258,9 @@ mod tests {
     #[test]
     fn test_search_with_exclusion() {
         let mut layer = LiveLayer::new();
-        layer.insert(1, vec![0.0]);
-        layer.insert(2, vec![0.5]);
-        layer.insert(3, vec![1.0]);
+        layer.insert(1, vec![vec![0.0]]);
+        layer.insert(2, vec![vec![0.5]]);
+        layer.insert(3, vec![vec![1.0]]);
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 

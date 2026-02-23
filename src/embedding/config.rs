@@ -117,7 +117,7 @@ impl EmbeddingConfig {
     }
 
     pub fn node_block_size(&self) -> usize {
-        self.m0 * 4 + self.max_level * self.m * 4
+        self.m0 * 4 + self.max_level.saturating_sub(1) * self.m * 4
     }
 }
 
@@ -150,7 +150,7 @@ mod tests {
     fn test_node_block_size() {
         let config = EmbeddingConfig::new(128, DistanceMetric::L2).unwrap();
         // m0=32, max_level=16, m=16
-        // 32*4 + 16*16*4 = 128 + 1024 = 1152
-        assert_eq!(config.node_block_size(), 1152);
+        // 32*4 + (16-1)*16*4 = 128 + 960 = 1088
+        assert_eq!(config.node_block_size(), 1088);
     }
 }
