@@ -167,11 +167,7 @@ impl EmbeddingStorage {
         let current = self.segments.load();
 
         // Early return if nothing to do
-        if snapshot.is_empty() && current.segments.is_empty() {
-            let mut live = self.live.write().unwrap();
-            live.ops.drain(..snapshot.ops_len);
-            live.ops.shrink_to_fit();
-            live.refresh_snapshot();
+        if snapshot.is_empty() {
             return Ok(());
         }
 
@@ -199,15 +195,16 @@ impl EmbeddingStorage {
             let new_deletes = &per_segment_new_deletes[i];
             let updated_deletes = merge_sorted_u64(segment.deletes_slice(), new_deletes);
             let updated_num_deletes = updated_deletes.len();
-            let deletion_ratio = if segment.num_nodes > 0 {
-                updated_num_deletes as f64 / segment.num_nodes as f64
-            } else {
-                0.0
-            };
 
             let is_last = Some(i) == last_idx;
             let surviving =
                 surviving_count(segment.num_nodes, segment.doc_ids_slice(), &updated_deletes);
+            let actual_deleted_nodes = segment.num_nodes - surviving;
+            let deletion_ratio = if segment.num_nodes > 0 {
+                actual_deleted_nodes as f64 / segment.num_nodes as f64
+            } else {
+                0.0
+            };
             let can_absorb = is_last
                 && !snapshot.entries.is_empty()
                 && (surviving + snapshot.entries.len())
