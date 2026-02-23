@@ -414,6 +414,7 @@ impl HnswBuilder {
         levels_bytes: &[u8],
         config: &EmbeddingConfig,
         distance_fn: DistanceFn,
+        node_block_size: usize,
     ) -> Result<Self, Error> {
         if graph_bytes.len() < GRAPH_HEADER_SIZE {
             return Err(Error::CorruptedFile("graph too small for header".into()));
@@ -432,7 +433,6 @@ impl HnswBuilder {
             });
         }
 
-        let node_block_size = config.node_block_size();
         let m0 = config.m0;
         let m = config.m;
 

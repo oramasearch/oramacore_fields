@@ -237,9 +237,6 @@ impl EmbeddingStorage {
                         collect_surviving(segment, &updated_deletes, dimensions);
 
                     for (doc_id, vector) in &snapshot.entries {
-                        if snapshot.deletes.binary_search(doc_id).is_ok() {
-                            continue;
-                        }
                         all_vecs.extend_from_slice(vector);
                         all_ids.push(*doc_id);
                     }
@@ -355,9 +352,6 @@ impl EmbeddingStorage {
             let mut live_vecs: Vec<f32> = Vec::new();
             let mut live_ids: Vec<u64> = Vec::new();
             for (doc_id, vector) in &snapshot.entries {
-                if snapshot.deletes.binary_search(doc_id).is_ok() {
-                    continue;
-                }
                 live_vecs.extend_from_slice(vector);
                 live_ids.push(*doc_id);
             }
@@ -394,10 +388,10 @@ impl EmbeddingStorage {
             // Write an empty manifest
             write_manifest(&new_version_dir, &new_manifest_entries)?;
             sync_dir(&new_version_dir)?;
+            let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
             write_current_atomic(&self.base_path, version_number)?;
 
             let mut live = self.live.write().unwrap();
-            let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
             self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
@@ -407,11 +401,11 @@ impl EmbeddingStorage {
         // Step 4: Write manifest and finalize
         write_manifest(&new_version_dir, &new_manifest_entries)?;
         sync_dir(&new_version_dir)?;
+        let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
         write_current_atomic(&self.base_path, version_number)?;
 
         {
             let mut live = self.live.write().unwrap();
-            let new_segment_list = SegmentList::load(&self.base_path, version_number)?;
             self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.ops.shrink_to_fit();
@@ -786,8 +780,13 @@ fn incremental_insert_segment(
     }
 
     // 5. Load old graph, insert new nodes, write updated graph
-    let mut builder =
-        HnswBuilder::load_from_graph(old_segment.graph_bytes(), old_levels, config, distance_fn)?;
+    let mut builder = HnswBuilder::load_from_graph(
+        old_segment.graph_bytes(),
+        old_levels,
+        config,
+        distance_fn,
+        old_segment.config.node_block_size,
+    )?;
 
     // All raw vectors (old + new) needed for distance calculations
     let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
