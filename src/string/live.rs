@@ -57,6 +57,7 @@ impl LiveLayer {
         // Per doc: latest field_length, per-term positions
         let mut doc_terms: HashMap<u64, (u16, HashMap<String, TermData>)> = HashMap::new();
         let mut delete_set: HashSet<u64> = HashSet::new();
+        let mut compacted_deletes_count: u64 = 0;
 
         for op in &self.ops {
             match op {
@@ -69,8 +70,11 @@ impl LiveLayer {
                     doc_terms.insert(*doc_id, (*field_length, terms.clone()));
                 }
                 LiveOp::Delete(doc_id) => {
-                    doc_terms.remove(doc_id);
+                    let was_live = doc_terms.remove(doc_id).is_some();
                     delete_set.insert(*doc_id);
+                    if !was_live {
+                        compacted_deletes_count += 1;
+                    }
                 }
             }
         }
@@ -115,6 +119,7 @@ impl LiveLayer {
             deletes_sorted,
             total_field_length,
             total_documents,
+            compacted_deletes_count,
             ops_len: self.ops.len(),
             term_tree,
         });
@@ -150,6 +155,9 @@ pub struct LiveSnapshot {
     pub total_field_length: u64,
     /// Number of unique live documents.
     pub total_documents: u64,
+    /// Number of deletes targeting docs not inserted in the live layer (i.e., compacted docs).
+    /// Used to correct total_documents at search time.
+    pub compacted_deletes_count: u64,
     /// Number of operations included in this snapshot.
     pub ops_len: usize,
     /// Radix tree for prefix key lookup (keys mirror term_postings).
@@ -165,6 +173,7 @@ impl LiveSnapshot {
             deletes_sorted: Vec::new(),
             total_field_length: 0,
             total_documents: 0,
+            compacted_deletes_count: 0,
             ops_len: 0,
             term_tree: RadixTree::new(),
         }

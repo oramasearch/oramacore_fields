@@ -117,7 +117,13 @@ impl SearchHandle {
         filter: Option<&F>,
         scorer: &mut BM25Scorer,
     ) -> Result<()> {
-        let total_documents = self.version.total_documents + self.snapshot.total_documents;
+        let total_documents = (self.version.total_documents + self.snapshot.total_documents)
+            .saturating_sub(self.snapshot.compacted_deletes_count);
+        // NOTE: total_document_length (and thus avg_field_length) is not corrected for
+        // live-layer deletes of compacted docs because the live layer does not know their
+        // field lengths (stored in the compacted mmap). Looking them up here would cost
+        // O(d × log n) per search. The inaccuracy is minor (affects only length normalization,
+        // not IDF) and is fully resolved on the next compaction.
         let total_document_length =
             self.version.total_document_length + self.snapshot.total_field_length;
 
@@ -249,7 +255,13 @@ impl SearchHandle {
         filter: Option<&F>,
         scorer: &mut BM25Scorer,
     ) -> Result<()> {
-        let total_documents = self.version.total_documents + self.snapshot.total_documents;
+        let total_documents = (self.version.total_documents + self.snapshot.total_documents)
+            .saturating_sub(self.snapshot.compacted_deletes_count);
+        // NOTE: total_document_length (and thus avg_field_length) is not corrected for
+        // live-layer deletes of compacted docs because the live layer does not know their
+        // field lengths (stored in the compacted mmap). Looking them up here would cost
+        // O(d × log n) per search. The inaccuracy is minor (affects only length normalization,
+        // not IDF) and is fully resolved on the next compaction.
         let total_document_length =
             self.version.total_document_length + self.snapshot.total_field_length;
 

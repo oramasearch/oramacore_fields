@@ -313,4 +313,31 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
     // Step 12: Search — must match baseline
     let s5 = search_scores(&index, "hello");
     assert_scores_map_equal(&s1, &s5, "after second compaction");
+
+    // Step 13: Delete a compacted document via the live layer
+    index.delete(3);
+
+    // Step 14: Search — scores for remaining docs must be consistent
+    let s6 = search_scores(&index, "hello");
+    assert_eq!(s6.len(), 8, "8 of remaining 9 docs contain 'hello'");
+    assert!(!s6.contains_key(&3), "deleted doc 3 should not appear");
+
+    // Step 15: Compact (materializes the compacted-doc delete)
+    index.compact(3).unwrap();
+
+    // Step 16: Search — scores should closely match pre-compaction scores.
+    // avg_field_length is not corrected for live-layer deletes of compacted docs
+    // (their field lengths are stored in the compacted mmap and not accessible to the
+    // live layer). This causes a small score difference that is fully resolved on
+    // compaction. Use a wider tolerance to account for this known gap.
+    let s7 = search_scores(&index, "hello");
+    assert_eq!(s6.len(), s7.len(), "same number of docs before and after compaction");
+    for (&doc_id, &score_before) in &s6 {
+        let score_after = s7[&doc_id];
+        assert!(
+            (score_before - score_after).abs() < 0.02,
+            "after compacting a compacted-doc delete: doc_id {doc_id} score differs too much: \
+             before={score_before:.10} after={score_after:.10}"
+        );
+    }
 }

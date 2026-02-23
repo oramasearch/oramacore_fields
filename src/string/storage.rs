@@ -1488,4 +1488,43 @@ mod tests {
         assert_approx_eq!(score2, 0.27248147, 1e-6);
         assert_approx_eq!(score3, 0.252_027_1, 1e-6);
     }
+
+    #[test]
+    fn test_score_consistency_after_live_delete_of_compacted_doc() {
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Insert two docs with different field lengths so avg_field_length
+        // changes noticeably when one is removed.
+        index.insert(1, make_value(5, vec![("hello", vec![0], vec![])]));
+        index.insert(2, make_value(15, vec![("hello", vec![0], vec![])]));
+        index.compact(1).unwrap();
+
+        // Delete doc 2 in the live layer (no compaction yet).
+        // Logical state: only doc 1 is alive.
+        index.delete(2);
+        let score_before_compact = {
+            let result = search_default(&index, &["hello"]);
+            assert_eq!(result.docs.len(), 1, "only doc 1 should be returned");
+            assert_eq!(result.docs[0].doc_id, 1);
+            result.docs[0].score
+        };
+
+        // Compact to materialize the delete.
+        // Logical state is still: only doc 1 is alive.
+        index.compact(2).unwrap();
+        let score_after_compact = {
+            let result = search_default(&index, &["hello"]);
+            assert_eq!(result.docs.len(), 1, "only doc 1 should be returned");
+            assert_eq!(result.docs[0].doc_id, 1);
+            result.docs[0].score
+        };
+
+        // IDF is now correct (total_documents accounts for compacted-doc deletes),
+        // but avg_field_length is still slightly off because the live layer doesn't know
+        // the deleted doc's field length (stored in the compacted mmap). This causes a
+        // score difference proportional to the field-length variance. The gap is fully
+        // resolved on compaction. We use a wider tolerance to document this known trade-off.
+        assert_approx_eq!(score_before_compact, score_after_compact, 0.1);
+    }
 }
