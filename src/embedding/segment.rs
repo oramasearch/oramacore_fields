@@ -204,7 +204,8 @@ impl Segment {
         ef: usize,
         distance_fn: DistanceFn,
         quantized_distance_fn: QuantizedDistanceFn,
-        deleted: &[u64],
+        segment_deletes: &[u64],
+        live_deletes: &[u64],
     ) -> Vec<(u64, f32)> {
         if self.config.num_nodes == 0 {
             return Vec::new();
@@ -303,7 +304,9 @@ impl Segment {
             .into_iter()
             .filter_map(|item| {
                 let doc_id = self.doc_id_at(item.index);
-                if deleted.binary_search(&doc_id).is_ok() {
+                if segment_deletes.binary_search(&doc_id).is_ok()
+                    || live_deletes.binary_search(&doc_id).is_ok()
+                {
                     return None;
                 }
                 let raw_vec = self.raw_vector(item.index, dimensions);

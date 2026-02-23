@@ -129,13 +129,14 @@ impl EmbeddingStorage {
                 .quantization_params
                 .quantize(query, &mut query_quantized);
 
-            // Targeted live deletes for this segment's doc_id range
-            let merged_deletes = merge_segment_deletes(
-                segment.deletes_slice(),
-                &snapshot.deletes,
-                segment.min_doc_id,
-                segment.max_doc_id,
-            );
+            // Extract live deletes targeting this segment's doc_id range (zero-alloc)
+            let start = snapshot
+                .deletes
+                .partition_point(|&d| d < segment.min_doc_id);
+            let end = snapshot
+                .deletes
+                .partition_point(|&d| d <= segment.max_doc_id);
+            let targeted_live_deletes = &snapshot.deletes[start..end];
 
             let segment_results = segment.search(
                 query,
@@ -144,7 +145,8 @@ impl EmbeddingStorage {
                 ef,
                 self.distance_fn,
                 self.quantized_distance_fn,
-                &merged_deletes,
+                segment.deletes_slice(),
+                targeted_live_deletes,
             );
             all_results.extend(segment_results);
         }
@@ -596,20 +598,6 @@ impl EmbeddingStorage {
 // ──────────────────────────────────────────────────
 // Helper functions
 // ──────────────────────────────────────────────────
-
-/// Merge segment-level deletes with targeted live deletes for a segment's doc_id range.
-fn merge_segment_deletes(
-    segment_deletes: &[u64],
-    live_deletes: &[u64],
-    min_doc_id: u64,
-    max_doc_id: u64,
-) -> Vec<u64> {
-    // Extract live deletes that fall within this segment's range
-    let start = live_deletes.partition_point(|&d| d < min_doc_id);
-    let end = live_deletes.partition_point(|&d| d <= max_doc_id);
-    let targeted = &live_deletes[start..end];
-    merge_sorted_u64(segment_deletes, targeted)
-}
 
 /// Deduplicate results by doc_id (keeping first/closest) and truncate to k.
 fn deduplicate_and_truncate(results: &mut Vec<(u64, f32)>, k: usize) {
