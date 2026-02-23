@@ -1,5 +1,6 @@
 use oramacore_fields::embedding::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
+    DeletionThreshold, DistanceMetric, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
+    SegmentConfig,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};

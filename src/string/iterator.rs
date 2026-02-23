@@ -1483,11 +1483,7 @@ mod tests {
         // Insert a doc that matches a few terms
         let mut terms = Vec::new();
         for i in 0..40u32 {
-            terms.push((
-                format!("token{i}"),
-                vec![i],
-                vec![],
-            ));
+            terms.push((format!("token{i}"), vec![i], vec![]));
         }
         let term_refs: Vec<(&str, Vec<u32>, Vec<u32>)> = terms
             .iter()

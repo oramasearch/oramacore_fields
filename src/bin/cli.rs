@@ -1069,7 +1069,7 @@ fn open_embedding_storage(
     dimensions: usize,
     metric: MetricArg,
 ) -> Result<oramacore_fields::embedding::EmbeddingStorage, String> {
-    use oramacore_fields::embedding::{SegmentConfig, EmbeddingConfig, EmbeddingStorage};
+    use oramacore_fields::embedding::{EmbeddingConfig, EmbeddingStorage, SegmentConfig};
 
     let config = EmbeddingConfig::new(dimensions, metric.into_metric())
         .map_err(|e| format!("Invalid config: {e}"))?;
@@ -1632,7 +1632,7 @@ mod tests_cli {
 
     fn create_test_embedding_index() -> (TempDir, PathBuf) {
         use oramacore_fields::embedding::{
-            DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
+            DistanceMetric, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage, SegmentConfig,
         };
 
         let tmp = TempDir::new().unwrap();
@@ -1722,7 +1722,7 @@ mod tests_cli {
     #[test]
     fn test_embedding_cmd_check_uncompacted_index() {
         use oramacore_fields::embedding::{
-            DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingStorage,
+            DistanceMetric, EmbeddingConfig, EmbeddingStorage, SegmentConfig,
         };
 
         let tmp = TempDir::new().unwrap();

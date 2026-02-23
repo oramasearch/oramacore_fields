@@ -1,6 +1,6 @@
 use crate::embedding::IndexedValue;
 
-use super::config::{SegmentConfig, EmbeddingConfig};
+use super::config::{EmbeddingConfig, SegmentConfig};
 use super::distance::{
     resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
 };
@@ -973,7 +973,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
         assert_eq!(storage.current_version_number(), 0);
     }
 
@@ -982,7 +983,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
         let storage =
-            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
 
         let indexer = EmbeddingIndexer::new(3);
 
@@ -996,7 +998,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default())
+                .unwrap();
 
         let indexer = EmbeddingIndexer::new(2);
 

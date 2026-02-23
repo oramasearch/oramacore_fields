@@ -37,11 +37,11 @@
 //!   persistence without blocking reads or writes.
 
 pub mod bool;
+pub mod embedding;
 pub mod geopoint;
 pub mod number;
 pub mod string;
 pub mod string_filter;
-pub mod embedding;
 
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]

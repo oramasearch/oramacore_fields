@@ -159,7 +159,11 @@ fn test_bm25_scores_identical_across_compaction_strategies() {
     );
 }
 
-fn assert_scores_map_equal(expected: &HashMap<u64, f32>, actual: &HashMap<u64, f32>, context: &str) {
+fn assert_scores_map_equal(
+    expected: &HashMap<u64, f32>,
+    actual: &HashMap<u64, f32>,
+    context: &str,
+) {
     assert_eq!(
         expected.len(),
         actual.len(),
@@ -203,10 +207,7 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
         2,
         make_value(
             5,
-            vec![
-                ("hello", vec![0, 2, 4], vec![]),
-                ("world", vec![1], vec![]),
-            ],
+            vec![("hello", vec![0, 2, 4], vec![]), ("world", vec![1], vec![])],
         ),
     );
     index.insert(
@@ -216,10 +217,7 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
             vec![("hello", vec![0], vec![]), ("foo", vec![5], vec![])],
         ),
     );
-    index.insert(
-        4,
-        make_value(3, vec![("world", vec![0, 1, 2], vec![])]),
-    );
+    index.insert(4, make_value(3, vec![("world", vec![0, 1, 2], vec![])]));
     index.insert(
         5,
         make_value(
@@ -269,10 +267,7 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
         11,
         make_value(
             4,
-            vec![
-                ("hello", vec![0, 1], vec![]),
-                ("world", vec![2, 3], vec![]),
-            ],
+            vec![("hello", vec![0, 1], vec![]), ("world", vec![2, 3], vec![])],
         ),
     );
     index.insert(
@@ -300,13 +295,7 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
 
     // Step 8: Insert 10 more documents (IDs 13-22)
     for i in 13..=22u64 {
-        index.insert(
-            i,
-            make_value(
-                5,
-                vec![("hello", vec![0, 2], vec![1, 3, 4])],
-            ),
-        );
+        index.insert(i, make_value(5, vec![("hello", vec![0, 2], vec![1, 3, 4])]));
     }
 
     // Step 9: Delete those 10 documents

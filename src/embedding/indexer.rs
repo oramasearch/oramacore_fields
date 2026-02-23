@@ -48,7 +48,9 @@ impl EmbeddingIndexer {
         Some(IndexedValue::Array(
             vectors
                 .iter()
-                .map(|v| Embedding { embedding: v.clone() })
+                .map(|v| Embedding {
+                    embedding: v.clone(),
+                })
                 .collect(),
         ))
     }

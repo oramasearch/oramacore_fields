@@ -1,5 +1,6 @@
 use oramacore_fields::embedding::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
+    DeletionThreshold, DistanceMetric, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
+    SegmentConfig,
 };
 use std::sync::Arc;
 use tempfile::TempDir;

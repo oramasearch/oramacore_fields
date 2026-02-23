@@ -39,8 +39,8 @@ mod quantization;
 pub(crate) mod segment;
 mod storage;
 
-pub use config::{DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig};
+pub use config::{DeletionThreshold, DistanceMetric, EmbeddingConfig, SegmentConfig};
 pub use error::Error;
-pub use indexer::{Embedding, IndexedValue, EmbeddingIndexer};
+pub use indexer::{Embedding, EmbeddingIndexer, IndexedValue};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use storage::EmbeddingStorage;
