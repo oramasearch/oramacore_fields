@@ -88,6 +88,35 @@ pub fn sync_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// List all version directories under the base path.
+///
+/// Returns an iterator of version numbers (parsed from directory names).
+pub fn list_version_dirs(base_path: &Path) -> Result<impl Iterator<Item = u64> + '_, Error> {
+    let versions_dir = base_path.join("versions");
+
+    let entries = fs::read_dir(&versions_dir)?;
+
+    let iter = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_dir() {
+                return None;
+            }
+            Some(entry.file_name())
+        })
+        .filter_map(|name| name.to_str()?.parse::<u64>().ok());
+
+    Ok(iter)
+}
+
+/// Remove a version directory and all its contents.
+pub fn remove_version_dir(base_path: &Path, offset: u64) -> Result<(), Error> {
+    let dir = base_path.join("versions").join(offset.to_string());
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

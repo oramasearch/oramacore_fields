@@ -486,6 +486,7 @@ impl GeoPointStorage {
     }
 
     pub fn cleanup(&self) {
+        let _compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version_id = self.version.load().version_id;
 
         let version_ids = match list_version_dirs(&self.base_path) {

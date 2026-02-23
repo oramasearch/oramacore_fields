@@ -10,7 +10,10 @@ use super::config::Threshold;
 use super::error::Error;
 use super::indexer::IndexedValue;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
-use super::io::{ensure_version_dir, read_current, sync_dir, write_current_atomic};
+use super::io::{
+    ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir,
+    write_current_atomic,
+};
 use super::iterator::{FilterHandle, FilterOp, SortHandle, SortOrder};
 use super::key::IndexableNumber;
 use super::live::{LiveLayer, LiveSnapshot};
@@ -812,21 +815,26 @@ impl<T: IndexableNumber> NumberStorage<T> {
         IntegrityCheckResult::new(checks)
     }
 
-    /// Clean up old version directories.
+    /// Remove all old version directories except the current one.
     ///
-    /// Removes all version directories except the current one.
+    /// Call this after compaction to reclaim disk space. Safe to call during
+    /// normal operation. Errors are logged but do not cause the method to fail.
     pub fn cleanup(&self) {
+        let _compaction_guard = self.compaction_lock.lock().unwrap();
         let current_offset = self.current_offset();
-        let versions_dir = self.base_path.join("versions");
 
-        if let Ok(entries) = fs::read_dir(&versions_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if let Ok(offset) = name.parse::<u64>() {
-                        if offset != current_offset {
-                            let _ = fs::remove_dir_all(entry.path());
-                        }
-                    }
+        let version_numbers = match list_version_dirs(&self.base_path) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to list version directories: {e}");
+                return;
+            }
+        };
+
+        for version_number in version_numbers {
+            if version_number != current_offset {
+                if let Err(e) = remove_version_dir(&self.base_path, version_number) {
+                    tracing::error!("Failed to remove old version {version_number}: {e}");
                 }
             }
         }
