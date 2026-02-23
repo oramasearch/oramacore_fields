@@ -1,12 +1,11 @@
-//! Tests demonstrating Bug 5: carry-forward compaction writes inflated
-//! total_documents to global_info.bin (includes deleted docs), causing
-//! incorrect BM25 scores.
+//! Tests verifying that carry-forward compaction correctly excludes deleted
+//! docs from total_documents in global_info.bin.
 //!
-//! When carry-forward compaction is used (delete ratio below threshold),
-//! merge_and_write_doc_lengths is called with deleted_set=None, so deleted
-//! documents are included in total_documents and total_document_length in
-//! global_info.bin. This inflates BM25 parameters (avg_field_length and IDF),
-//! producing incorrect scores.
+//! Previously (Bug 5), carry-forward compaction inflated total_documents
+//! because merge_and_write_doc_lengths was called with deleted_set=None.
+//! This was fixed by passing count_exclude_set (commit f720e23), so deleted
+//! documents are now properly excluded from total_documents and
+//! total_document_length regardless of compaction strategy.
 
 use std::collections::HashMap;
 use tempfile::TempDir;

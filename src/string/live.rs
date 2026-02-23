@@ -174,7 +174,7 @@ impl LiveSnapshot {
     ///
     /// - `Some(0)`: exact match only
     /// - `None`: prefix search via RadixTree
-    /// - `Some(_)`: not supported in live layer (no-op)
+    /// - `Some(n)`: fuzzy search via RadixTree with Levenshtein tolerance
     pub fn for_each_term_match<F>(&self, token: &str, tolerance: Option<u8>, mut f: F)
     where
         F: FnMut(bool, &[PostingTuple]),
@@ -197,8 +197,17 @@ impl LiveSnapshot {
                     }
                 }
             }
-            Some(_) => {
-                // Levenshtein not supported in live layer
+            Some(n) => {
+                for (key_bytes, _, _distance) in self.term_tree.search_with_tolerance(token, n) {
+                    if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
+                        if let Some((stored_key, postings)) =
+                            self.term_postings.get_key_value(key_str)
+                        {
+                            let is_exact = stored_key == token;
+                            f(is_exact, postings.as_slice());
+                        }
+                    }
+                }
             }
         }
     }
@@ -493,9 +502,53 @@ mod tests {
         snapshot.for_each_term_match("xyz", None, |_, _| count += 1);
         assert_eq!(count, 0);
 
-        // Levenshtein not supported in live layer
-        let mut count = 0;
-        snapshot.for_each_term_match("apple", Some(1), |_, _| count += 1);
-        assert_eq!(count, 0);
+        // Levenshtein with tolerance 1: "apple" matches "apple" (exact, distance 0)
+        // and "application" (fuzzy prefix: "appli" is distance 1 from "apple")
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("apple", Some(1), |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
+        assert_eq!(results.len(), 2);
+        let exact_count = results.iter().filter(|(exact, _)| *exact).count();
+        assert_eq!(exact_count, 1); // only "apple" is exact
+    }
+
+    #[test]
+    fn test_for_each_term_match_levenshtein() {
+        let mut layer = LiveLayer::new();
+
+        layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        // "apple" with tolerance 1 should match "apple" (exact) and "apply" (distance 1)
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("apple", Some(1), |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
+        assert_eq!(results.len(), 2);
+
+        let exact_count = results.iter().filter(|(is_exact, _)| *is_exact).count();
+        assert_eq!(exact_count, 1); // only "apple" is exact
+
+        let all_doc_ids: Vec<u64> = results
+            .iter()
+            .flat_map(|(_, postings)| postings.iter().map(|(id, _, _)| *id))
+            .collect();
+        assert!(all_doc_ids.contains(&1)); // "apple"
+        assert!(all_doc_ids.contains(&2)); // "apply"
+        assert!(!all_doc_ids.contains(&3)); // "banana" is too far
+
+        // "banana" with tolerance 1 should not match "apple" or "apply"
+        let mut results: Vec<(bool, Vec<PostingTuple>)> = Vec::new();
+        snapshot.for_each_term_match("banana", Some(1), |is_exact, postings| {
+            results.push((is_exact, postings.to_vec()));
+        });
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0); // exact match
+        assert_eq!(results[0].1[0].0, 3);
     }
 }

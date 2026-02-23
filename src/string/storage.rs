@@ -1002,6 +1002,86 @@ mod tests {
     }
 
     #[test]
+    fn test_levenshtein_search_before_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
+        index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
+        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
+
+        // Fuzzy search before any compaction
+        let tokens = vec!["apple".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    tolerance: Some(1),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
+        let result = scorer.into_search_result();
+
+        assert_eq!(result.docs.len(), 2);
+        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
+        assert!(doc_ids.contains(&1)); // "apple" exact
+        assert!(doc_ids.contains(&2)); // "apply" distance 1
+    }
+
+    #[test]
+    fn test_levenshtein_parity_before_after_compact() {
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
+        index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
+        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
+
+        // Search before compaction
+        let tokens = vec!["apple".to_string()];
+        let mut scorer = BM25Scorer::new();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    tolerance: Some(1),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
+        let before = scorer.into_search_result();
+
+        // Compact
+        index.compact(1).unwrap();
+
+        // Search after compaction
+        let mut scorer = BM25Scorer::new();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    tolerance: Some(1),
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
+        let after = scorer.into_search_result();
+
+        // Same doc IDs should be returned
+        let before_ids: Vec<u64> = before.docs.iter().map(|d| d.doc_id).collect();
+        let after_ids: Vec<u64> = after.docs.iter().map(|d| d.doc_id).collect();
+        assert_eq!(before_ids, after_ids);
+    }
+
+    #[test]
     fn test_levenshtein_search_after_compact() {
         let tmp = TempDir::new().unwrap();
         let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();

@@ -24,7 +24,7 @@ pub struct SearchParams<'a> {
     /// Tolerance for fuzzy matching.
     /// - `Some(0)`: exact match (current behavior)
     /// - `None`: prefix search
-    /// - `Some(n)`: Levenshtein distance <= n (compacted layer only)
+    /// - `Some(n)`: Levenshtein distance <= n
     pub tolerance: Option<u8>,
     /// Score multiplier per consecutive token pair. None = disabled.
     pub phrase_boost: Option<f32>,
@@ -135,7 +135,7 @@ impl SearchHandle {
         let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
-            let token_bit = 1u32 << (token_idx as u32);
+            let token_bit = token_bit(token_idx);
             per_doc_ntf.clear();
             let mut corpus_df: u64 = 0;
 
@@ -270,7 +270,7 @@ impl SearchHandle {
         let mut consecutive_counts: HashMap<u64, usize> = HashMap::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
-            let token_bit = 1u32 << (token_idx as u32);
+            let token_bit = token_bit(token_idx);
             per_doc_ntf.clear();
             curr_raw.clear();
             let mut corpus_df: u64 = 0;
@@ -451,6 +451,14 @@ fn check_adjacency_pairs(
             std::cmp::Ordering::Greater => ci += 1,
         }
     }
+}
+
+#[inline]
+fn token_bit(token_idx: usize) -> u32 {
+    if token_idx >= 32 {
+        return 0;
+    }
+    1u32 << (token_idx as u32)
 }
 
 #[inline]
@@ -1456,5 +1464,51 @@ mod tests {
         assert_eq!(*counts.get(&3).unwrap(), 1);
         // Doc 1 never appeared in prev, so no entry
         assert!(!counts.contains_key(&1));
+    }
+
+    #[test]
+    fn test_token_bit_helper() {
+        assert_eq!(token_bit(0), 1);
+        assert_eq!(token_bit(1), 2);
+        assert_eq!(token_bit(31), 1u32 << 31);
+        assert_eq!(token_bit(32), 0);
+        assert_eq!(token_bit(100), 0);
+    }
+
+    #[test]
+    fn test_many_tokens_no_panic() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        // Insert a doc that matches a few terms
+        let mut terms = Vec::new();
+        for i in 0..40u32 {
+            terms.push((
+                format!("token{i}"),
+                vec![i],
+                vec![],
+            ));
+        }
+        let term_refs: Vec<(&str, Vec<u32>, Vec<u32>)> = terms
+            .iter()
+            .map(|(s, e, st)| (s.as_str(), e.clone(), st.clone()))
+            .collect();
+        layer.insert(1, make_value(40, term_refs));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let token_strings: Vec<String> = (0..40).map(|i| format!("token{i}")).collect();
+        let params = SearchParams {
+            tokens: &token_strings,
+            ..Default::default()
+        };
+
+        // Should not panic even with 40 tokens (> 32 bits)
+        let result = execute_search(&handle, &params);
+        assert_eq!(result.docs.len(), 1);
+        assert_eq!(result.docs[0].doc_id, 1);
+        assert!(result.docs[0].score > 0.0);
     }
 }
