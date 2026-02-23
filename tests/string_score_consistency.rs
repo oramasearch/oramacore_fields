@@ -158,3 +158,170 @@ fn test_bm25_scores_identical_across_compaction_strategies() {
         "doc 1 score differs: carry-forward={cf_score:.10} vs apply-deletes={ad_score:.10}"
     );
 }
+
+fn assert_scores_map_equal(expected: &HashMap<u64, f32>, actual: &HashMap<u64, f32>, context: &str) {
+    assert_eq!(
+        expected.len(),
+        actual.len(),
+        "{context}: expected {} docs but got {}",
+        expected.len(),
+        actual.len()
+    );
+    for (&doc_id, &expected_score) in expected {
+        let actual_score = actual.get(&doc_id).unwrap_or_else(|| {
+            panic!("{context}: doc_id {doc_id} missing from results");
+        });
+        assert!(
+            (expected_score - actual_score).abs() < 1e-7,
+            "{context}: doc_id {doc_id} score differs: expected={expected_score:.10} actual={actual_score:.10}"
+        );
+    }
+}
+
+/// BM25 scores for the original documents must remain identical through
+/// insert/delete/compact cycles. Inserting and then deleting documents
+/// restores N, avg_field_length, corpus_df, and per-doc TF/field_length
+/// to their original values, so scores must not drift.
+#[test]
+fn test_scores_stable_across_insert_delete_compact_cycles() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(
+        tmp.path().to_path_buf(),
+        Threshold::try_from(0.5f64).unwrap(),
+    )
+    .unwrap();
+
+    // Step 1: Insert 10 documents with varying field lengths, terms, and positions
+    index.insert(
+        1,
+        make_value(
+            2,
+            vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+        ),
+    );
+    index.insert(
+        2,
+        make_value(
+            5,
+            vec![
+                ("hello", vec![0, 2, 4], vec![]),
+                ("world", vec![1], vec![]),
+            ],
+        ),
+    );
+    index.insert(
+        3,
+        make_value(
+            10,
+            vec![("hello", vec![0], vec![]), ("foo", vec![5], vec![])],
+        ),
+    );
+    index.insert(
+        4,
+        make_value(3, vec![("world", vec![0, 1, 2], vec![])]),
+    );
+    index.insert(
+        5,
+        make_value(
+            4,
+            vec![("hello", vec![0], vec![]), ("bar", vec![2, 3], vec![])],
+        ),
+    );
+    index.insert(
+        6,
+        make_value(
+            6,
+            vec![
+                ("hello", vec![0, 3], vec![1]),
+                ("world", vec![2, 5], vec![]),
+            ],
+        ),
+    );
+    index.insert(7, make_value(3, vec![("hello", vec![0], vec![2])]));
+    index.insert(
+        8,
+        make_value(
+            8,
+            vec![
+                ("hello", vec![0, 1, 2, 3], vec![]),
+                ("world", vec![4, 5, 6, 7], vec![]),
+            ],
+        ),
+    );
+    index.insert(9, make_value(1, vec![("hello", vec![0], vec![])]));
+    index.insert(
+        10,
+        make_value(
+            7,
+            vec![
+                ("hello", vec![0, 6], vec![]),
+                ("baz", vec![1, 2, 3, 4, 5], vec![]),
+            ],
+        ),
+    );
+
+    // Step 2: Search — baseline scores
+    let s1 = search_scores(&index, "hello");
+    assert_eq!(s1.len(), 9, "9 of 10 docs contain 'hello'");
+
+    // Step 3: Insert 2 more documents (IDs 11-12)
+    index.insert(
+        11,
+        make_value(
+            4,
+            vec![
+                ("hello", vec![0, 1], vec![]),
+                ("world", vec![2, 3], vec![]),
+            ],
+        ),
+    );
+    index.insert(
+        12,
+        make_value(
+            3,
+            vec![("hello", vec![0], vec![]), ("foo", vec![1, 2], vec![])],
+        ),
+    );
+
+    // Step 4: Delete those 2 documents
+    index.delete(11);
+    index.delete(12);
+
+    // Step 5: Search — must match baseline
+    let s2 = search_scores(&index, "hello");
+    assert_scores_map_equal(&s1, &s2, "after insert+delete of 2 docs");
+
+    // Step 6: Compact
+    index.compact(1).unwrap();
+
+    // Step 7: Search — must match baseline
+    let s3 = search_scores(&index, "hello");
+    assert_scores_map_equal(&s1, &s3, "after first compaction");
+
+    // Step 8: Insert 10 more documents (IDs 13-22)
+    for i in 13..=22u64 {
+        index.insert(
+            i,
+            make_value(
+                5,
+                vec![("hello", vec![0, 2], vec![1, 3, 4])],
+            ),
+        );
+    }
+
+    // Step 9: Delete those 10 documents
+    for i in 13..=22u64 {
+        index.delete(i);
+    }
+
+    // Step 10: Search — must match baseline
+    let s4 = search_scores(&index, "hello");
+    assert_scores_map_equal(&s1, &s4, "after insert+delete of 10 docs");
+
+    // Step 11: Compact again
+    index.compact(2).unwrap();
+
+    // Step 12: Search — must match baseline
+    let s5 = search_scores(&index, "hello");
+    assert_scores_map_equal(&s1, &s5, "after second compaction");
+}
