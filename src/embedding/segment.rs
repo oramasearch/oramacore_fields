@@ -386,8 +386,7 @@ pub fn parse_meta(contents: &str) -> Result<CompactedConfig, Error> {
 
     let m = v["m"]
         .as_u64()
-        .ok_or_else(|| Error::CorruptedFile("missing m in hnsw.meta".into()))?
-        as usize;
+        .ok_or_else(|| Error::CorruptedFile("missing m in hnsw.meta".into()))? as usize;
     let m0 = v["m0"]
         .as_u64()
         .ok_or_else(|| Error::CorruptedFile("missing m0 in hnsw.meta".into()))?

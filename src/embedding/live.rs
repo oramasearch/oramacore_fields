@@ -4,13 +4,8 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum LiveOp {
-    Insert {
-        doc_id: u64,
-        vectors: Vec<Vec<f32>>,
-    },
-    Delete {
-        doc_id: u64,
-    },
+    Insert { doc_id: u64, vectors: Vec<Vec<f32>> },
+    Delete { doc_id: u64 },
 }
 
 pub struct LiveLayer {
@@ -63,9 +58,7 @@ impl LiveLayer {
         // Flatten multi-embeddings: each vector gets its own entry with repeated doc_id
         let mut entries: Vec<(u64, Vec<f32>)> = entries_map
             .into_iter()
-            .flat_map(|(doc_id, vectors)| {
-                vectors.into_iter().map(move |v| (doc_id, v))
-            })
+            .flat_map(|(doc_id, vectors)| vectors.into_iter().map(move |v| (doc_id, v)))
             .collect();
         entries.sort_unstable_by_key(|(id, _)| *id);
         let mut deletes: Vec<u64> = delete_set.into_iter().collect();

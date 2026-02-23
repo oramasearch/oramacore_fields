@@ -331,7 +331,11 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
     // live layer). This causes a small score difference that is fully resolved on
     // compaction. Use a wider tolerance to account for this known gap.
     let s7 = search_scores(&index, "hello");
-    assert_eq!(s6.len(), s7.len(), "same number of docs before and after compaction");
+    assert_eq!(
+        s6.len(),
+        s7.len(),
+        "same number of docs before and after compaction"
+    );
     for (&doc_id, &score_before) in &s6 {
         let score_after = s7[&doc_id];
         assert!(

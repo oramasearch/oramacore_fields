@@ -300,8 +300,7 @@ impl EmbeddingStorage {
                 }
             } else if deletion_ratio > self.segment_config.deletion_threshold.value() {
                 // FULL REBUILD (non-absorb): apply deletes
-                let (vectors, doc_ids) =
-                    collect_surviving(segment, &updated_deletes, dimensions);
+                let (vectors, doc_ids) = collect_surviving(segment, &updated_deletes, dimensions);
 
                 if doc_ids.is_empty() {
                     continue;
