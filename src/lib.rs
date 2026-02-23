@@ -13,7 +13,7 @@
 //! | [`string`] | Full-text (BM25 scoring) | Search by tokens (exact, fuzzy, prefix) |
 //! | [`string_filter`] | String (exact match) | Filter by key |
 //! | [`geopoint`] | Geographic (lat/lon) | Bounding box, radius |
-//! | [`vector`] | Vector (f32 embeddings) | Approximate nearest neighbor (HNSW) |
+//! | [`embedding`] | Embedding (f32 vectors) | Approximate nearest neighbor (HNSW) |
 //!
 //! # Usage
 //!
@@ -41,7 +41,7 @@ pub mod geopoint;
 pub mod number;
 pub mod string;
 pub mod string_filter;
-pub mod vector;
+pub mod embedding;
 
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]

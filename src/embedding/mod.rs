@@ -1,19 +1,19 @@
-//! Vector index with approximate nearest neighbor search via HNSW graphs.
+//! Embedding index with approximate nearest neighbor search via HNSW graphs.
 //!
-//! Stores high-dimensional vectors with doc_id associations, supporting ANN
+//! Stores high-dimensional embeddings with doc_id associations, supporting ANN
 //! search using quantized HNSW graphs backed by memory-mapped files.
 //!
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig, VectorIndexer};
+//! use oramacore_fields::embedding::{EmbeddingStorage, EmbeddingConfig, DistanceMetric, SegmentConfig, EmbeddingIndexer};
 //! use std::path::PathBuf;
 //!
-//! let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
-//! let index = VectorStorage::new(PathBuf::from("/tmp/my_vectors"), config, SegmentConfig::default()).unwrap();
-//! let indexer = VectorIndexer::new(3);
+//! let config = EmbeddingConfig::new(3, DistanceMetric::Cosine).unwrap();
+//! let index = EmbeddingStorage::new(PathBuf::from("/tmp/my_embeddings"), config, SegmentConfig::default()).unwrap();
+//! let indexer = EmbeddingIndexer::new(3);
 //!
-//! // Insert vectors
+//! // Insert embeddings
 //! index.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());
 //! index.insert(2, indexer.index_vec(&[0.4, 0.5, 0.6]).unwrap());
 //!
@@ -39,8 +39,8 @@ mod quantization;
 pub(crate) mod segment;
 mod storage;
 
-pub use config::{DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig};
+pub use config::{DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig};
 pub use error::Error;
-pub use indexer::{Embedding, IndexedValue, VectorIndexer};
+pub use indexer::{Embedding, IndexedValue, EmbeddingIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
-pub use storage::VectorStorage;
+pub use storage::EmbeddingStorage;

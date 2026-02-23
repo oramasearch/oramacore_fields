@@ -1,5 +1,5 @@
 pub struct Embedding {
-    pub(crate) vector: Vec<f32>,
+    pub(crate) embedding: Vec<f32>,
 }
 
 pub enum IndexedValue {
@@ -7,11 +7,11 @@ pub enum IndexedValue {
     Array(Vec<Embedding>),
 }
 
-pub struct VectorIndexer {
+pub struct EmbeddingIndexer {
     dimensions: usize,
 }
 
-impl VectorIndexer {
+impl EmbeddingIndexer {
     pub fn new(dimensions: usize) -> Self {
         Self { dimensions }
     }
@@ -28,7 +28,7 @@ impl VectorIndexer {
         }
 
         Some(IndexedValue::Single(Embedding {
-            vector: vector.to_vec(),
+            embedding: vector.to_vec(),
         }))
     }
 
@@ -48,7 +48,7 @@ impl VectorIndexer {
         Some(IndexedValue::Array(
             vectors
                 .iter()
-                .map(|v| Embedding { vector: v.clone() })
+                .map(|v| Embedding { embedding: v.clone() })
                 .collect(),
         ))
     }
@@ -60,38 +60,38 @@ mod tests {
 
     #[test]
     fn test_index_vec_valid() {
-        let indexer = VectorIndexer::new(3);
+        let indexer = EmbeddingIndexer::new(3);
         let indexed = indexer.index_vec(&[1.0, 2.0, 3.0]);
         assert!(indexed.is_some());
         match indexed.unwrap() {
-            IndexedValue::Single(e) => assert_eq!(e.vector, vec![1.0, 2.0, 3.0]),
+            IndexedValue::Single(e) => assert_eq!(e.embedding, vec![1.0, 2.0, 3.0]),
             IndexedValue::Array(_) => panic!("expected Single"),
         }
     }
 
     #[test]
     fn test_index_vec_empty() {
-        let indexer = VectorIndexer::new(3);
+        let indexer = EmbeddingIndexer::new(3);
         assert!(indexer.index_vec(&[]).is_none());
     }
 
     #[test]
     fn test_index_vec_non_finite() {
-        let indexer = VectorIndexer::new(2);
+        let indexer = EmbeddingIndexer::new(2);
         assert!(indexer.index_vec(&[1.0, f32::NAN]).is_none());
         assert!(indexer.index_vec(&[f32::INFINITY, 1.0]).is_none());
     }
 
     #[test]
     fn test_index_vec_vec_valid() {
-        let indexer = VectorIndexer::new(2);
+        let indexer = EmbeddingIndexer::new(2);
         let indexed = indexer.index_vec_vec(&[vec![1.0, 2.0], vec![3.0, 4.0]]);
         assert!(indexed.is_some());
         match indexed.unwrap() {
             IndexedValue::Array(embeddings) => {
                 assert_eq!(embeddings.len(), 2);
-                assert_eq!(embeddings[0].vector, vec![1.0, 2.0]);
-                assert_eq!(embeddings[1].vector, vec![3.0, 4.0]);
+                assert_eq!(embeddings[0].embedding, vec![1.0, 2.0]);
+                assert_eq!(embeddings[1].embedding, vec![3.0, 4.0]);
             }
             IndexedValue::Single(_) => panic!("expected Array"),
         }
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_index_vec_vec_empty_inner() {
-        let indexer = VectorIndexer::new(2);
+        let indexer = EmbeddingIndexer::new(2);
         assert!(indexer.index_vec_vec(&[vec![1.0, 2.0], vec![]]).is_none());
     }
 }

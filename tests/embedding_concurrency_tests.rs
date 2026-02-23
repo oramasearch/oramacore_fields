@@ -1,19 +1,19 @@
-use oramacore_fields::vector::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
+use oramacore_fields::embedding::{
+    DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::TempDir;
 
-fn make_storage(dimensions: usize) -> (TempDir, Arc<VectorStorage>, VectorIndexer) {
+fn make_storage(dimensions: usize) -> (TempDir, Arc<EmbeddingStorage>, EmbeddingIndexer) {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(dimensions, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(dimensions, DistanceMetric::L2).unwrap();
     let storage = Arc::new(
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap(),
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap(),
     );
 
-    let indexer = VectorIndexer::new(dimensions);
+    let indexer = EmbeddingIndexer::new(dimensions);
 
     (tmp, storage, indexer)
 }
@@ -21,21 +21,21 @@ fn make_storage(dimensions: usize) -> (TempDir, Arc<VectorStorage>, VectorIndexe
 fn make_storage_with_config(
     dimensions: usize,
     seg_config: SegmentConfig,
-) -> (TempDir, Arc<VectorStorage>, VectorIndexer) {
+) -> (TempDir, Arc<EmbeddingStorage>, EmbeddingIndexer) {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(dimensions, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(dimensions, DistanceMetric::L2).unwrap();
     let storage =
-        Arc::new(VectorStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap());
-    let indexer = VectorIndexer::new(dimensions);
+        Arc::new(EmbeddingStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap());
+    let indexer = EmbeddingIndexer::new(dimensions);
     (tmp, storage, indexer)
 }
 
 /// Helper: build an IndexedValue from a float slice.
-fn iv(dims: usize, v: &[f32]) -> oramacore_fields::vector::IndexedValue {
-    VectorIndexer::new(dims).index_vec(v).unwrap()
+fn iv(dims: usize, v: &[f32]) -> oramacore_fields::embedding::IndexedValue {
+    EmbeddingIndexer::new(dims).index_vec(v).unwrap()
 }
 
-fn search_count(storage: &VectorStorage, query: &[f32], k: usize) -> usize {
+fn search_count(storage: &EmbeddingStorage, query: &[f32], k: usize) -> usize {
     storage.search(query, k, Some(200)).unwrap().len()
 }
 

@@ -179,7 +179,7 @@ impl Ord for HeapItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::distance::l2_distance;
+    use crate::embedding::distance::l2_distance;
 
     #[test]
     fn test_live_layer_insert_delete() {

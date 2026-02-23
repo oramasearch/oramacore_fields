@@ -362,7 +362,7 @@ impl SegmentList {
     }
 
     /// Total number of vectors across all segments.
-    pub fn total_vectors(&self) -> usize {
+    pub fn total_embeddings(&self) -> usize {
         self.segments.iter().map(|s| s.num_nodes).sum()
     }
 }

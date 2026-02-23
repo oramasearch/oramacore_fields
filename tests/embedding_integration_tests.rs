@@ -1,14 +1,14 @@
-use oramacore_fields::vector::{
-    DeletionThreshold, DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
+use oramacore_fields::embedding::{
+    DeletionThreshold, DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn make_storage(dimensions: usize, metric: DistanceMetric) -> (TempDir, VectorStorage) {
+fn make_storage(dimensions: usize, metric: DistanceMetric) -> (TempDir, EmbeddingStorage) {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(dimensions, metric).unwrap();
+    let config = EmbeddingConfig::new(dimensions, metric).unwrap();
     let storage =
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
     (tmp, storage)
 }
 
@@ -16,16 +16,16 @@ fn make_storage_with_segment_config(
     dimensions: usize,
     metric: DistanceMetric,
     segment_config: SegmentConfig,
-) -> (TempDir, VectorStorage) {
+) -> (TempDir, EmbeddingStorage) {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(dimensions, metric).unwrap();
-    let storage = VectorStorage::new(tmp.path().to_path_buf(), config, segment_config).unwrap();
+    let config = EmbeddingConfig::new(dimensions, metric).unwrap();
+    let storage = EmbeddingStorage::new(tmp.path().to_path_buf(), config, segment_config).unwrap();
     (tmp, storage)
 }
 
 /// Helper: build an IndexedValue from a float slice.
-fn iv(dims: usize, v: &[f32]) -> oramacore_fields::vector::IndexedValue {
-    VectorIndexer::new(dims).index_vec(v).unwrap()
+fn iv(dims: usize, v: &[f32]) -> oramacore_fields::embedding::IndexedValue {
+    EmbeddingIndexer::new(dims).index_vec(v).unwrap()
 }
 
 #[test]
@@ -116,9 +116,9 @@ fn test_persistence() {
 
     // Create and populate
     {
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
         storage.insert(1, iv(3, &[0.0, 0.0, 0.0]));
         storage.insert(2, iv(3, &[1.0, 0.0, 0.0]));
         storage.insert(3, iv(3, &[0.0, 1.0, 0.0]));
@@ -127,8 +127,8 @@ fn test_persistence() {
 
     // Reopen and verify
     {
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(base_path, config, SegmentConfig::default()).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
+        let storage = EmbeddingStorage::new(base_path, config, SegmentConfig::default()).unwrap();
         assert_eq!(storage.current_version_number(), 1);
 
         let results = storage.search(&[0.0, 0.0, 0.0], 3, None).unwrap();
@@ -162,7 +162,7 @@ fn test_search_k_zero() {
 
 #[test]
 fn test_non_finite_value_rejected() {
-    let indexer = VectorIndexer::new(2);
+    let indexer = EmbeddingIndexer::new(2);
     assert!(indexer.index_vec(&[f32::NAN, 0.0]).is_none());
     assert!(indexer.index_vec(&[f32::INFINITY, 0.0]).is_none());
     assert!(indexer.index_vec(&[f32::NEG_INFINITY, 0.0]).is_none());
@@ -170,7 +170,7 @@ fn test_non_finite_value_rejected() {
 
 #[test]
 fn test_empty_vector_rejected() {
-    let indexer = VectorIndexer::new(2);
+    let indexer = EmbeddingIndexer::new(2);
     assert!(indexer.index_vec(&[]).is_none());
 }
 
@@ -249,9 +249,9 @@ fn test_compact_empty_index() {
 #[test]
 fn test_cleanup() {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
     let storage =
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
     storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
@@ -293,7 +293,7 @@ fn test_info() {
     storage.compact(1).unwrap();
 
     let info = storage.info();
-    assert_eq!(info.num_vectors, 2);
+    assert_eq!(info.num_embeddings, 2);
     assert_eq!(info.dimensions, 3);
     assert_eq!(info.current_version_number, 1);
 }
@@ -360,9 +360,9 @@ fn test_large_scale_recall() {
 #[test]
 fn test_concurrent_search() {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
     let storage = Arc::new(
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap(),
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap(),
     );
 
     for i in 0..100u64 {
@@ -597,8 +597,8 @@ fn test_persistence_multi_segment() {
 
     // Create with multiple segments
     {
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(base_path.clone(), config, seg_config.clone()).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
+        let storage = EmbeddingStorage::new(base_path.clone(), config, seg_config.clone()).unwrap();
 
         // Fill first segment
         for i in 0..12u64 {
@@ -615,8 +615,8 @@ fn test_persistence_multi_segment() {
 
     // Reopen and verify
     {
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(base_path, config, seg_config).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
+        let storage = EmbeddingStorage::new(base_path, config, seg_config).unwrap();
         assert_eq!(storage.current_version_number(), 2);
 
         let results = storage.search(&[0.0, 0.0, 0.0], 24, Some(200)).unwrap();
@@ -627,13 +627,13 @@ fn test_persistence_multi_segment() {
 #[test]
 fn test_cleanup_removes_old_segments() {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
     let seg_config = SegmentConfig {
         max_nodes_per_segment: 100,
         deletion_threshold: DeletionThreshold::default(),
         insertion_rebuild_threshold: 0.0, // Always full rebuild for predictability
     };
-    let storage = VectorStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap();
+    let storage = EmbeddingStorage::new(tmp.path().to_path_buf(), config, seg_config).unwrap();
 
     // Round 1: creates seg_1
     for i in 0..5u64 {
@@ -841,7 +841,7 @@ fn test_info_empty_index() {
     let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
 
     let info = storage.info();
-    assert_eq!(info.num_vectors, 0);
+    assert_eq!(info.num_embeddings, 0);
     assert_eq!(info.dimensions, 3);
     assert_eq!(info.current_version_number, 0);
     assert_eq!(info.pending_ops, 0);
@@ -856,13 +856,13 @@ fn test_info_with_pending_ops() {
 
     let info = storage.info();
     assert_eq!(info.pending_ops, 2);
-    assert_eq!(info.num_vectors, 0); // not yet compacted
+    assert_eq!(info.num_embeddings, 0); // not yet compacted
 
     storage.compact(1).unwrap();
 
     let info = storage.info();
     assert_eq!(info.pending_ops, 0);
-    assert_eq!(info.num_vectors, 2);
+    assert_eq!(info.num_embeddings, 2);
 }
 
 #[test]
@@ -892,9 +892,9 @@ fn test_integrity_check_before_compaction() {
 #[test]
 fn test_integrity_check_corrupted_current_file() {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
     let storage =
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
     storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.compact(1).unwrap();
@@ -903,17 +903,17 @@ fn test_integrity_check_corrupted_current_file() {
     std::fs::write(tmp.path().join("CURRENT"), "garbage").unwrap();
 
     // Recreate storage (will fail to open due to corrupt CURRENT)
-    let config2 = VectorConfig::new(2, DistanceMetric::L2).unwrap();
-    let result = VectorStorage::new(tmp.path().to_path_buf(), config2, SegmentConfig::default());
+    let config2 = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
+    let result = EmbeddingStorage::new(tmp.path().to_path_buf(), config2, SegmentConfig::default());
     assert!(result.is_err());
 }
 
 #[test]
 fn test_integrity_check_missing_segment_file() {
     let tmp = TempDir::new().unwrap();
-    let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+    let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
     let storage =
-        VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+        EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
     storage.insert(1, iv(2, &[0.0, 0.0]));
     storage.insert(2, iv(2, &[1.0, 0.0]));
@@ -938,9 +938,9 @@ fn test_persistence_multiple_compactions() {
     let base_path = tmp.path().to_path_buf();
 
     {
-        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(base_path.clone(), config, SegmentConfig::default()).unwrap();
 
         storage.insert(1, iv(2, &[0.0, 0.0]));
         storage.insert(2, iv(2, &[1.0, 0.0]));
@@ -951,8 +951,8 @@ fn test_persistence_multiple_compactions() {
     }
 
     {
-        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
-        let storage = VectorStorage::new(base_path, config, SegmentConfig::default()).unwrap();
+        let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
+        let storage = EmbeddingStorage::new(base_path, config, SegmentConfig::default()).unwrap();
         assert_eq!(storage.current_version_number(), 2);
 
         let results = storage.search(&[0.0, 0.0], 10, None).unwrap();

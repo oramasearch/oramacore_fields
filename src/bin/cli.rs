@@ -37,10 +37,10 @@ enum TopLevel {
         #[command(subcommand)]
         command: StringCommands,
     },
-    /// Inspect and search vector (ANN) indexes
-    Vector {
+    /// Inspect and search embedding (ANN) indexes
+    Embedding {
         #[command(subcommand)]
-        command: VectorCommands,
+        command: EmbeddingCommands,
     },
 }
 
@@ -988,7 +988,7 @@ fn string_search(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Vector subcommands
+//  Embedding subcommands
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -999,8 +999,8 @@ enum MetricArg {
 }
 
 impl MetricArg {
-    fn into_metric(self) -> oramacore_fields::vector::DistanceMetric {
-        use oramacore_fields::vector::DistanceMetric;
+    fn into_metric(self) -> oramacore_fields::embedding::DistanceMetric {
+        use oramacore_fields::embedding::DistanceMetric;
         match self {
             MetricArg::L2 => DistanceMetric::L2,
             MetricArg::DotProduct => DistanceMetric::DotProduct,
@@ -1010,12 +1010,12 @@ impl MetricArg {
 }
 
 #[derive(Subcommand)]
-enum VectorCommands {
+enum EmbeddingCommands {
     /// Check index integrity and validate files
     Check {
         /// Path to the index directory
         path: PathBuf,
-        /// Vector dimensions
+        /// Embedding dimensions
         #[arg(short, long)]
         dimensions: usize,
         /// Distance metric
@@ -1029,7 +1029,7 @@ enum VectorCommands {
     Info {
         /// Path to the index directory
         path: PathBuf,
-        /// Vector dimensions
+        /// Embedding dimensions
         #[arg(short, long)]
         dimensions: usize,
         /// Distance metric
@@ -1043,7 +1043,7 @@ enum VectorCommands {
     Search {
         /// Path to the index directory
         path: PathBuf,
-        /// Vector dimensions
+        /// Embedding dimensions
         #[arg(short, long)]
         dimensions: usize,
         /// Distance metric
@@ -1064,28 +1064,28 @@ enum VectorCommands {
     },
 }
 
-fn open_vector_storage(
+fn open_embedding_storage(
     path: &Path,
     dimensions: usize,
     metric: MetricArg,
-) -> Result<oramacore_fields::vector::VectorStorage, String> {
-    use oramacore_fields::vector::{SegmentConfig, VectorConfig, VectorStorage};
+) -> Result<oramacore_fields::embedding::EmbeddingStorage, String> {
+    use oramacore_fields::embedding::{SegmentConfig, EmbeddingConfig, EmbeddingStorage};
 
-    let config = VectorConfig::new(dimensions, metric.into_metric())
+    let config = EmbeddingConfig::new(dimensions, metric.into_metric())
         .map_err(|e| format!("Invalid config: {e}"))?;
-    VectorStorage::new(path.to_path_buf(), config, SegmentConfig::default())
+    EmbeddingStorage::new(path.to_path_buf(), config, SegmentConfig::default())
         .map_err(|e| format!("Failed to open index: {e}"))
 }
 
-fn vector_check(
+fn embedding_check(
     path: &Path,
     dimensions: usize,
     metric: MetricArg,
     verbose: bool,
 ) -> Result<(), String> {
-    use oramacore_fields::vector::CheckStatus;
+    use oramacore_fields::embedding::CheckStatus;
 
-    let storage = open_vector_storage(path, dimensions, metric)?;
+    let storage = open_embedding_storage(path, dimensions, metric)?;
     let result = storage.integrity_check();
 
     for check in &result.checks {
@@ -1112,13 +1112,13 @@ fn vector_check(
     }
 }
 
-fn vector_info(
+fn embedding_info(
     path: &Path,
     dimensions: usize,
     metric: MetricArg,
     format: OutputFormat,
 ) -> Result<(), String> {
-    let storage = open_vector_storage(path, dimensions, metric)?;
+    let storage = open_embedding_storage(path, dimensions, metric)?;
     let info = storage.info();
 
     match format {
@@ -1131,7 +1131,7 @@ fn vector_info(
             println!();
             println!("Dimensions:        {}", info.dimensions);
             println!("Metric:            {}", info.metric);
-            println!("Num vectors:       {}", info.num_vectors);
+            println!("Num embeddings:    {}", info.num_embeddings);
             println!();
             println!("Pending ops:       {}", info.pending_ops);
         }
@@ -1145,18 +1145,18 @@ fn vector_info(
 }
 
 #[derive(Serialize)]
-struct VectorSearchResult {
+struct EmbeddingSearchResult {
     count: usize,
-    results: Vec<VectorSearchHit>,
+    results: Vec<EmbeddingSearchHit>,
 }
 
 #[derive(Serialize)]
-struct VectorSearchHit {
+struct EmbeddingSearchHit {
     doc_id: u64,
     distance: f32,
 }
 
-fn vector_search(
+fn embedding_search(
     path: &Path,
     dimensions: usize,
     metric: MetricArg,
@@ -1165,7 +1165,7 @@ fn vector_search(
     ef_search: Option<usize>,
     format: OutputFormat,
 ) -> Result<(), String> {
-    let storage = open_vector_storage(path, dimensions, metric)?;
+    let storage = open_embedding_storage(path, dimensions, metric)?;
 
     let query: Vec<f32> = query_str
         .split(',')
@@ -1180,11 +1180,11 @@ fn vector_search(
         .search(&query, k, ef_search)
         .map_err(|e| format!("Search failed: {e}"))?;
 
-    let result = VectorSearchResult {
+    let result = EmbeddingSearchResult {
         count: results.len(),
         results: results
             .iter()
-            .map(|(doc_id, distance)| VectorSearchHit {
+            .map(|(doc_id, distance)| EmbeddingSearchHit {
                 doc_id: *doc_id,
                 distance: *distance,
             })
@@ -1290,20 +1290,20 @@ fn main() {
                 format,
             ),
         },
-        TopLevel::Vector { command } => match command {
-            VectorCommands::Check {
+        TopLevel::Embedding { command } => match command {
+            EmbeddingCommands::Check {
                 path,
                 dimensions,
                 metric,
                 verbose,
-            } => vector_check(&path, dimensions, metric, verbose),
-            VectorCommands::Info {
+            } => embedding_check(&path, dimensions, metric, verbose),
+            EmbeddingCommands::Info {
                 path,
                 dimensions,
                 metric,
                 format,
-            } => vector_info(&path, dimensions, metric, format),
-            VectorCommands::Search {
+            } => embedding_info(&path, dimensions, metric, format),
+            EmbeddingCommands::Search {
                 path,
                 dimensions,
                 metric,
@@ -1311,7 +1311,7 @@ fn main() {
                 k,
                 ef_search,
                 format,
-            } => vector_search(&path, dimensions, metric, &query, k, ef_search, format),
+            } => embedding_search(&path, dimensions, metric, &query, k, ef_search, format),
         },
     };
 
@@ -1628,19 +1628,19 @@ mod tests_cli {
         assert!(err_msg.contains("Unsupported format version"));
     }
 
-    // ── Vector CLI tests ────────────────────────────────────────────────────
+    // ── Embedding CLI tests ─────────────────────────────────────────────────
 
-    fn create_test_vector_index() -> (TempDir, PathBuf) {
-        use oramacore_fields::vector::{
-            DistanceMetric, SegmentConfig, VectorConfig, VectorIndexer, VectorStorage,
+    fn create_test_embedding_index() -> (TempDir, PathBuf) {
+        use oramacore_fields::embedding::{
+            DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingIndexer, EmbeddingStorage,
         };
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().to_path_buf();
 
-        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
-        let index = VectorStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
-        let indexer = VectorIndexer::new(3);
+        let config = EmbeddingConfig::new(3, DistanceMetric::Cosine).unwrap();
+        let index = EmbeddingStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
+        let indexer = EmbeddingIndexer::new(3);
 
         index.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());
         index.insert(2, indexer.index_vec(&[0.4, 0.5, 0.6]).unwrap());
@@ -1651,33 +1651,33 @@ mod tests_cli {
     }
 
     #[test]
-    fn test_vector_cmd_check() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_check(&path, 3, MetricArg::Cosine, false).unwrap();
+    fn test_embedding_cmd_check() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_check(&path, 3, MetricArg::Cosine, false).unwrap();
     }
 
     #[test]
-    fn test_vector_cmd_check_verbose() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_check(&path, 3, MetricArg::Cosine, true).unwrap();
+    fn test_embedding_cmd_check_verbose() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_check(&path, 3, MetricArg::Cosine, true).unwrap();
     }
 
     #[test]
-    fn test_vector_cmd_info() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_info(&path, 3, MetricArg::Cosine, OutputFormat::Human).unwrap();
+    fn test_embedding_cmd_info() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_info(&path, 3, MetricArg::Cosine, OutputFormat::Human).unwrap();
     }
 
     #[test]
-    fn test_vector_cmd_info_json() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_info(&path, 3, MetricArg::Cosine, OutputFormat::Json).unwrap();
+    fn test_embedding_cmd_info_json() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_info(&path, 3, MetricArg::Cosine, OutputFormat::Json).unwrap();
     }
 
     #[test]
-    fn test_vector_cmd_search() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_search(
+    fn test_embedding_cmd_search() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_search(
             &path,
             3,
             MetricArg::Cosine,
@@ -1690,9 +1690,9 @@ mod tests_cli {
     }
 
     #[test]
-    fn test_vector_cmd_search_json() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_search(
+    fn test_embedding_cmd_search_json() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_search(
             &path,
             3,
             MetricArg::Cosine,
@@ -1705,9 +1705,9 @@ mod tests_cli {
     }
 
     #[test]
-    fn test_vector_cmd_search_with_ef() {
-        let (_tmp, path) = create_test_vector_index();
-        vector_search(
+    fn test_embedding_cmd_search_with_ef() {
+        let (_tmp, path) = create_test_embedding_index();
+        embedding_search(
             &path,
             3,
             MetricArg::Cosine,
@@ -1720,27 +1720,27 @@ mod tests_cli {
     }
 
     #[test]
-    fn test_vector_cmd_check_uncompacted_index() {
-        use oramacore_fields::vector::{
-            DistanceMetric, SegmentConfig, VectorConfig, VectorStorage,
+    fn test_embedding_cmd_check_uncompacted_index() {
+        use oramacore_fields::embedding::{
+            DistanceMetric, SegmentConfig, EmbeddingConfig, EmbeddingStorage,
         };
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().to_path_buf();
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
-        let index = VectorStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
+        let index = EmbeddingStorage::new(path.clone(), config, SegmentConfig::default()).unwrap();
         let result = index.integrity_check();
         assert!(!result.passed);
     }
 
     #[test]
-    fn test_vector_cmd_check_wrong_format_version() {
-        let (_tmp, path) = create_test_vector_index();
+    fn test_embedding_cmd_check_wrong_format_version() {
+        let (_tmp, path) = create_test_embedding_index();
 
         let current_path = path.join("CURRENT");
         std::fs::write(&current_path, "999\n1").unwrap();
 
-        let result = vector_check(&path, 3, MetricArg::Cosine, false);
+        let result = embedding_check(&path, 3, MetricArg::Cosine, false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("format version"));

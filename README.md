@@ -11,7 +11,7 @@ On-disk field indexes for search engines. Provides six specialized index types w
 | `string` | Full-text (BM25 scoring) | Search by tokens (exact, fuzzy, prefix) |
 | `string_filter` | String (exact match) | Filter by key |
 | `geopoint` | Geographic (lat/lon) | Bounding box, radius |
-| `vector` | Vector (f32 embeddings) | Approximate nearest neighbor (HNSW) |
+| `embedding` | Embedding (f32 vectors) | Approximate nearest neighbor (HNSW) |
 
 ## Usage
 
@@ -260,17 +260,17 @@ let results: Vec<u64> = storage.filter(GeoFilterOp::BoundingBox {
 # }
 ```
 
-### Vector Index
+### Embedding Index
 
 ```rust,no_run
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # use tempfile::tempdir;
-use oramacore_fields::vector::{VectorStorage, VectorConfig, DistanceMetric, SegmentConfig, VectorIndexer};
+use oramacore_fields::embedding::{EmbeddingStorage, EmbeddingConfig, DistanceMetric, SegmentConfig, EmbeddingIndexer};
 # let dir = tempdir()?;
 
-let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
-let storage = VectorStorage::new(dir.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
-let indexer = VectorIndexer::new(3);
+let config = EmbeddingConfig::new(3, DistanceMetric::Cosine).unwrap();
+let storage = EmbeddingStorage::new(dir.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+let indexer = EmbeddingIndexer::new(3);
 
 // Insert vectors
 storage.insert(1, indexer.index_vec(&[0.1, 0.2, 0.3]).unwrap());

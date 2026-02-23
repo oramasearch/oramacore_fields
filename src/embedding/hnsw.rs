@@ -1,4 +1,4 @@
-use super::config::VectorConfig;
+use super::config::EmbeddingConfig;
 use super::distance::DistanceFn;
 use super::error::Error;
 use rand::RngExt;
@@ -11,7 +11,7 @@ pub const SENTINEL: u32 = u32::MAX;
 
 /// In-memory HNSW graph builder.
 pub struct HnswBuilder {
-    config: VectorConfig,
+    config: EmbeddingConfig,
     nodes: Vec<HnswNode>,
     entry_point: usize,
     current_max_level: usize,
@@ -79,7 +79,7 @@ fn select_neighbors_heuristic(
 }
 
 impl HnswBuilder {
-    pub fn new(config: &VectorConfig, distance_fn: DistanceFn) -> Self {
+    pub fn new(config: &EmbeddingConfig, distance_fn: DistanceFn) -> Self {
         Self {
             config: config.clone(),
             nodes: Vec::new(),
@@ -412,7 +412,7 @@ impl HnswBuilder {
     pub fn load_from_graph(
         graph_bytes: &[u8],
         levels_bytes: &[u8],
-        config: &VectorConfig,
+        config: &EmbeddingConfig,
         distance_fn: DistanceFn,
     ) -> Result<Self, Error> {
         if graph_bytes.len() < GRAPH_HEADER_SIZE {
@@ -575,12 +575,12 @@ impl Ord for MaxHeapItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::distance::l2_distance;
+    use crate::embedding::distance::l2_distance;
     use tempfile::TempDir;
 
     #[test]
     fn test_build_small_graph() {
-        let config = VectorConfig::new(2, crate::vector::config::DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
         let mut builder = HnswBuilder::new(&config, l2_distance);
 
         let vectors = vec![
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_write_graph() {
-        let config = VectorConfig::new(2, crate::vector::config::DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
         let mut builder = HnswBuilder::new(&config, l2_distance);
 
         let vectors = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_empty_build() {
-        let config = VectorConfig::new(2, crate::vector::config::DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
         let mut builder = HnswBuilder::new(&config, l2_distance);
         builder.build(&[], &[], 2).unwrap();
         assert_eq!(builder.num_nodes(), 0);

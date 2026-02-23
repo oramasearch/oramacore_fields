@@ -1,6 +1,6 @@
-use crate::vector::IndexedValue;
+use crate::embedding::IndexedValue;
 
-use super::config::{SegmentConfig, VectorConfig};
+use super::config::{SegmentConfig, EmbeddingConfig};
 use super::distance::{
     resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
 };
@@ -22,21 +22,21 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-pub struct VectorStorage {
+pub struct EmbeddingStorage {
     base_path: PathBuf,
     segments: ArcSwap<SegmentList>,
     live: RwLock<LiveLayer>,
     compaction_lock: Mutex<()>,
-    config: VectorConfig,
+    config: EmbeddingConfig,
     segment_config: SegmentConfig,
     distance_fn: DistanceFn,
     quantized_distance_fn: QuantizedDistanceFn,
 }
 
-impl VectorStorage {
+impl EmbeddingStorage {
     pub fn new(
         base_path: PathBuf,
-        config: VectorConfig,
+        config: EmbeddingConfig,
         segment_config: SegmentConfig,
     ) -> Result<Self, Error> {
         std::fs::create_dir_all(&base_path)?;
@@ -69,14 +69,14 @@ impl VectorStorage {
         })
     }
 
-    /// Insert a vector for a doc_id.
+    /// Insert an embedding for a doc_id.
     pub fn insert(&self, doc_id: u64, indexed_value: IndexedValue) {
         let mut live = self.live.write().unwrap();
         match indexed_value {
-            IndexedValue::Single(v) => live.insert(doc_id, v.vector),
+            IndexedValue::Single(v) => live.insert(doc_id, v.embedding),
             IndexedValue::Array(v) => {
                 for embedding in v {
-                    live.insert(doc_id, embedding.vector);
+                    live.insert(doc_id, embedding.embedding);
                 }
             }
         }
@@ -476,13 +476,13 @@ impl VectorStorage {
         let live = self.live.read().unwrap();
         let ver_dir = version_dir(&self.base_path, current.version_number);
 
-        let num_vectors = current.total_vectors();
+        let num_embeddings = current.total_embeddings();
 
         IndexInfo {
             format_version: FORMAT_VERSION,
             current_version_number: current.version_number,
             version_dir: ver_dir,
-            num_vectors,
+            num_embeddings,
             dimensions: self.config.dimensions,
             metric: self.config.metric,
             pending_ops: live.ops.len(),
@@ -692,7 +692,7 @@ fn build_and_write_segment(
     seg_id: u64,
     vectors: &[f32],
     doc_ids: &[u64],
-    config: &VectorConfig,
+    config: &EmbeddingConfig,
     quant_params: &QuantizationParams,
     distance_fn: DistanceFn,
 ) -> Result<(), Error> {
@@ -739,7 +739,7 @@ fn incremental_insert_segment(
     old_segment: &super::segment::Segment,
     new_seg_id: u64,
     live_entries: &[(u64, Vec<f32>)],
-    config: &VectorConfig,
+    config: &EmbeddingConfig,
     distance_fn: DistanceFn,
 ) -> Result<(), Error> {
     let seg_dir = ensure_segment_dir(base_path, new_seg_id)?;
@@ -916,7 +916,7 @@ fn write_levels_concat(path: &std::path::Path, old: &[u8], new: &[u8]) -> Result
 
 fn write_meta(
     dir: &std::path::Path,
-    config: &VectorConfig,
+    config: &EmbeddingConfig,
     num_nodes: usize,
     max_level: usize,
     entry_point: u32,
@@ -965,26 +965,26 @@ fn merge_sorted_u64(a: &[u64], b: &[u64]) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::{config::DistanceMetric, VectorIndexer};
+    use crate::embedding::{config::DistanceMetric, EmbeddingIndexer};
     use tempfile::TempDir;
 
     #[test]
     fn test_new_empty() {
         let tmp = TempDir::new().unwrap();
-        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
         assert_eq!(storage.current_version_number(), 0);
     }
 
     #[test]
     fn test_insert_validation() {
         let tmp = TempDir::new().unwrap();
-        let config = VectorConfig::new(3, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(3, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-        let indexer = VectorIndexer::new(3);
+        let indexer = EmbeddingIndexer::new(3);
 
         if let Some(v) = indexer.index_vec(&[1.0, 2.0, 3.0]) {
             storage.insert(1, v);
@@ -994,11 +994,11 @@ mod tests {
     #[test]
     fn test_search_live_only() {
         let tmp = TempDir::new().unwrap();
-        let config = VectorConfig::new(2, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(2, DistanceMetric::L2).unwrap();
         let storage =
-            VectorStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
+            EmbeddingStorage::new(tmp.path().to_path_buf(), config, SegmentConfig::default()).unwrap();
 
-        let indexer = VectorIndexer::new(2);
+        let indexer = EmbeddingIndexer::new(2);
 
         let values = [
             (1, vec![0.0, 0.0]),

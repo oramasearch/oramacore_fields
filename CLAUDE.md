@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-On-disk field indexes for search engines. Six specialized index types (bool, number, string, string_filter, geopoint, vector) supporting full persistence via memory-mapped reads and concurrent access without blocking readers.
+On-disk field indexes for search engines. Six specialized index types (bool, number, string, string_filter, geopoint, embedding) supporting full persistence via memory-mapped reads and concurrent access without blocking readers.
 
 License: AGPL-3.0-or-later. Rust 1.88.0, edition 2021.
 
@@ -27,7 +27,7 @@ src/
   string/         # Full-text string index (BM25 scoring)
   string_filter/  # Exact-match string postings index (FST-backed)
   geopoint/       # Geographic point spatial index (BKD tree)
-  vector/         # Vector ANN index (HNSW, quantized)
+  embedding/      # Embedding ANN index (HNSW, quantized)
   bin/cli.rs      # Optional CLI tool (feature-gated)
 tests/            # Integration, concurrency, and allocation tests
 examples/         # Usage demonstrations per module
@@ -112,8 +112,8 @@ In steady state (no mutations), `filter()` never acquires write lock.
 - **NaN rejection**: `f64` values are validated; `NaN` is rejected at insert time
 - **GeoPoint validation**: Latitude must be -90..=90, longitude must be -180..=180
 - **Deletion threshold**: Controls whether compaction applies deletes (rewrites data) or carries them forward (cheaper but slower reads). Ratio = deletes / total entries
-- **Vector dimension validation**: Dimensions must be 1..=4096; dimension mismatch at insert time is rejected
-- **Vector multi-segment**: Uses segment-based architecture with configurable max nodes per segment; segments are rebuilt when deletion or insertion thresholds are exceeded
+- **Embedding dimension validation**: Dimensions must be 1..=4096; dimension mismatch at insert time is rejected
+- **Embedding multi-segment**: Uses segment-based architecture with configurable max nodes per segment; segments are rebuilt when deletion or insertion thresholds are exceeded
 - **Format versioning**: CURRENT file stores `(format_version, version_number)`. Mismatched format_version errors immediately
 
 ## Key Dependencies

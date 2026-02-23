@@ -10,7 +10,7 @@ pub struct IndexInfo {
     pub format_version: u32,
     pub current_version_number: u64,
     pub version_dir: PathBuf,
-    pub num_vectors: usize,
+    pub num_embeddings: usize,
     pub dimensions: usize,
     pub metric: DistanceMetric,
     pub pending_ops: usize,

@@ -90,7 +90,7 @@ impl std::fmt::Display for DistanceMetric {
 }
 
 #[derive(Debug, Clone)]
-pub struct VectorConfig {
+pub struct EmbeddingConfig {
     pub dimensions: usize,
     pub metric: DistanceMetric,
     pub m: usize,
@@ -100,7 +100,7 @@ pub struct VectorConfig {
     pub max_level: usize,
 }
 
-impl VectorConfig {
+impl EmbeddingConfig {
     pub fn new(dimensions: usize, metric: DistanceMetric) -> Result<Self, Error> {
         if dimensions == 0 || dimensions > 4096 {
             return Err(Error::InvalidDimensions(dimensions));
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_valid_config() {
-        let config = VectorConfig::new(384, DistanceMetric::Cosine).unwrap();
+        let config = EmbeddingConfig::new(384, DistanceMetric::Cosine).unwrap();
         assert_eq!(config.dimensions, 384);
         assert_eq!(config.metric, DistanceMetric::Cosine);
         assert_eq!(config.m, 16);
@@ -136,19 +136,19 @@ mod tests {
 
     #[test]
     fn test_invalid_dimensions() {
-        assert!(VectorConfig::new(0, DistanceMetric::L2).is_err());
-        assert!(VectorConfig::new(4097, DistanceMetric::L2).is_err());
+        assert!(EmbeddingConfig::new(0, DistanceMetric::L2).is_err());
+        assert!(EmbeddingConfig::new(4097, DistanceMetric::L2).is_err());
     }
 
     #[test]
     fn test_boundary_dimensions() {
-        assert!(VectorConfig::new(1, DistanceMetric::L2).is_ok());
-        assert!(VectorConfig::new(4096, DistanceMetric::L2).is_ok());
+        assert!(EmbeddingConfig::new(1, DistanceMetric::L2).is_ok());
+        assert!(EmbeddingConfig::new(4096, DistanceMetric::L2).is_ok());
     }
 
     #[test]
     fn test_node_block_size() {
-        let config = VectorConfig::new(128, DistanceMetric::L2).unwrap();
+        let config = EmbeddingConfig::new(128, DistanceMetric::L2).unwrap();
         // m0=32, max_level=16, m=16
         // 32*4 + 16*16*4 = 128 + 1024 = 1152
         assert_eq!(config.node_block_size(), 1152);
