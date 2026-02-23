@@ -3,6 +3,28 @@
 //! Stores doc_ids (u64) partitioned into TRUE and FALSE sets, with full
 //! persistence and support for concurrent readers and writers.
 //!
+//! # On-disk representation
+//!
+//! ```text
+//! base_path/
+//! ├── CURRENT                          # text: "<format_version>\n<version>\n"
+//! └── versions/
+//!     └── <version>/
+//!         ├── true.bin                 # sorted doc_ids where value = true
+//!         ├── false.bin                # sorted doc_ids where value = false
+//!         └── deleted.bin              # sorted deleted doc_ids
+//!
+//! true.bin / false.bin / deleted.bin   (same layout)
+//! ┌──────────┬──────────┬─────┬──────────┐
+//! │ doc_id   │ doc_id   │ ... │ doc_id   │
+//! │ u64      │ u64      │     │ u64      │
+//! └──────────┴──────────┴─────┴──────────┘
+//!  8 bytes    8 bytes          8 bytes
+//!
+//! All u64 values are native-endian, strictly sorted ascending.
+//! Files are memory-mapped read-only after creation.
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run

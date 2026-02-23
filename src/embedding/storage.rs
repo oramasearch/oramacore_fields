@@ -120,7 +120,8 @@ impl EmbeddingStorage {
         let segment_list = self.segments.load();
         let ef = ef_search.unwrap_or(self.config.ef_search);
 
-        let mut all_results: Vec<(u64, f32)> = Vec::new();
+        let num_sources = segment_list.segments.len() + 1;
+        let mut all_results: Vec<(u64, f32)> = Vec::with_capacity(num_sources * k);
 
         for segment in &segment_list.segments {
             // Per-segment quantization: quantize query with THIS segment's params

@@ -3,6 +3,38 @@
 //! Maps string keys to sets of doc_ids (u64). Supports inserting, deleting,
 //! filtering by exact key, and compacting data to disk. Safe for concurrent use.
 //!
+//! # On-disk representation
+//!
+//! ```text
+//! base_path/
+//! ├── CURRENT                              # text: "<format_version>\n<version>\n"
+//! └── versions/
+//!     └── <version>/
+//!         ├── keys.fst                     # FST map: key -> byte offset in postings.dat
+//!         ├── postings.dat                 # per-key doc_id lists
+//!         └── deleted.bin                  # sorted deleted doc_ids
+//!
+//! postings.dat                             (concatenated per-key blocks)
+//! ┌──────────────────────────────────────────────────────┐
+//! │ Per-key block (offset recorded in FST)               │
+//! │ ┌───────────┬──────────┬──────────┬─────┬──────────┐ │
+//! │ │ count     │ doc_id   │ doc_id   │ ... │ doc_id   │ │
+//! │ │ u64  8B   │ u64  8B  │ u64  8B  │     │ u64  8B  │ │
+//! │ └───────────┴──────────┴──────────┴─────┴──────────┘ │
+//! ├──────────────────────────────────────────────────────┤
+//! │ next key block ...                                   │
+//! └──────────────────────────────────────────────────────┘
+//!
+//! deleted.bin
+//! ┌──────────┬──────────┬─────┬──────────┐
+//! │ doc_id   │ doc_id   │ ... │ doc_id   │
+//! │ u64      │ u64      │     │ u64      │
+//! └──────────┴──────────┴─────┴──────────┘
+//!
+//! All u64 values are native-endian, doc_ids sorted ascending.
+//! Files are memory-mapped read-only after creation.
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run

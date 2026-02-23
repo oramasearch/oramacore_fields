@@ -3,6 +3,57 @@
 //! Stores per-document term positions and field lengths. Supports search queries
 //! that return scored results using BM25F. Safe for concurrent use.
 //!
+//! # On-disk representation
+//!
+//! ```text
+//! base_path/
+//! ├── CURRENT                              # text: "<format_version>\n<version>\n"
+//! └── versions/
+//!     └── <version>/
+//!         ├── keys.fst                     # FST map: term -> byte offset in postings.dat
+//!         ├── postings.dat                 # per-term posting lists
+//!         ├── doc_lengths.dat              # per-doc field lengths (for BM25)
+//!         ├── deleted.bin                  # sorted deleted doc_ids
+//!         └── global_info.bin              # aggregate stats for BM25
+//!
+//! postings.dat                             (concatenated per-term blocks)
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │ Per-term header                                             │
+//! │ ┌────────────┬─────────┐                                    │
+//! │ │ doc_count  │ padding │                                    │
+//! │ │ u32  4B    │ u32  4B │                                    │
+//! │ └────────────┴─────────┘                                    │
+//! │ Per-doc entry (repeated doc_count times)                    │
+//! │ ┌────────┬─────────────┬───────────────┬────────┬────────┐  │
+//! │ │ doc_id │ exact_count │ stemmed_count │ exact  │stemmed │  │
+//! │ │ u64 8B │ u32  4B     │ u32  4B       │positions│positions│
+//! │ └────────┴─────────────┴───────────────┴────────┴────────┘  │
+//! │  positions: u32 array, 4 bytes each                         │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │ next term block ...                                         │
+//! └─────────────────────────────────────────────────────────────┘
+//!
+//! doc_lengths.dat                          (array of 12-byte entries)
+//! ┌──────────┬──────────────┐
+//! │ doc_id   │ field_length │  repeated, sorted by doc_id
+//! │ u64  8B  │ u32  4B      │
+//! └──────────┴──────────────┘
+//!
+//! global_info.bin                          (fixed 16 bytes)
+//! ┌────────────────────────┬──────────────────┐
+//! │ total_document_length  │ total_documents  │
+//! │ u64  8B                │ u64  8B          │
+//! └────────────────────────┴──────────────────┘
+//!
+//! deleted.bin
+//! ┌──────────┬──────────┬─────┬──────────┐
+//! │ doc_id   │ doc_id   │ ... │ doc_id   │
+//! │ u64      │ u64      │     │ u64      │
+//! └──────────┴──────────┴─────┴──────────┘
+//!
+//! All values are native-endian. Files are memory-mapped read-only.
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run
