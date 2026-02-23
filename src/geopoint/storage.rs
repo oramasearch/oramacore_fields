@@ -155,7 +155,9 @@ impl GeoPointStorage {
         if snapshot.inserts.is_empty() && snapshot.deletes.is_empty() {
             let mut live = self.live.write().unwrap();
             live.ops.drain(..snapshot.ops_len);
-            live.ops.shrink_to_fit();
+            if live.ops.is_empty() {
+                live.ops.shrink_to_fit();
+            }
             live.refresh_snapshot();
             return Ok(());
         }

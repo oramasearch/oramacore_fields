@@ -168,6 +168,12 @@ impl EmbeddingStorage {
 
         // Early return if nothing to do
         if snapshot.is_empty() {
+            let mut live = self.live.write().unwrap();
+            live.ops.drain(..snapshot.ops_len);
+            if live.ops.is_empty() {
+                live.ops.shrink_to_fit();
+            }
+            live.refresh_snapshot();
             return Ok(());
         }
 
