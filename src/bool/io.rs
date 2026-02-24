@@ -221,13 +221,23 @@ pub fn ensure_version_dir(base_path: &Path, version_number: u64) -> Result<std::
 
 /// Sync a directory to ensure file operations are durable.
 pub fn sync_dir(path: &Path) -> Result<()> {
-    let dir = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .with_context(|| format!("Failed to open directory for sync: {path:?}"))?;
+    // On Unix, we can sync the directory
+    #[cfg(unix)]
+    {
+        let dir = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("Failed to open directory for sync: {path:?}"))?;
 
-    dir.sync_all()
-        .with_context(|| format!("Failed to sync directory: {path:?}"))?;
+        dir.sync_all()
+            .with_context(|| format!("Failed to sync directory: {path:?}"))?;
+    }
+
+    // On non-Unix, this is a no-op
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 
     Ok(())
 }

@@ -95,13 +95,23 @@ pub fn ensure_version_dir(base_path: &Path, version_id: u64) -> Result<PathBuf> 
 }
 
 pub fn sync_dir(path: &Path) -> Result<()> {
-    let dir = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .with_context(|| format!("Failed to open directory for sync: {path:?}"))?;
+    // On Unix, we can sync the directory
+    #[cfg(unix)]
+    {
+        let dir = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("Failed to open directory for sync: {path:?}"))?;
 
-    dir.sync_all()
-        .with_context(|| format!("Failed to sync directory: {path:?}"))?;
+        dir.sync_all()
+            .with_context(|| format!("Failed to sync directory: {path:?}"))?;
+    }
+
+    // On non-Unix, this is a no-op
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 
     Ok(())
 }
