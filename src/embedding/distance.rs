@@ -3,12 +3,12 @@ use super::simd;
 #[inline]
 #[allow(unreachable_code)]
 pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::f32_ops::neon::l2_distance(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::f32_ops::avx2::l2_distance(a, b) };
     }
@@ -19,12 +19,12 @@ pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn dot_product_distance(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::f32_ops::neon::dot_product_distance(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::f32_ops::avx2::dot_product_distance(a, b) };
     }
@@ -35,12 +35,12 @@ pub fn dot_product_distance(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::f32_ops::neon::cosine_distance(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::f32_ops::avx2::cosine_distance(a, b) };
     }
@@ -53,12 +53,12 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn cosine_distance_prenorm(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::f32_ops::neon::cosine_distance_prenorm(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::f32_ops::avx2::cosine_distance_prenorm(a, b) };
     }
@@ -69,12 +69,12 @@ pub fn cosine_distance_prenorm(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn l2_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::i8_ops::neon::l2_distance_i8(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::i8_ops::avx2::l2_distance_i8(a, b) };
     }
@@ -85,12 +85,12 @@ pub fn l2_distance_i8(a: &[i8], b: &[i8]) -> i32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn dot_product_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::i8_ops::neon::dot_product_distance_i8(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::i8_ops::avx2::dot_product_distance_i8(a, b) };
     }
@@ -101,12 +101,12 @@ pub fn dot_product_distance_i8(a: &[i8], b: &[i8]) -> i32 {
 #[inline]
 #[allow(unreachable_code)]
 pub fn cosine_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     {
         return simd::i8_ops::neon::cosine_distance_i8(a, b);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if simd::x86_has_avx2_fma() {
         return unsafe { simd::i8_ops::avx2::cosine_distance_i8(a, b) };
     }

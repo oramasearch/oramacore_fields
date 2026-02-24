@@ -5,12 +5,12 @@
 //! - x86_64: AVX2+FMA (runtime-detected)
 //! - Fallback: scalar loops
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use std::sync::OnceLock;
 
 /// Returns true if the CPU supports both AVX2 and FMA instructions.
 /// Result is cached after the first call (one atomic load on subsequent calls).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 pub fn x86_has_avx2_fma() -> bool {
     static DETECTED: OnceLock<bool> = OnceLock::new();
     *DETECTED.get_or_init(|| is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma"))
@@ -124,7 +124,7 @@ pub mod f32_ops {
     // aarch64 NEON — 4-wide f32, always available
     // -----------------------------------------------------------------------
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     pub mod neon {
         use std::arch::aarch64::*;
 
@@ -381,7 +381,7 @@ pub mod f32_ops {
     // x86_64 AVX2+FMA — 8-wide f32
     // -----------------------------------------------------------------------
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     pub mod avx2 {
         #[allow(unused_imports)]
         use std::arch::x86_64::*;
@@ -741,7 +741,7 @@ pub mod i8_ops {
     // aarch64 NEON — 16-wide i8 with widening multiply-accumulate
     // -----------------------------------------------------------------------
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     pub mod neon {
         use std::arch::aarch64::*;
 
@@ -901,7 +901,7 @@ pub mod i8_ops {
     // x86_64 AVX2 — 16-wide i8 via cvtepi8_epi16 + madd_epi16
     // -----------------------------------------------------------------------
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     pub mod avx2 {
         #[allow(unused_imports)]
         use std::arch::x86_64::*;
@@ -1109,7 +1109,7 @@ mod tests {
             let (a, b) = make_f32_vecs(dim);
             let scalar = f32_ops::scalar::l2_distance(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = f32_ops::neon::l2_distance(&a, &b);
                 assert!(
@@ -1118,7 +1118,7 @@ mod tests {
                 );
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { f32_ops::avx2::l2_distance(&a, &b) };
                 assert!(
@@ -1135,7 +1135,7 @@ mod tests {
             let (a, b) = make_f32_vecs(dim);
             let scalar = f32_ops::scalar::dot_product_distance(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = f32_ops::neon::dot_product_distance(&a, &b);
                 assert!(
@@ -1144,7 +1144,7 @@ mod tests {
                 );
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { f32_ops::avx2::dot_product_distance(&a, &b) };
                 assert!(
@@ -1161,7 +1161,7 @@ mod tests {
             let (a, b) = make_f32_vecs(dim);
             let scalar = f32_ops::scalar::cosine_distance(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = f32_ops::neon::cosine_distance(&a, &b);
                 assert!(
@@ -1170,7 +1170,7 @@ mod tests {
                 );
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { f32_ops::avx2::cosine_distance(&a, &b) };
                 assert!(
@@ -1187,7 +1187,7 @@ mod tests {
             let (a, b) = make_f32_vecs(dim);
             let scalar = f32_ops::scalar::cosine_distance_prenorm(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = f32_ops::neon::cosine_distance_prenorm(&a, &b);
                 assert!(
@@ -1196,7 +1196,7 @@ mod tests {
                 );
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { f32_ops::avx2::cosine_distance_prenorm(&a, &b) };
                 assert!(
@@ -1215,13 +1215,13 @@ mod tests {
             let (a, b) = make_i8_vecs(dim);
             let scalar = i8_ops::scalar::l2_distance_i8(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = i8_ops::neon::l2_distance_i8(&a, &b);
                 assert_eq!(neon, scalar, "NEON l2_i8 mismatch at dim={dim}");
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { i8_ops::avx2::l2_distance_i8(&a, &b) };
                 assert_eq!(avx, scalar, "AVX2 l2_i8 mismatch at dim={dim}");
@@ -1235,13 +1235,13 @@ mod tests {
             let (a, b) = make_i8_vecs(dim);
             let scalar = i8_ops::scalar::dot_product_distance_i8(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = i8_ops::neon::dot_product_distance_i8(&a, &b);
                 assert_eq!(neon, scalar, "NEON dot_i8 mismatch at dim={dim}");
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { i8_ops::avx2::dot_product_distance_i8(&a, &b) };
                 assert_eq!(avx, scalar, "AVX2 dot_i8 mismatch at dim={dim}");
@@ -1255,7 +1255,7 @@ mod tests {
             let (a, b) = make_i8_vecs(dim);
             let scalar = i8_ops::scalar::cosine_distance_i8(&a, &b);
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(feature = "simd", target_arch = "aarch64"))]
             {
                 let neon = i8_ops::neon::cosine_distance_i8(&a, &b);
                 assert!(
@@ -1264,7 +1264,7 @@ mod tests {
                 );
             }
 
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             if x86_has_avx2_fma() {
                 let avx = unsafe { i8_ops::avx2::cosine_distance_i8(&a, &b) };
                 assert!(

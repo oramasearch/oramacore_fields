@@ -40,3 +40,12 @@ jobs:
         run: cargo test --features cli cli
       - name: Build examples
         run: cargo build --examples --all-features
+
+  test-no-simd:
+    name: Test (no SIMD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (no default features)
+        run: cargo test --no-default-features

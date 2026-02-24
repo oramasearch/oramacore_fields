@@ -6,7 +6,8 @@ license = "AGPL-3.0-or-later"
 description = "On-disk field indexes (bool, number, string, string_filter, geopoint) for search engines"
 
 [features]
-default = []
+default = ["simd"]
+simd = []
 cli = ["clap", "serde"]
 alloc-tests = []
 
