@@ -176,11 +176,12 @@ pub fn write_delete_file(
     deletes: &[u64],
 ) -> Result<(), Error> {
     let path = version_dir.join(format!("seg_{segment_id}.del"));
-    let mut file = File::create(&path)?;
+    let file = File::create(&path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &id in deletes {
-        file.write_all(&id.to_ne_bytes())?;
+        writer.write_all(&id.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
@@ -235,11 +236,12 @@ pub struct ManifestEntry {
 
 /// Write sorted doc_ids to a binary file (native-endian u64).
 pub fn write_postings(path: &Path, doc_ids: &[u64]) -> Result<(), Error> {
-    let mut file = File::create(path)?;
+    let file = File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &id in doc_ids {
-        file.write_all(&id.to_ne_bytes())?;
+        writer.write_all(&id.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 

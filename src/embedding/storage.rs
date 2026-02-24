@@ -833,32 +833,35 @@ fn assign_random_levels(count: usize, max_level: usize, m: usize) -> Vec<usize> 
 // ──────────────────────────────────────────────────
 
 fn write_raw_vectors(path: &std::path::Path, vectors: &[f32]) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &v in vectors {
-        file.write_all(&v.to_ne_bytes())?;
+        writer.write_all(&v.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
 fn write_raw_vectors_concat(path: &std::path::Path, old: &[f32], new: &[f32]) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &v in old {
-        file.write_all(&v.to_ne_bytes())?;
+        writer.write_all(&v.to_ne_bytes())?;
     }
     for &v in new {
-        file.write_all(&v.to_ne_bytes())?;
+        writer.write_all(&v.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
 fn write_quantized_vectors(path: &std::path::Path, vectors: &[i8]) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len()) };
-    file.write_all(bytes)?;
-    file.sync_all()?;
+    writer.write_all(bytes)?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
@@ -867,35 +870,38 @@ fn write_quantized_vectors_concat(
     old: &[i8],
     new: &[i8],
 ) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     let old_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(old.as_ptr() as *const u8, old.len()) };
     let new_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(new.as_ptr() as *const u8, new.len()) };
-    file.write_all(old_bytes)?;
-    file.write_all(new_bytes)?;
-    file.sync_all()?;
+    writer.write_all(old_bytes)?;
+    writer.write_all(new_bytes)?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
 fn write_doc_ids(path: &std::path::Path, doc_ids: &[u64]) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &id in doc_ids {
-        file.write_all(&id.to_ne_bytes())?;
+        writer.write_all(&id.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
 fn write_doc_ids_concat(path: &std::path::Path, old: &[u64], new: &[u64]) -> Result<(), Error> {
-    let mut file = std::fs::File::create(path)?;
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for &id in old {
-        file.write_all(&id.to_ne_bytes())?;
+        writer.write_all(&id.to_ne_bytes())?;
     }
     for &id in new {
-        file.write_all(&id.to_ne_bytes())?;
+        writer.write_all(&id.to_ne_bytes())?;
     }
-    file.sync_all()?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(())
 }
 
