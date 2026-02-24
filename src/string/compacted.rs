@@ -812,15 +812,17 @@ impl<'a> Iterator for DocLengthIterator<'a> {
 /// Serialize a single posting entry (doc_id + positions) into a byte buffer.
 #[inline]
 fn write_entry_to_buf(buf: &mut Vec<u8>, doc_id: u64, exact: &[u32], stemmed: &[u32]) {
+    let needed = 8 + 4 + 4 + (exact.len() + stemmed.len()) * 4;
+    buf.reserve(needed);
     buf.extend_from_slice(&doc_id.to_ne_bytes());
     buf.extend_from_slice(&(exact.len() as u32).to_ne_bytes());
     buf.extend_from_slice(&(stemmed.len() as u32).to_ne_bytes());
-    for &pos in exact {
-        buf.extend_from_slice(&pos.to_ne_bytes());
-    }
-    for &pos in stemmed {
-        buf.extend_from_slice(&pos.to_ne_bytes());
-    }
+    let exact_bytes =
+        unsafe { std::slice::from_raw_parts(exact.as_ptr() as *const u8, exact.len() * 4) };
+    buf.extend_from_slice(exact_bytes);
+    let stemmed_bytes =
+        unsafe { std::slice::from_raw_parts(stemmed.as_ptr() as *const u8, stemmed.len() * 4) };
+    buf.extend_from_slice(stemmed_bytes);
 }
 
 /// Flush a completed term's entries buffer to disk and register it in the FST.
