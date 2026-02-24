@@ -9,6 +9,45 @@ use std::path::Path;
 pub const GRAPH_HEADER_SIZE: usize = 16;
 pub const SENTINEL: u32 = u32::MAX;
 
+/// Compact visited-set using a bitset (1 bit per node instead of 1 byte).
+/// For 1M nodes this uses ~125 KB instead of ~1 MB.
+pub(crate) struct VisitedBitset {
+    bits: Vec<u64>,
+}
+
+impl VisitedBitset {
+    pub fn new(num_nodes: usize) -> Self {
+        Self {
+            bits: vec![0u64; (num_nodes + 63) / 64],
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.bits.fill(0);
+    }
+
+    /// Grow to accommodate at least `num_nodes` nodes.
+    pub fn grow(&mut self, num_nodes: usize) {
+        let needed = (num_nodes + 63) / 64;
+        if needed > self.bits.len() {
+            self.bits.resize(needed, 0);
+        }
+    }
+
+    /// Mark node `i` as visited. Returns `true` if it was NOT previously visited.
+    #[inline]
+    pub fn visit(&mut self, i: usize) -> bool {
+        let word = i / 64;
+        let bit = 1u64 << (i % 64);
+        if self.bits[word] & bit != 0 {
+            return false; // already visited
+        }
+        self.bits[word] |= bit;
+        true
+    }
+
+}
+
 /// In-memory HNSW graph builder.
 pub struct HnswBuilder {
     config: EmbeddingConfig,
@@ -135,15 +174,23 @@ impl HnswBuilder {
         // Ignore doc_ids here; they're written separately
         let _ = doc_ids;
 
-        // Insert remaining nodes
+        // Insert remaining nodes with a reusable visited bitset
+        let mut visited = VisitedBitset::new(num_vectors);
         for idx in 1..num_vectors {
-            self.insert_node(idx, &levels, vectors, dimensions);
+            self.insert_node(idx, &levels, vectors, dimensions, &mut visited);
         }
 
         Ok(())
     }
 
-    fn insert_node(&mut self, idx: usize, levels: &[usize], vectors: &[f32], dimensions: usize) {
+    fn insert_node(
+        &mut self,
+        idx: usize,
+        levels: &[usize],
+        vectors: &[f32],
+        dimensions: usize,
+        visited: &mut VisitedBitset,
+    ) {
         let node_level = levels[idx];
         let node_vec = &vectors[idx * dimensions..(idx + 1) * dimensions];
 
@@ -167,8 +214,9 @@ impl HnswBuilder {
         for level in (0..=start_level).rev() {
             let max_neighbors = if level == 0 { m0 } else { m };
 
+            visited.clear();
             let candidates =
-                self.search_layer(ep, node_vec, ef_construction, level, vectors, dimensions);
+                self.search_layer(ep, node_vec, ef_construction, level, vectors, dimensions, visited);
 
             // Select neighbors using heuristic
             let selected = select_neighbors_heuristic(
@@ -266,6 +314,7 @@ impl HnswBuilder {
 
     /// Search a single layer for ef nearest neighbors.
     /// Returns vec of (node_index, distance) sorted by distance ascending.
+    /// The caller must provide a pre-cleared `VisitedBitset` large enough for all nodes.
     fn search_layer(
         &self,
         entry: usize,
@@ -274,13 +323,13 @@ impl HnswBuilder {
         level: usize,
         vectors: &[f32],
         dimensions: usize,
+        visited: &mut VisitedBitset,
     ) -> Vec<(u32, f32)> {
         let entry_vec = &vectors[entry * dimensions..(entry + 1) * dimensions];
         let entry_dist = (self.distance_fn)(query, entry_vec);
 
         let mut candidates: BinaryHeap<MinHeapItem> = BinaryHeap::new();
         let mut results: BinaryHeap<MaxHeapItem> = BinaryHeap::new();
-        let mut visited = vec![false; self.nodes.len()];
 
         candidates.push(MinHeapItem {
             index: entry as u32,
@@ -290,7 +339,7 @@ impl HnswBuilder {
             index: entry as u32,
             distance: entry_dist,
         });
-        visited[entry] = true;
+        visited.visit(entry);
 
         while let Some(MinHeapItem {
             index: c_idx,
@@ -312,10 +361,9 @@ impl HnswBuilder {
                     continue;
                 }
                 let n = neighbor_idx as usize;
-                if visited[n] {
+                if !visited.visit(n) {
                     continue;
                 }
-                visited[n] = true;
 
                 let nv = &vectors[n * dimensions..(n + 1) * dimensions];
                 let d = (self.distance_fn)(query, nv);
@@ -500,10 +548,12 @@ impl HnswBuilder {
         // Build a combined levels array for insert_node
         let all_levels: Vec<usize> = self.nodes.iter().map(|n| n.level).collect();
 
-        // Insert each new node using the existing insert_node method
+        // Insert each new node with a reusable visited bitset
+        let mut visited = VisitedBitset::new(self.nodes.len());
         for i in 0..new_levels.len() {
             let idx = start_index + i;
-            self.insert_node(idx, &all_levels, all_vectors, dimensions);
+            visited.grow(self.nodes.len());
+            self.insert_node(idx, &all_levels, all_vectors, dimensions, &mut visited);
         }
 
         Ok(())

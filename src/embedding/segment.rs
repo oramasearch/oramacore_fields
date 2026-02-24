@@ -1,7 +1,7 @@
 use super::config::DistanceMetric;
 use super::distance::{DistanceFn, QuantizedDistanceFn};
 use super::error::Error;
-use super::hnsw::{GRAPH_HEADER_SIZE, SENTINEL};
+use super::hnsw::{VisitedBitset, GRAPH_HEADER_SIZE, SENTINEL};
 use super::io::{load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry};
 use super::platform::{advise_random, advise_sequential};
 use super::quantization::QuantizationParams;
@@ -247,7 +247,7 @@ impl Segment {
         let ef_actual = ef.max(k);
         let mut candidates: BinaryHeap<MinHeapItemI32> = BinaryHeap::new();
         let mut results: BinaryHeap<MaxHeapItemI32> = BinaryHeap::new();
-        let mut visited = vec![false; self.config.num_nodes];
+        let mut visited = VisitedBitset::new(self.config.num_nodes);
 
         let entry_qvec = self.quantized_vector(current, dimensions);
         let entry_dist = quantized_distance_fn(query_quantized, entry_qvec);
@@ -259,7 +259,7 @@ impl Segment {
             index: current,
             distance: entry_dist,
         });
-        visited[current as usize] = true;
+        visited.visit(current as usize);
 
         while let Some(MinHeapItemI32 {
             index: c_idx,
@@ -274,10 +274,9 @@ impl Segment {
             let neighbor_bytes = self.get_neighbors(c_idx, 0);
             for neighbor_idx in Self::parse_neighbors(neighbor_bytes) {
                 let n = neighbor_idx as usize;
-                if visited[n] {
+                if !visited.visit(n) {
                     continue;
                 }
-                visited[n] = true;
 
                 let nq = self.quantized_vector(neighbor_idx, dimensions);
                 let d = quantized_distance_fn(query_quantized, nq);
