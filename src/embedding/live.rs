@@ -56,16 +56,37 @@ impl LiveLayer {
         }
 
         // Flatten multi-embeddings: each vector gets its own entry with repeated doc_id
-        let mut entries: Vec<(u64, Vec<f32>)> = entries_map
-            .into_iter()
-            .flat_map(|(doc_id, vectors)| vectors.into_iter().map(move |v| (doc_id, v)))
-            .collect();
-        entries.sort_unstable_by_key(|(id, _)| *id);
+        // Sort by doc_id first, then flatten into contiguous memory
+        let mut sorted_entries: Vec<(u64, Vec<Vec<f32>>)> = entries_map.into_iter().collect();
+        sorted_entries.sort_unstable_by_key(|(id, _)| *id);
+
+        // Determine dimensions from first vector (0 if no entries)
+        let dimensions = sorted_entries
+            .first()
+            .and_then(|(_, vecs)| vecs.first())
+            .map(|v| v.len())
+            .unwrap_or(0);
+
+        let total_entries: usize = sorted_entries.iter().map(|(_, vecs)| vecs.len()).sum();
+        let mut vectors = Vec::with_capacity(total_entries * dimensions);
+        let mut doc_ids = Vec::with_capacity(total_entries);
+
+        for (doc_id, vecs) in sorted_entries {
+            for v in vecs {
+                doc_ids.push(doc_id);
+                vectors.extend_from_slice(&v);
+            }
+        }
+
         let mut deletes: Vec<u64> = delete_set.into_iter().collect();
         deletes.sort_unstable();
 
         self.cached_snapshot = Arc::new(LiveSnapshot {
-            entries,
+            entries: FlatEntries {
+                vectors,
+                doc_ids,
+                dimensions,
+            },
             deletes,
             ops_len: self.ops.len(),
         });
@@ -83,9 +104,98 @@ impl LiveLayer {
     }
 }
 
+/// Contiguous flat storage for live snapshot entries.
+/// Stores all vectors in a single `Vec<f32>` and doc_ids in a parallel `Vec<u64>`,
+/// giving cache-friendly sequential access during brute-force scan.
+#[derive(Clone)]
+pub struct FlatEntries {
+    pub vectors: Vec<f32>,
+    pub doc_ids: Vec<u64>,
+    pub dimensions: usize,
+}
+
+impl FlatEntries {
+    pub fn len(&self) -> usize {
+        self.doc_ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.doc_ids.is_empty()
+    }
+
+    pub fn last(&self) -> Option<(&u64, &[f32])> {
+        if self.doc_ids.is_empty() {
+            return None;
+        }
+        let i = self.doc_ids.len() - 1;
+        let start = i * self.dimensions;
+        let end = start + self.dimensions;
+        Some((&self.doc_ids[i], &self.vectors[start..end]))
+    }
+
+    pub fn iter(&self) -> FlatEntriesIter<'_> {
+        FlatEntriesIter {
+            entries: self,
+            pos: 0,
+        }
+    }
+
+    pub fn vectors_slice(&self) -> &[f32] {
+        &self.vectors
+    }
+
+    pub fn doc_ids_slice(&self) -> &[u64] {
+        &self.doc_ids
+    }
+}
+
+impl FlatEntries {
+    pub fn get(&self, i: usize) -> (&u64, &[f32]) {
+        let start = i * self.dimensions;
+        let end = start + self.dimensions;
+        (&self.doc_ids[i], &self.vectors[start..end])
+    }
+}
+
+pub struct FlatEntriesIter<'a> {
+    entries: &'a FlatEntries,
+    pos: usize,
+}
+
+impl<'a> Iterator for FlatEntriesIter<'a> {
+    type Item = (&'a u64, &'a [f32]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.entries.doc_ids.len() {
+            return None;
+        }
+        let i = self.pos;
+        self.pos += 1;
+        let start = i * self.entries.dimensions;
+        let end = start + self.entries.dimensions;
+        Some((&self.entries.doc_ids[i], &self.entries.vectors[start..end]))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.entries.doc_ids.len() - self.pos;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for FlatEntriesIter<'a> {}
+
+impl<'a> IntoIterator for &'a FlatEntries {
+    type Item = (&'a u64, &'a [f32]);
+    type IntoIter = FlatEntriesIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[derive(Clone)]
 pub struct LiveSnapshot {
-    pub entries: Vec<(u64, Vec<f32>)>,
+    pub entries: FlatEntries,
     pub deletes: Vec<u64>,
     pub ops_len: usize,
 }
@@ -93,7 +203,11 @@ pub struct LiveSnapshot {
 impl LiveSnapshot {
     pub fn empty() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: FlatEntries {
+                vectors: Vec::new(),
+                doc_ids: Vec::new(),
+                dimensions: 0,
+            },
             deletes: Vec::new(),
             ops_len: 0,
         }
@@ -193,7 +307,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.entries.len(), 1);
-        assert_eq!(snapshot.entries[0].0, 2);
+        assert_eq!(*snapshot.entries.get(0).0, 2);
         assert_eq!(snapshot.deletes, vec![1]);
     }
 
@@ -205,7 +319,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.entries.len(), 1);
-        assert_eq!(snapshot.entries[0].1, vec![2.0]);
+        assert_eq!(snapshot.entries.get(0).1, vec![2.0]);
     }
 
     #[test]
@@ -217,7 +331,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
         assert_eq!(snapshot.entries.len(), 1);
-        assert_eq!(snapshot.entries[0].1, vec![2.0]);
+        assert_eq!(snapshot.entries.get(0).1, vec![2.0]);
         assert!(snapshot.deletes.is_empty());
     }
 

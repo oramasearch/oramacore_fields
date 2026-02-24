@@ -263,10 +263,8 @@ impl EmbeddingStorage {
                     let (mut all_vecs, mut all_ids) =
                         collect_surviving(segment, &updated_deletes, dimensions);
 
-                    for (doc_id, vector) in &snapshot.entries {
-                        all_vecs.extend_from_slice(vector);
-                        all_ids.push(*doc_id);
-                    }
+                    all_vecs.extend_from_slice(snapshot.entries.vectors_slice());
+                    all_ids.extend_from_slice(snapshot.entries.doc_ids_slice());
 
                     if all_ids.is_empty() {
                         continue;
@@ -375,22 +373,18 @@ impl EmbeddingStorage {
 
         // Step 3: If live entries weren't absorbed, create new segment
         if !live_absorbed && !snapshot.entries.is_empty() {
-            let mut live_vecs: Vec<f32> = Vec::with_capacity(snapshot.entries.len() * dimensions);
-            let mut live_ids: Vec<u64> = Vec::with_capacity(snapshot.entries.len());
-            for (doc_id, vector) in &snapshot.entries {
-                live_vecs.extend_from_slice(vector);
-                live_ids.push(*doc_id);
-            }
+            let live_vecs = snapshot.entries.vectors_slice();
+            let live_ids = snapshot.entries.doc_ids_slice();
 
             if !live_ids.is_empty() {
                 let seg_id = next_seg_id;
 
-                let params = QuantizationParams::calibrate(&live_vecs, dimensions);
+                let params = QuantizationParams::calibrate(live_vecs, dimensions);
                 build_and_write_segment(
                     &self.base_path,
                     seg_id,
-                    &live_vecs,
-                    &live_ids,
+                    live_vecs,
+                    live_ids,
                     &self.config,
                     &params,
                     self.distance_fn,
@@ -748,7 +742,7 @@ fn incremental_insert_segment(
     base_path: &std::path::Path,
     old_segment: &super::segment::Segment,
     new_seg_id: u64,
-    live_entries: &[(u64, Vec<f32>)],
+    live_entries: &super::live::FlatEntries,
     config: &EmbeddingConfig,
     distance_fn: DistanceFn,
 ) -> Result<(), Error> {
@@ -760,16 +754,13 @@ fn incremental_insert_segment(
 
     // 1. Write raw vectors: old ++ new
     let old_raw = old_segment.raw_vectors_slice();
-    let new_raw: Vec<f32> = live_entries
-        .iter()
-        .flat_map(|(_, v)| v.iter().copied())
-        .collect();
-    write_raw_vectors_concat(&seg_dir.join("vectors.raw"), old_raw, &new_raw)?;
+    let new_raw = live_entries.vectors_slice();
+    write_raw_vectors_concat(&seg_dir.join("vectors.raw"), old_raw, new_raw)?;
 
     // 2. Write doc_ids: old ++ new
     let old_doc_ids = old_segment.doc_ids_slice();
-    let new_doc_ids: Vec<u64> = live_entries.iter().map(|(id, _)| *id).collect();
-    write_doc_ids_concat(&seg_dir.join("doc_ids.bin"), old_doc_ids, &new_doc_ids)?;
+    let new_doc_ids = live_entries.doc_ids_slice();
+    write_doc_ids_concat(&seg_dir.join("doc_ids.bin"), old_doc_ids, new_doc_ids)?;
 
     // 3. Assign levels to new nodes
     let old_levels = old_segment.levels_slice();
