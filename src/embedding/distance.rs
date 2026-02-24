@@ -3,28 +3,64 @@ use super::config::DistanceMetric;
 pub type DistanceFn = fn(&[f32], &[f32]) -> f32;
 pub type QuantizedDistanceFn = fn(&[i8], &[i8]) -> i32;
 
+#[inline]
 pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum::<f32>()
+    let mut sum = 0.0f32;
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            let d = ca[i] - cb[i];
+            sum += d * d;
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
+        let d = x - y;
+        sum += d * d;
+    }
+    sum
 }
 
+#[inline]
 pub fn dot_product_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    -a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum::<f32>()
+    let mut sum = 0.0f32;
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            sum += ca[i] * cb[i];
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
+        sum += x * y;
+    }
+    -sum
 }
 
+#[inline]
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;
     let mut norm_b = 0.0f32;
-    for (&x, &y) in a.iter().zip(b.iter()) {
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            dot += ca[i] * cb[i];
+            norm_a += ca[i] * ca[i];
+            norm_b += cb[i] * cb[i];
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
         dot += x * y;
         norm_a += x * x;
         norm_b += y * y;
@@ -37,31 +73,66 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+#[inline]
 pub fn l2_distance_i8(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len());
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x as i32 - y as i32;
-            d * d
-        })
-        .sum::<i32>()
+    let mut sum = 0i32;
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            let d = ca[i] as i32 - cb[i] as i32;
+            sum += d * d;
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
+        let d = x as i32 - y as i32;
+        sum += d * d;
+    }
+    sum
 }
 
+#[inline]
 pub fn dot_product_distance_i8(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len());
-    -a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| x as i32 * y as i32)
-        .sum::<i32>()
+    let mut sum = 0i32;
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            sum += ca[i] as i32 * cb[i] as i32;
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
+        sum += x as i32 * y as i32;
+    }
+    -sum
 }
 
+#[inline]
 pub fn cosine_distance_i8(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len());
     let mut dot: i64 = 0;
     let mut norm_a: i64 = 0;
     let mut norm_b: i64 = 0;
-    for (&x, &y) in a.iter().zip(b.iter()) {
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            let xi = ca[i] as i64;
+            let yi = cb[i] as i64;
+            dot += xi * yi;
+            norm_a += xi * xi;
+            norm_b += yi * yi;
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
         let xi = x as i64;
         let yi = y as i64;
         dot += xi * yi;
