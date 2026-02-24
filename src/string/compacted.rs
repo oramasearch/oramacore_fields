@@ -175,8 +175,7 @@ impl CompactedVersion {
         let lo_byte = lo * entry_size;
         let lo_doc = u64::from_ne_bytes(data[lo_byte..lo_byte + 8].try_into().ok()?);
         if lo_doc == doc_id {
-            let field_len =
-                u32::from_ne_bytes(data[lo_byte + 8..lo_byte + 12].try_into().ok()?);
+            let field_len = u32::from_ne_bytes(data[lo_byte + 8..lo_byte + 12].try_into().ok()?);
             *cursor = lo;
             return Some(field_len);
         }
@@ -363,7 +362,7 @@ impl CompactedVersion {
     /// - `deleted_set`: if `Some`, doc_ids to exclude from output postings and doc_lengths
     /// - `deletes_to_write`: doc_ids to write to deleted.bin
     /// - `path`: version directory to write into
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn build_from_sorted_sources<'a, P: std::ops::Deref<Target = [u32]>>(
         compacted_terms: &mut CompactedTermIterator<'a>,
         live_terms: &[(&str, &[(u64, P, P)])],

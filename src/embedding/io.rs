@@ -181,7 +181,10 @@ pub fn write_delete_file(
     for &id in deletes {
         writer.write_all(&id.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -241,7 +244,10 @@ pub fn write_postings(path: &Path, doc_ids: &[u64]) -> Result<(), Error> {
     for &id in doc_ids {
         writer.write_all(&id.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 

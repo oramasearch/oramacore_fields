@@ -297,11 +297,7 @@ fn test_cosine_scores_live_only() {
 
     // 45 degrees: 1 - 1/sqrt(2) ≈ 0.29289
     assert_eq!(results[1].0, 4);
-    assert_score(
-        results[1].1,
-        1.0 - 1.0 / 2.0_f32.sqrt(),
-        "45 deg cosine",
-    );
+    assert_score(results[1].1, 1.0 - 1.0 / 2.0_f32.sqrt(), "45 deg cosine");
 
     // Orthogonal: distance = 1
     assert_eq!(results[2].0, 2);

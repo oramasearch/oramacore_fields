@@ -192,8 +192,9 @@ impl SearchHandle {
                         continue;
                     }
 
-                    let field_length =
-                        version.field_length_galloping(entry.doc_id, &mut fl_cursor).unwrap_or(0) as f32;
+                    let field_length = version
+                        .field_length_galloping(entry.doc_id, &mut fl_cursor)
+                        .unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -373,8 +374,9 @@ impl SearchHandle {
                         }
                     }
 
-                    let field_length =
-                        version.field_length_galloping(entry.doc_id, &mut fl_cursor).unwrap_or(0) as f32;
+                    let field_length = version
+                        .field_length_galloping(entry.doc_id, &mut fl_cursor)
+                        .unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -538,11 +540,7 @@ fn token_bit(token_idx: usize) -> u32 {
 }
 
 #[inline]
-fn is_deleted(
-    doc_id: u64,
-    live_deletes: &[u64],
-    compacted_deletes: &[u64],
-) -> bool {
+fn is_deleted(doc_id: u64, live_deletes: &[u64], compacted_deletes: &[u64]) -> bool {
     live_deletes.binary_search(&doc_id).is_ok() || compacted_deletes.binary_search(&doc_id).is_ok()
 }
 

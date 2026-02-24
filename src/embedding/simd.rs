@@ -198,11 +198,7 @@ pub mod f32_ops {
                 let main_iters = len / 16;
                 for i in 0..main_iters {
                     let off = i * 16;
-                    acc0 = vfmaq_f32(
-                        acc0,
-                        vld1q_f32(a_ptr.add(off)),
-                        vld1q_f32(b_ptr.add(off)),
-                    );
+                    acc0 = vfmaq_f32(acc0, vld1q_f32(a_ptr.add(off)), vld1q_f32(b_ptr.add(off)));
                     acc1 = vfmaq_f32(
                         acc1,
                         vld1q_f32(a_ptr.add(off + 4)),
@@ -223,11 +219,7 @@ pub mod f32_ops {
                 let mut off = main_iters * 16;
                 let rem4 = (len - off) / 4;
                 for _ in 0..rem4 {
-                    acc0 = vfmaq_f32(
-                        acc0,
-                        vld1q_f32(a_ptr.add(off)),
-                        vld1q_f32(b_ptr.add(off)),
-                    );
+                    acc0 = vfmaq_f32(acc0, vld1q_f32(a_ptr.add(off)), vld1q_f32(b_ptr.add(off)));
                     off += 4;
                 }
 
@@ -452,10 +444,7 @@ pub mod f32_ops {
                 off += 8;
             }
 
-            acc0 = _mm256_add_ps(
-                _mm256_add_ps(acc0, acc1),
-                _mm256_add_ps(acc2, acc3),
-            );
+            acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
             let mut sum = hsum_f32x8(acc0);
 
             for i in off..len {
@@ -514,10 +503,7 @@ pub mod f32_ops {
                 off += 8;
             }
 
-            acc0 = _mm256_add_ps(
-                _mm256_add_ps(acc0, acc1),
-                _mm256_add_ps(acc2, acc3),
-            );
+            acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
             let mut sum = hsum_f32x8(acc0);
 
             for i in off..len {

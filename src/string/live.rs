@@ -133,8 +133,7 @@ impl LiveLayer {
             postings.sort_unstable_by_key(|(doc_id, _, _)| *doc_id);
         }
 
-        let mut deletes: Vec<u64> =
-            self.replay_delete_set.iter().copied().collect();
+        let mut deletes: Vec<u64> = self.replay_delete_set.iter().copied().collect();
         deletes.sort_unstable();
 
         let total_documents = self.replay_doc_terms.len() as u64;
@@ -148,10 +147,8 @@ impl LiveLayer {
             self.cached_snapshot = Arc::new(LiveSnapshot::empty());
 
             // Try to reuse the existing tree via exclusive ownership
-            let old_arc = std::mem::replace(
-                &mut self.replay_term_tree_arc,
-                Arc::new(RadixTree::new()),
-            );
+            let old_arc =
+                std::mem::replace(&mut self.replay_term_tree_arc, Arc::new(RadixTree::new()));
 
             let tree = match Arc::try_unwrap(old_arc) {
                 Ok(mut tree) => {

@@ -19,7 +19,7 @@ pub(crate) struct VisitedBitset {
 impl VisitedBitset {
     pub fn new(num_nodes: usize) -> Self {
         Self {
-            bits: vec![0u64; (num_nodes + 63) / 64],
+            bits: vec![0u64; num_nodes.div_ceil(64)],
         }
     }
 
@@ -29,7 +29,7 @@ impl VisitedBitset {
 
     /// Grow to accommodate at least `num_nodes` nodes.
     pub fn grow(&mut self, num_nodes: usize) {
-        let needed = (num_nodes + 63) / 64;
+        let needed = num_nodes.div_ceil(64);
         if needed > self.bits.len() {
             self.bits.resize(needed, 0);
         }
@@ -46,7 +46,6 @@ impl VisitedBitset {
         self.bits[word] |= bit;
         true
     }
-
 }
 
 /// In-memory HNSW graph builder.
@@ -214,16 +213,19 @@ impl<D: Distance> HnswBuilder<D> {
             let max_neighbors = if level == 0 { m0 } else { m };
 
             visited.clear();
-            let candidates =
-                self.search_layer(ep, node_vec, ef_construction, level, vectors, dimensions, visited);
-
-            // Select neighbors using heuristic
-            let selected = select_neighbors_heuristic::<D>(
-                &candidates,
-                max_neighbors,
+            let candidates = self.search_layer(
+                ep,
+                node_vec,
+                ef_construction,
+                level,
                 vectors,
                 dimensions,
+                visited,
             );
+
+            // Select neighbors using heuristic
+            let selected =
+                select_neighbors_heuristic::<D>(&candidates, max_neighbors, vectors, dimensions);
 
             // Set neighbors for new node
             self.nodes[idx].neighbors[level] = selected.clone();
@@ -312,6 +314,7 @@ impl<D: Distance> HnswBuilder<D> {
     /// Search a single layer for ef nearest neighbors.
     /// Returns vec of (node_index, distance) sorted by distance ascending.
     /// The caller must provide a pre-cleared `VisitedBitset` large enough for all nodes.
+    #[allow(clippy::too_many_arguments)]
     fn search_layer(
         &self,
         entry: usize,

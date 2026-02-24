@@ -928,10 +928,7 @@ fn test_scorer_top_k_ordering_matches_full_sort() {
     for i in 1..=50u64 {
         index.insert(
             i,
-            make_value(
-                (i as u16) * 2 + 1,
-                vec![("search", vec![0], vec![])],
-            ),
+            make_value((i as u16) * 2 + 1, vec![("search", vec![0], vec![])]),
         );
     }
     index.compact(1).unwrap();

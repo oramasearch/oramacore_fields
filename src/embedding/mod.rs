@@ -101,7 +101,6 @@
 mod config;
 mod distance;
 mod error;
-mod simd;
 mod hnsw;
 mod indexer;
 mod info;
@@ -111,6 +110,7 @@ mod live;
 mod platform;
 mod quantization;
 pub(crate) mod segment;
+mod simd;
 mod storage;
 
 pub use config::{DeletionThreshold, DistanceMetric, EmbeddingConfig, SegmentConfig};

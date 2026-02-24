@@ -1,7 +1,7 @@
 use crate::embedding::IndexedValue;
 
-use super::config::{EmbeddingConfig, SegmentConfig};
 use super::config::DistanceMetric;
+use super::config::{EmbeddingConfig, SegmentConfig};
 use super::distance::Distance;
 use super::error::Error;
 use super::hnsw::HnswBuilder;
@@ -109,9 +109,7 @@ impl EmbeddingStorage {
         }
 
         match self.config.metric {
-            DistanceMetric::L2 => {
-                self.search_inner::<super::distance::L2>(query, k, ef_search)
-            }
+            DistanceMetric::L2 => self.search_inner::<super::distance::L2>(query, k, ef_search),
             DistanceMetric::DotProduct => {
                 self.search_inner::<super::distance::DotProduct>(query, k, ef_search)
             }
@@ -201,7 +199,11 @@ impl EmbeddingStorage {
                 self.compact_inner::<super::distance::L2>(version_number, &snapshot, &current)?;
             }
             DistanceMetric::DotProduct => {
-                self.compact_inner::<super::distance::DotProduct>(version_number, &snapshot, &current)?;
+                self.compact_inner::<super::distance::DotProduct>(
+                    version_number,
+                    &snapshot,
+                    &current,
+                )?;
             }
             DistanceMetric::Cosine => {
                 self.compact_inner::<super::distance::Cosine>(version_number, &snapshot, &current)?;
@@ -778,7 +780,7 @@ fn incremental_insert_segment<D: Distance>(
 
     // 4. Handle quantization (fast path or extend path)
     let old_params = &old_segment.quantization_params;
-    let (new_mins, new_maxs) = compute_min_max(&new_raw, dimensions);
+    let (new_mins, new_maxs) = compute_min_max(new_raw, dimensions);
     let params_fit = range_contains(old_params, &new_mins, &new_maxs);
 
     // All raw vectors (old + new) — allocated once and reused for both quantization and HNSW
@@ -787,7 +789,7 @@ fn incremental_insert_segment<D: Distance>(
     if params_fit {
         // FAST PATH: quantize only new vectors with existing params, append
         let old_quantized = old_segment.quantized_vectors_slice();
-        let new_quantized = old_params.quantize_all(&new_raw, dimensions);
+        let new_quantized = old_params.quantize_all(new_raw, dimensions);
         write_quantized_vectors_concat(
             &seg_dir.join("vectors.quantized"),
             old_quantized,
@@ -860,7 +862,10 @@ fn write_raw_vectors(path: &std::path::Path, vectors: &[f32]) -> Result<(), Erro
     for &v in vectors {
         writer.write_all(&v.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -873,7 +878,10 @@ fn write_raw_vectors_concat(path: &std::path::Path, old: &[f32], new: &[f32]) ->
     for &v in new {
         writer.write_all(&v.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -883,7 +891,10 @@ fn write_quantized_vectors(path: &std::path::Path, vectors: &[i8]) -> Result<(),
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len()) };
     writer.write_all(bytes)?;
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -900,7 +911,10 @@ fn write_quantized_vectors_concat(
         unsafe { std::slice::from_raw_parts(new.as_ptr() as *const u8, new.len()) };
     writer.write_all(old_bytes)?;
     writer.write_all(new_bytes)?;
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -910,7 +924,10 @@ fn write_doc_ids(path: &std::path::Path, doc_ids: &[u64]) -> Result<(), Error> {
     for &id in doc_ids {
         writer.write_all(&id.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
@@ -923,7 +940,10 @@ fn write_doc_ids_concat(path: &std::path::Path, old: &[u64], new: &[u64]) -> Res
     for &id in new {
         writer.write_all(&id.to_ne_bytes())?;
     }
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .sync_all()?;
     Ok(())
 }
 
