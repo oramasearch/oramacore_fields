@@ -88,8 +88,10 @@ impl LiveLayer {
         self.replay_applied_ops = self.ops.len();
 
         // Phase 2: Build per-term postings sorted by doc_id
-        let mut term_postings: HashMap<String, Vec<PostingTuple>> = HashMap::new();
-        let mut doc_lengths: HashMap<u64, u16> = HashMap::new();
+        let num_docs = self.replay_doc_terms.len();
+        let mut term_postings: HashMap<String, Vec<PostingTuple>> =
+            HashMap::with_capacity(self.cached_snapshot.term_postings.len().max(num_docs));
+        let mut doc_lengths: HashMap<u64, u16> = HashMap::with_capacity(num_docs);
         let mut total_field_length: u64 = 0;
 
         for (doc_id, (field_length, terms)) in &self.replay_doc_terms {
