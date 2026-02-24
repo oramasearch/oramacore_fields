@@ -1,6 +1,37 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 
 use super::iterator::{ScoredDoc, SearchResult};
+
+/// Private wrapper for BinaryHeap ordering.
+/// Orders by score descending, then doc_id ascending (consistent with sort_by_score).
+struct HeapEntry {
+    doc_id: u64,
+    score: f32,
+}
+
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.doc_id == other.doc_id
+    }
+}
+
+impl Eq for HeapEntry {}
+
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .partial_cmp(&other.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(other.doc_id.cmp(&self.doc_id))
+    }
+}
 
 /// Accumulates BM25 scores across one or more string fields.
 ///
@@ -82,6 +113,46 @@ impl BM25Scorer {
         };
         result.sort_by_score();
         result
+    }
+
+    /// Consume the scorer and return the top-`k` results sorted by score descending.
+    ///
+    /// Uses a min-heap of size `k` to avoid sorting all scored documents.
+    /// Complexity is `O(N log k)` instead of `O(N log N)`.
+    pub fn into_search_result_top_k(self, k: usize) -> SearchResult {
+        let scores = self.get_scores();
+
+        if k == 0 {
+            return SearchResult { docs: vec![] };
+        }
+
+        let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::with_capacity(k);
+
+        for (doc_id, score) in scores {
+            let entry = HeapEntry { doc_id, score };
+            if heap.len() < k {
+                heap.push(Reverse(entry));
+            } else if entry.cmp(&heap.peek().unwrap().0) == std::cmp::Ordering::Greater {
+                heap.pop();
+                heap.push(Reverse(entry));
+            }
+        }
+
+        let mut docs: Vec<ScoredDoc> = heap
+            .into_iter()
+            .map(|Reverse(e)| ScoredDoc {
+                doc_id: e.doc_id,
+                score: e.score,
+            })
+            .collect();
+        docs.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.doc_id.cmp(&b.doc_id))
+        });
+
+        SearchResult { docs }
     }
 }
 

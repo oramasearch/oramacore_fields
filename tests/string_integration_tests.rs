@@ -754,6 +754,232 @@ fn test_scorer_no_threshold_includes_all() {
 }
 
 // ============================================================================
+// F2. Scorer top-K
+// ============================================================================
+
+#[test]
+fn test_scorer_top_k_returns_highest_scores() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // Insert docs with different field lengths so BM25 produces distinct scores.
+    // Shorter field length → higher BM25 score for the same term.
+    index.insert(1, make_value(10, vec![("hello", vec![0], vec![])]));
+    index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
+    index.insert(3, make_value(5, vec![("hello", vec![0], vec![])]));
+    index.insert(4, make_value(20, vec![("hello", vec![0], vec![])]));
+    index.insert(5, make_value(1, vec![("hello", vec![0], vec![])]));
+    index.compact(1).unwrap();
+
+    // Get the full result for reference
+    let tokens = vec!["hello".to_string()];
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let full = scorer.into_search_result();
+    assert_eq!(full.docs.len(), 5);
+
+    // Now get top-2
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let top2 = scorer.into_search_result_top_k(2);
+    assert_eq!(top2.docs.len(), 2);
+
+    // The top-2 from top_k must match the first 2 from full sort
+    assert_eq!(top2.docs[0].doc_id, full.docs[0].doc_id);
+    assert_eq!(top2.docs[1].doc_id, full.docs[1].doc_id);
+    assert_eq!(top2.docs[0].score, full.docs[0].score);
+    assert_eq!(top2.docs[1].score, full.docs[1].score);
+}
+
+#[test]
+fn test_scorer_top_k_larger_than_total() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+    index.insert(2, make_value(5, vec![("hello", vec![0], vec![])]));
+    index.compact(1).unwrap();
+
+    let tokens = vec!["hello".to_string()];
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let result = scorer.into_search_result_top_k(100);
+
+    assert_eq!(result.docs.len(), 2, "k > total should return all docs");
+}
+
+#[test]
+fn test_scorer_top_k_zero() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+    index.compact(1).unwrap();
+
+    let tokens = vec!["hello".to_string()];
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let result = scorer.into_search_result_top_k(0);
+
+    assert!(result.docs.is_empty(), "k=0 should return empty result");
+}
+
+#[test]
+fn test_scorer_top_k_with_threshold() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // Doc 1 matches both tokens
+    index.insert(
+        1,
+        make_value(
+            4,
+            vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+        ),
+    );
+    // Doc 2 matches only "hello"
+    index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
+    // Doc 3 matches both tokens
+    index.insert(
+        3,
+        make_value(
+            8,
+            vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+        ),
+    );
+    index.compact(1).unwrap();
+
+    let tokens = vec!["hello".to_string(), "world".to_string()];
+    let mut scorer = BM25Scorer::with_threshold(2);
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    // Only docs matching both tokens survive threshold (docs 1 and 3).
+    // top_k(1) should return the highest scoring one.
+    let result = scorer.into_search_result_top_k(1);
+
+    assert_eq!(result.docs.len(), 1);
+
+    // Verify it's the same as the full result's top-1
+    let mut scorer = BM25Scorer::with_threshold(2);
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let full = scorer.into_search_result();
+    assert_eq!(result.docs[0].doc_id, full.docs[0].doc_id);
+}
+
+#[test]
+fn test_scorer_top_k_ordering_matches_full_sort() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // Insert many docs with varied field lengths for score diversity
+    for i in 1..=50u64 {
+        index.insert(
+            i,
+            make_value(
+                (i as u16) * 2 + 1,
+                vec![("search", vec![0], vec![])],
+            ),
+        );
+    }
+    index.compact(1).unwrap();
+
+    let tokens = vec!["search".to_string()];
+
+    let mut scorer = BM25Scorer::new();
+    index
+        .search::<NoFilter>(
+            &SearchParams {
+                tokens: &tokens,
+                ..Default::default()
+            },
+            None,
+            &mut scorer,
+        )
+        .unwrap();
+    let full = scorer.into_search_result();
+
+    for k in [1, 5, 10, 25, 50] {
+        let mut scorer = BM25Scorer::new();
+        index
+            .search::<NoFilter>(
+                &SearchParams {
+                    tokens: &tokens,
+                    ..Default::default()
+                },
+                None,
+                &mut scorer,
+            )
+            .unwrap();
+        let top = scorer.into_search_result_top_k(k);
+
+        assert_eq!(top.docs.len(), k);
+        for (i, doc) in top.docs.iter().enumerate() {
+            assert_eq!(
+                doc.doc_id, full.docs[i].doc_id,
+                "top_k({k}) doc at position {i} should match full sort"
+            );
+            assert_eq!(
+                doc.score, full.docs[i].score,
+                "top_k({k}) score at position {i} should match full sort"
+            );
+        }
+    }
+}
+
+// ============================================================================
 // G. Document Filter
 // ============================================================================
 
