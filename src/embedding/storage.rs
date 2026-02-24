@@ -136,9 +136,10 @@ impl EmbeddingStorage {
         let num_sources = segment_list.segments.len() + 1;
         let mut all_results: Vec<(u64, f32)> = Vec::with_capacity(num_sources * k);
 
+        let mut query_quantized = vec![0i8; self.config.dimensions];
         for segment in &segment_list.segments {
             // Per-segment quantization: quantize query with THIS segment's params
-            let mut query_quantized = vec![0i8; self.config.dimensions];
+            query_quantized.fill(0);
             segment
                 .quantization_params
                 .quantize(query, &mut query_quantized);
@@ -365,8 +366,8 @@ impl EmbeddingStorage {
 
         // Step 3: If live entries weren't absorbed, create new segment
         if !live_absorbed && !snapshot.entries.is_empty() {
-            let mut live_vecs: Vec<f32> = Vec::new();
-            let mut live_ids: Vec<u64> = Vec::new();
+            let mut live_vecs: Vec<f32> = Vec::with_capacity(snapshot.entries.len() * dimensions);
+            let mut live_ids: Vec<u64> = Vec::with_capacity(snapshot.entries.len());
             for (doc_id, vector) in &snapshot.entries {
                 live_vecs.extend_from_slice(vector);
                 live_ids.push(*doc_id);
