@@ -154,6 +154,7 @@ impl SearchHandle {
                     1.0
                 };
 
+                let mut fl_cursor: usize = 0;
                 while let Some(entry) = reader.next_ref() {
                     if is_deleted(entry.doc_id, deletes, compacted_deletes) {
                         continue;
@@ -174,7 +175,8 @@ impl SearchHandle {
                         continue;
                     }
 
-                    let field_length = version.field_length(entry.doc_id).unwrap_or(0) as f32;
+                    let field_length =
+                        version.field_length_galloping(entry.doc_id, &mut fl_cursor).unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,
@@ -296,6 +298,7 @@ impl SearchHandle {
                     1.0
                 };
 
+                let mut fl_cursor: usize = 0;
                 while let Some(entry) = reader.next_ref() {
                     if is_deleted(entry.doc_id, deletes, compacted_deletes) {
                         continue;
@@ -329,7 +332,8 @@ impl SearchHandle {
                         }
                     }
 
-                    let field_length = version.field_length(entry.doc_id).unwrap_or(0) as f32;
+                    let field_length =
+                        version.field_length_galloping(entry.doc_id, &mut fl_cursor).unwrap_or(0) as f32;
 
                     let ntf = bm25f_normalized_tf(
                         tf as f32,

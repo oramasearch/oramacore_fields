@@ -180,6 +180,87 @@ impl CompactedVersion {
         None
     }
 
+    /// Look up the field length for a doc_id using galloping (exponential) search
+    /// starting from `*cursor`. Both the posting entries and doc_lengths are sorted
+    /// by doc_id, so consecutive calls with increasing doc_ids can skip already-scanned
+    /// entries. After the call, `*cursor` is advanced to the found (or next) position.
+    ///
+    /// Complexity: O(log gap) per call where gap is the distance between consecutive
+    /// doc_ids, vs O(log N) for a full binary search.
+    #[inline]
+    pub fn field_length_galloping(&self, doc_id: u64, cursor: &mut usize) -> Option<u32> {
+        let mmap = self.doc_lengths_mmap.as_ref()?;
+        let data = mmap.as_ref();
+        let entry_size = 12; // u64 + u32
+        let count = data.len() / entry_size;
+
+        if count == 0 {
+            return None;
+        }
+
+        let mut lo = *cursor;
+        if lo >= count {
+            lo = 0;
+        }
+
+        // Quick check at cursor position
+        let lo_byte = lo * entry_size;
+        let lo_doc = u64::from_ne_bytes(data[lo_byte..lo_byte + 8].try_into().ok()?);
+        if lo_doc == doc_id {
+            let field_len =
+                u32::from_ne_bytes(data[lo_byte + 8..lo_byte + 12].try_into().ok()?);
+            *cursor = lo;
+            return Some(field_len);
+        }
+        if lo_doc > doc_id {
+            // Cursor is past the target — reset to beginning
+            lo = 0;
+        }
+
+        // Galloping: jump forward by doubling steps until we overshoot
+        let mut jump = 1usize;
+        let mut hi = lo + jump;
+        while hi < count {
+            let byte_off = hi * entry_size;
+            let hi_doc = u64::from_ne_bytes(data[byte_off..byte_off + 8].try_into().ok()?);
+            if hi_doc == doc_id {
+                let field_len =
+                    u32::from_ne_bytes(data[byte_off + 8..byte_off + 12].try_into().ok()?);
+                *cursor = hi;
+                return Some(field_len);
+            }
+            if hi_doc > doc_id {
+                break;
+            }
+            lo = hi;
+            jump *= 2;
+            hi = lo + jump;
+        }
+        if hi > count {
+            hi = count;
+        }
+
+        // Binary search within the narrowed range [lo, hi)
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let byte_off = mid * entry_size;
+            let mid_doc = u64::from_ne_bytes(data[byte_off..byte_off + 8].try_into().ok()?);
+            match mid_doc.cmp(&doc_id) {
+                std::cmp::Ordering::Equal => {
+                    let field_len =
+                        u32::from_ne_bytes(data[byte_off + 8..byte_off + 12].try_into().ok()?);
+                    *cursor = mid;
+                    return Some(field_len);
+                }
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+            }
+        }
+
+        *cursor = lo;
+        None
+    }
+
     /// Return the deleted doc_ids as a sorted slice.
     pub fn deletes_slice(&self) -> &[u64] {
         match self.deleted_mmap.as_ref() {
