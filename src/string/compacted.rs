@@ -148,38 +148,6 @@ impl CompactedVersion {
         })
     }
 
-    /// Look up the field length for a doc_id using binary search on doc_lengths_mmap.
-    pub fn field_length(&self, doc_id: u64) -> Option<u32> {
-        let mmap = self.doc_lengths_mmap.as_ref()?;
-        let data = mmap.as_ref();
-        let entry_size = 12; // u64 + u32
-        let count = data.len() / entry_size;
-
-        if count == 0 {
-            return None;
-        }
-
-        // Binary search
-        let mut lo = 0usize;
-        let mut hi = count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let offset = mid * entry_size;
-            let mid_doc_id = u64::from_ne_bytes(data[offset..offset + 8].try_into().ok()?);
-            match mid_doc_id.cmp(&doc_id) {
-                std::cmp::Ordering::Equal => {
-                    let field_len =
-                        u32::from_ne_bytes(data[offset + 8..offset + 12].try_into().ok()?);
-                    return Some(field_len);
-                }
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-            }
-        }
-
-        None
-    }
-
     /// Look up the field length for a doc_id using galloping (exponential) search
     /// starting from `*cursor`. Both the posting entries and doc_lengths are sorted
     /// by doc_id, so consecutive calls with increasing doc_ids can skip already-scanned
@@ -1061,10 +1029,11 @@ mod tests {
         assert!(reader.next().is_none());
 
         // Check doc_lengths
-        assert_eq!(version.field_length(1), Some(5));
-        assert_eq!(version.field_length(2), Some(10));
-        assert_eq!(version.field_length(3), Some(3));
-        assert_eq!(version.field_length(999), None);
+        let mut cursor = 0;
+        assert_eq!(version.field_length_galloping(1, &mut cursor), Some(5));
+        assert_eq!(version.field_length_galloping(2, &mut cursor), Some(10));
+        assert_eq!(version.field_length_galloping(3, &mut cursor), Some(3));
+        assert_eq!(version.field_length_galloping(999, &mut cursor), None);
 
         // Check global info
         assert_eq!(version.total_documents, 3);
@@ -1088,36 +1057,6 @@ mod tests {
 
         let version = CompactedVersion::load(base_path, 1).unwrap();
         assert_eq!(version.deletes_slice(), &[10, 20]);
-    }
-
-    #[test]
-    fn test_field_length_binary_search() {
-        let tmp = TempDir::new().unwrap();
-        let base_path = tmp.path();
-        let version_path = ensure_version_dir(base_path, 1).unwrap();
-
-        build_simple(
-            &[(
-                "a",
-                vec![
-                    (1, vec![0], vec![]),
-                    (5, vec![0], vec![]),
-                    (10, vec![0], vec![]),
-                    (100, vec![0], vec![]),
-                ],
-            )],
-            &[(1, 3), (5, 7), (10, 15), (100, 20)],
-            &[],
-            &version_path,
-        );
-
-        let version = CompactedVersion::load(base_path, 1).unwrap();
-        assert_eq!(version.field_length(1), Some(3));
-        assert_eq!(version.field_length(5), Some(7));
-        assert_eq!(version.field_length(10), Some(15));
-        assert_eq!(version.field_length(100), Some(20));
-        assert_eq!(version.field_length(2), None);
-        assert_eq!(version.field_length(50), None);
     }
 
     #[test]
@@ -1250,7 +1189,8 @@ mod tests {
         assert_eq!(entries[2].doc_id, 3);
 
         assert_eq!(v2.total_documents, 3);
-        assert_eq!(v2.field_length(2), Some(4));
+        let mut cursor = 0;
+        assert_eq!(v2.field_length_galloping(2, &mut cursor), Some(4));
     }
 
     #[test]
