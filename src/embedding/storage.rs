@@ -785,11 +785,11 @@ fn incremental_insert_segment(
         old_params.write_to_file(&seg_dir.join("quantization.bin"))?;
     } else {
         // EXTEND PATH: widen params, re-quantize everything
-        let extended_params = QuantizationParams {
-            mins: element_wise_min(&old_params.mins, &new_mins),
-            maxs: element_wise_max(&old_params.maxs, &new_maxs),
+        let extended_params = QuantizationParams::new(
+            element_wise_min(&old_params.mins, &new_mins),
+            element_wise_max(&old_params.maxs, &new_maxs),
             dimensions,
-        };
+        );
         let quantized = extended_params.quantize_all(&all_raw, dimensions);
         write_quantized_vectors(&seg_dir.join("vectors.quantized"), &quantized)?;
         extended_params.write_to_file(&seg_dir.join("quantization.bin"))?;

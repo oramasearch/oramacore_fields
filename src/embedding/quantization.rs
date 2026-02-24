@@ -5,10 +5,39 @@ use std::path::Path;
 pub struct QuantizationParams {
     pub mins: Vec<f32>,
     pub maxs: Vec<f32>,
+    scales: Vec<f32>,
+    offsets: Vec<f32>,
     pub dimensions: usize,
 }
 
 impl QuantizationParams {
+    /// Create quantization params from pre-computed mins/maxs, deriving scales and offsets.
+    pub fn new(mins: Vec<f32>, maxs: Vec<f32>, dimensions: usize) -> Self {
+        let (scales, offsets) = Self::compute_scales_offsets(&mins, &maxs, dimensions);
+        Self {
+            mins,
+            maxs,
+            scales,
+            offsets,
+            dimensions,
+        }
+    }
+
+    fn compute_scales_offsets(
+        mins: &[f32],
+        maxs: &[f32],
+        dimensions: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut scales = Vec::with_capacity(dimensions);
+        let mut offsets = Vec::with_capacity(dimensions);
+        for d in 0..dimensions {
+            let scale = 254.0 / (maxs[d] - mins[d]);
+            scales.push(scale);
+            offsets.push(-mins[d] * scale - 127.0);
+        }
+        (scales, offsets)
+    }
+
     /// Calibrate quantization parameters from a flat buffer of vectors.
     pub fn calibrate(vectors: &[f32], dimensions: usize) -> Self {
         let num_vectors = vectors.len() / dimensions;
@@ -35,11 +64,7 @@ impl QuantizationParams {
             }
         }
 
-        Self {
-            mins,
-            maxs,
-            dimensions,
-        }
+        Self::new(mins, maxs, dimensions)
     }
 
     /// Quantize a single vector into the output buffer.
@@ -47,9 +72,7 @@ impl QuantizationParams {
         debug_assert_eq!(vector.len(), self.dimensions);
         debug_assert_eq!(output.len(), self.dimensions);
         for d in 0..self.dimensions {
-            let range = self.maxs[d] - self.mins[d];
-            let normalized = (vector[d] - self.mins[d]) / range;
-            let scaled = (normalized * 254.0) - 127.0;
+            let scaled = vector[d] * self.scales[d] + self.offsets[d];
             output[d] = scaled.round().clamp(-127.0, 127.0) as i8;
         }
     }
@@ -102,11 +125,7 @@ impl QuantizationParams {
             *max = f32::from_ne_bytes(buf4);
         }
 
-        Ok(Self {
-            mins,
-            maxs,
-            dimensions,
-        })
+        Ok(Self::new(mins, maxs, dimensions))
     }
 }
 
