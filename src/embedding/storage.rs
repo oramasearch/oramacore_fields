@@ -2,7 +2,7 @@ use crate::embedding::IndexedValue;
 
 use super::config::{EmbeddingConfig, SegmentConfig};
 use super::config::DistanceMetric;
-use super::distance::{resolve_distance_fn, Distance, DistanceFn};
+use super::distance::{cosine_distance_prenorm, resolve_distance_fn, Distance, DistanceFn};
 use super::error::Error;
 use super::hnsw::HnswBuilder;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
@@ -113,12 +113,20 @@ impl EmbeddingStorage {
         }
 
         match self.config.metric {
-            DistanceMetric::L2 => self.search_inner::<super::distance::L2>(query, k, ef_search),
+            DistanceMetric::L2 => {
+                self.search_inner::<super::distance::L2>(query, k, ef_search, self.distance_fn)
+            }
             DistanceMetric::DotProduct => {
-                self.search_inner::<super::distance::DotProduct>(query, k, ef_search)
+                self.search_inner::<super::distance::DotProduct>(query, k, ef_search, self.distance_fn)
             }
             DistanceMetric::Cosine => {
-                self.search_inner::<super::distance::Cosine>(query, k, ef_search)
+                let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm == 0.0 {
+                    self.search_inner::<super::distance::Cosine>(query, k, ef_search, self.distance_fn)
+                } else {
+                    let normalized: Vec<f32> = query.iter().map(|x| x / norm).collect();
+                    self.search_inner::<super::distance::CosineNorm>(&normalized, k, ef_search, cosine_distance_prenorm)
+                }
             }
         }
     }
@@ -128,6 +136,7 @@ impl EmbeddingStorage {
         query: &[f32],
         k: usize,
         ef_search: Option<usize>,
+        distance_fn: DistanceFn,
     ) -> Result<Vec<(u64, f32)>, Error> {
         let snapshot = self.fresh_snapshot();
         let segment_list = self.segments.load();
@@ -165,7 +174,7 @@ impl EmbeddingStorage {
         }
 
         // Search live layer (brute force)
-        let live_results = snapshot.search(query, k, self.distance_fn, &snapshot.deletes);
+        let live_results = snapshot.search(query, k, distance_fn, &snapshot.deletes);
         all_results.extend(live_results);
 
         // Merge: sort by distance, deduplicate by doc_id, take top-k

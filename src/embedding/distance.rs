@@ -73,6 +73,35 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Cosine distance where `a` is already a unit vector (||a|| = 1).
+/// Skips computing norm_a, saving `dim` multiply-accumulate operations per call.
+#[inline]
+pub fn cosine_distance_prenorm(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut dot = 0.0f32;
+    let mut norm_b = 0.0f32;
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            dot += ca[i] * cb[i];
+            norm_b += cb[i] * cb[i];
+        }
+    }
+    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
+        dot += x * y;
+        norm_b += y * y;
+    }
+    let denom = norm_b.sqrt();
+    if denom == 0.0 {
+        1.0
+    } else {
+        1.0 - dot / denom
+    }
+}
+
 #[inline]
 pub fn l2_distance_i8(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len());
@@ -198,6 +227,22 @@ impl Distance for Cosine {
     #[inline(always)]
     fn distance(a: &[f32], b: &[f32]) -> f32 {
         cosine_distance(a, b)
+    }
+    #[inline(always)]
+    fn quantized_distance(a: &[i8], b: &[i8]) -> i32 {
+        cosine_distance_i8(a, b)
+    }
+}
+
+/// Cosine distance with pre-normalized query vector.
+/// Uses `cosine_distance_prenorm` for f32 (skips query norm computation).
+/// Quantized path still uses full `cosine_distance_i8` since quantization
+/// changes norms and the quantized search is approximate anyway.
+pub struct CosineNorm;
+impl Distance for CosineNorm {
+    #[inline(always)]
+    fn distance(a: &[f32], b: &[f32]) -> f32 {
+        cosine_distance_prenorm(a, b)
     }
     #[inline(always)]
     fn quantized_distance(a: &[i8], b: &[i8]) -> i32 {
