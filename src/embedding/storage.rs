@@ -758,6 +758,9 @@ fn incremental_insert_segment(
     let (new_mins, new_maxs) = compute_min_max(&new_raw, dimensions);
     let params_fit = range_contains(old_params, &new_mins, &new_maxs);
 
+    // All raw vectors (old + new) — allocated once and reused for both quantization and HNSW
+    let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
+
     if params_fit {
         // FAST PATH: quantize only new vectors with existing params, append
         let old_quantized = old_segment.quantized_vectors_slice();
@@ -775,7 +778,6 @@ fn incremental_insert_segment(
             maxs: element_wise_max(&old_params.maxs, &new_maxs),
             dimensions,
         };
-        let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
         let quantized = extended_params.quantize_all(&all_raw, dimensions);
         write_quantized_vectors(&seg_dir.join("vectors.quantized"), &quantized)?;
         extended_params.write_to_file(&seg_dir.join("quantization.bin"))?;
@@ -790,8 +792,6 @@ fn incremental_insert_segment(
         old_segment.config.node_block_size,
     )?;
 
-    // All raw vectors (old + new) needed for distance calculations
-    let all_raw: Vec<f32> = old_raw.iter().chain(new_raw.iter()).copied().collect();
     builder.insert_nodes(old_num_nodes, &new_levels, &all_raw, dimensions)?;
 
     builder.write_graph(&seg_dir.join("hnsw.graph"))?;
