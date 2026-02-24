@@ -60,10 +60,11 @@ impl Segment {
             .map_err(|e| Error::CorruptedFile(format!("failed to read hnsw.meta: {e}")))?;
         let config = parse_meta(&contents)?;
 
-        let raw_vectors = load_mmap(&seg_dir.join("vectors.raw"))?
+        let raw_vectors = load_mmap_with_advice(&seg_dir.join("vectors.raw"), advise_random)?
             .ok_or_else(|| Error::CorruptedFile("missing vectors.raw".into()))?;
-        let quantized_vectors = load_mmap(&seg_dir.join("vectors.quantized"))?
-            .ok_or_else(|| Error::CorruptedFile("missing vectors.quantized".into()))?;
+        let quantized_vectors =
+            load_mmap_with_advice(&seg_dir.join("vectors.quantized"), advise_random)?
+                .ok_or_else(|| Error::CorruptedFile("missing vectors.quantized".into()))?;
         let graph = load_mmap_with_advice(&seg_dir.join("hnsw.graph"), advise_random)?
             .ok_or_else(|| Error::CorruptedFile("missing hnsw.graph".into()))?;
         let doc_ids = load_mmap(&seg_dir.join("doc_ids.bin"))?
