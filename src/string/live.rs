@@ -112,9 +112,9 @@ impl LiveLayer {
             postings.sort_unstable_by_key(|(doc_id, _, _)| *doc_id);
         }
 
-        let mut deletes_sorted: Vec<u64> =
+        let mut deletes: Vec<u64> =
             self.replay_delete_set.iter().copied().collect();
-        deletes_sorted.sort_unstable();
+        deletes.sort_unstable();
 
         let total_documents = self.replay_doc_terms.len() as u64;
 
@@ -126,8 +126,7 @@ impl LiveLayer {
         self.cached_snapshot = Arc::new(LiveSnapshot {
             term_postings,
             doc_lengths,
-            deletes: Arc::new(self.replay_delete_set.clone()),
-            deletes_sorted,
+            deletes,
             total_field_length,
             total_documents,
             compacted_deletes_count: self.replay_compacted_deletes_count,
@@ -169,10 +168,8 @@ pub struct LiveSnapshot {
     pub term_postings: HashMap<String, Vec<PostingTuple>>,
     /// Per-doc field length.
     pub doc_lengths: HashMap<u64, u16>,
-    /// Set of deleted doc_ids.
-    pub deletes: Arc<HashSet<u64>>,
     /// Deleted doc_ids in sorted order.
-    pub deletes_sorted: Vec<u64>,
+    pub deletes: Vec<u64>,
     /// Sum of all field lengths of live documents.
     pub total_field_length: u64,
     /// Number of unique live documents.
@@ -191,8 +188,7 @@ impl LiveSnapshot {
         Self {
             term_postings: HashMap::new(),
             doc_lengths: HashMap::new(),
-            deletes: Arc::new(HashSet::new()),
-            deletes_sorted: Vec::new(),
+            deletes: Vec::new(),
             total_field_length: 0,
             total_documents: 0,
             compacted_deletes_count: 0,
@@ -349,7 +345,7 @@ mod tests {
 
         assert_eq!(snapshot.total_documents, 1);
         assert_eq!(snapshot.total_field_length, 2);
-        assert_eq!(snapshot.deletes_sorted, vec![1]);
+        assert_eq!(snapshot.deletes, vec![1]);
 
         let mut hello = Vec::new();
         snapshot.for_each_term_match("hello", Some(0), |_, postings| {

@@ -540,10 +540,10 @@ fn token_bit(token_idx: usize) -> u32 {
 #[inline]
 fn is_deleted(
     doc_id: u64,
-    live_deletes: &std::collections::HashSet<u64>,
+    live_deletes: &[u64],
     compacted_deletes: &[u64],
 ) -> bool {
-    live_deletes.contains(&doc_id) || compacted_deletes.binary_search(&doc_id).is_ok()
+    live_deletes.binary_search(&doc_id).is_ok() || compacted_deletes.binary_search(&doc_id).is_ok()
 }
 
 #[cfg(test)]

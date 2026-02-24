@@ -187,9 +187,9 @@ impl StringStorage {
         current: &Arc<CompactedVersion>,
         new_version_dir: &std::path::Path,
     ) -> Result<()> {
-        let deleted_set: std::collections::HashSet<u64> = sorted_merge(
+        let deleted_set: Vec<u64> = sorted_merge(
             current.deletes_slice().iter().copied(),
-            snapshot.deletes_sorted.iter().copied(),
+            snapshot.deletes.iter().copied(),
         )
         .collect();
 
@@ -226,11 +226,9 @@ impl StringStorage {
 
         let deletes_merged: Vec<u64> = sorted_merge(
             current.deletes_slice().iter().copied(),
-            snapshot.deletes_sorted.iter().copied(),
+            snapshot.deletes.iter().copied(),
         )
         .collect();
-
-        let deleted_set: std::collections::HashSet<u64> = deletes_merged.iter().copied().collect();
 
         CompactedVersion::build_from_sorted_sources(
             &mut compacted_terms,
@@ -238,7 +236,7 @@ impl StringStorage {
             &mut compacted_dl,
             &live_dl,
             None,
-            Some(&deleted_set),
+            Some(&deletes_merged),
             &deletes_merged,
             new_version_dir,
         )?;

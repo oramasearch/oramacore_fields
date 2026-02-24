@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use fst::automaton::{Levenshtein, Str};
 use fst::{Automaton, IntoStreamer, Map, Streamer};
 use memmap2::Mmap;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -402,8 +401,8 @@ impl CompactedVersion {
         live_terms: &[(&str, &[(u64, P, P)])],
         compacted_doc_lengths: &mut DocLengthIterator<'_>,
         live_doc_lengths: &[(u64, u16)],
-        deleted_set: Option<&HashSet<u64>>,
-        count_exclude_set: Option<&HashSet<u64>>,
+        deleted_set: Option<&[u64]>,
+        count_exclude_set: Option<&[u64]>,
         deletes_to_write: &[u64],
         path: &Path,
     ) -> Result<()> {
@@ -448,7 +447,7 @@ impl CompactedVersion {
                     entries_buf.clear();
                     let mut count: u32 = 0;
                     while let Some(entry) = reader.next_ref() {
-                        if deleted_set.is_none_or(|s| !s.contains(&entry.doc_id)) {
+                        if deleted_set.is_none_or(|s| s.binary_search(&entry.doc_id).is_err()) {
                             write_entry_to_buf(
                                 &mut entries_buf,
                                 entry.doc_id,
@@ -476,7 +475,7 @@ impl CompactedVersion {
                     entries_buf.clear();
                     let mut count: u32 = 0;
                     for &(doc_id, ref exact, ref stemmed) in live_postings {
-                        if deleted_set.is_none_or(|s| !s.contains(&doc_id)) {
+                        if deleted_set.is_none_or(|s| s.binary_search(&doc_id).is_err()) {
                             write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
                             count += 1;
                         }
@@ -500,7 +499,7 @@ impl CompactedVersion {
                             entries_buf.clear();
                             let mut count: u32 = 0;
                             while let Some(entry) = reader.next_ref() {
-                                if deleted_set.is_none_or(|s| !s.contains(&entry.doc_id)) {
+                                if deleted_set.is_none_or(|s| s.binary_search(&entry.doc_id).is_err()) {
                                     write_entry_to_buf(
                                         &mut entries_buf,
                                         entry.doc_id,
@@ -531,7 +530,7 @@ impl CompactedVersion {
                             entries_buf.clear();
                             let mut count: u32 = 0;
                             for &(doc_id, ref exact, ref stemmed) in live_postings {
-                                if deleted_set.is_none_or(|s| !s.contains(&doc_id)) {
+                                if deleted_set.is_none_or(|s| s.binary_search(&doc_id).is_err()) {
                                     write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
                                     count += 1;
                                 }
@@ -568,7 +567,7 @@ impl CompactedVersion {
                                 match (&compacted_next, live_peek_entry) {
                                     (None, None) => break,
                                     (Some(c), None) => {
-                                        if deleted_set.is_none_or(|s| !s.contains(&c.doc_id)) {
+                                        if deleted_set.is_none_or(|s| s.binary_search(&c.doc_id).is_err()) {
                                             write_entry_to_buf(
                                                 &mut entries_buf,
                                                 c.doc_id,
@@ -580,7 +579,7 @@ impl CompactedVersion {
                                         compacted_next = reader.next_ref();
                                     }
                                     (None, Some(l)) => {
-                                        if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
+                                        if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
                                             write_entry_to_buf(&mut entries_buf, l.0, &l.1, &l.2);
                                             count += 1;
                                         }
@@ -588,7 +587,7 @@ impl CompactedVersion {
                                     }
                                     (Some(c), Some(l)) => match c.doc_id.cmp(&l.0) {
                                         std::cmp::Ordering::Less => {
-                                            if deleted_set.is_none_or(|s| !s.contains(&c.doc_id)) {
+                                            if deleted_set.is_none_or(|s| s.binary_search(&c.doc_id).is_err()) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     c.doc_id,
@@ -600,7 +599,7 @@ impl CompactedVersion {
                                             compacted_next = reader.next_ref();
                                         }
                                         std::cmp::Ordering::Greater => {
-                                            if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
+                                            if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -613,7 +612,7 @@ impl CompactedVersion {
                                         }
                                         std::cmp::Ordering::Equal => {
                                             // Live wins
-                                            if deleted_set.is_none_or(|s| !s.contains(&l.0)) {
+                                            if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -852,8 +851,8 @@ fn merge_and_write_doc_lengths(
     path: &Path,
     compacted: &mut DocLengthIterator<'_>,
     live: &[(u64, u16)],
-    deleted_set: Option<&HashSet<u64>>,
-    count_exclude_set: Option<&HashSet<u64>>,
+    deleted_set: Option<&[u64]>,
+    count_exclude_set: Option<&[u64]>,
 ) -> Result<(u64, u64)> {
     let file = File::create(path)
         .with_context(|| format!("Failed to create doc_lengths file: {path:?}"))?;
@@ -874,22 +873,22 @@ fn merge_and_write_doc_lengths(
         match (compacted_next, live_peek) {
             (None, None) => break,
             (Some((c_id, c_len)), None) => {
-                if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
+                if deleted_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
                     writer.write_all(&c_id.to_ne_bytes())?;
                     writer.write_all(&c_len.to_ne_bytes())?;
                 }
-                if count_exclude_set.is_none_or(|s| !s.contains(&c_id)) {
+                if count_exclude_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
                     total_doc_length += c_len as u64;
                     total_documents += 1;
                 }
                 compacted_next = compacted.next();
             }
             (None, Some((l_id, l_len))) => {
-                if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
+                if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                     writer.write_all(&l_id.to_ne_bytes())?;
                     writer.write_all(&l_len.to_ne_bytes())?;
                 }
-                if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
+                if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                     total_doc_length += l_len as u64;
                     total_documents += 1;
                 }
@@ -897,22 +896,22 @@ fn merge_and_write_doc_lengths(
             }
             (Some((c_id, c_len)), Some((l_id, l_len))) => match c_id.cmp(&l_id) {
                 std::cmp::Ordering::Less => {
-                    if deleted_set.is_none_or(|s| !s.contains(&c_id)) {
+                    if deleted_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
                         writer.write_all(&c_id.to_ne_bytes())?;
                         writer.write_all(&c_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| !s.contains(&c_id)) {
+                    if count_exclude_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
                         total_doc_length += c_len as u64;
                         total_documents += 1;
                     }
                     compacted_next = compacted.next();
                 }
                 std::cmp::Ordering::Greater => {
-                    if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
+                    if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
+                    if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
@@ -920,11 +919,11 @@ fn merge_and_write_doc_lengths(
                 }
                 std::cmp::Ordering::Equal => {
                     // Live wins
-                    if deleted_set.is_none_or(|s| !s.contains(&l_id)) {
+                    if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| !s.contains(&l_id)) {
+                    if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
