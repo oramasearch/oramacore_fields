@@ -386,7 +386,7 @@ pub mod f32_ops {
         #[allow(unused_imports)]
         use std::arch::x86_64::*;
 
-        #[inline(always)]
+        #[inline]
         #[target_feature(enable = "avx2")]
         unsafe fn hsum_f32x8(v: __m256) -> f32 {
             let v128 = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
@@ -906,7 +906,7 @@ pub mod i8_ops {
         #[allow(unused_imports)]
         use std::arch::x86_64::*;
 
-        #[inline(always)]
+        #[inline]
         #[target_feature(enable = "avx2")]
         unsafe fn hsum_i32x8(v: __m256i) -> i32 {
             let v128 = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
