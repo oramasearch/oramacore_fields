@@ -2173,31 +2173,26 @@ fn test_compaction_verification_under_load() {
     const NUM_BATCHES: u64 = 10;
 
     let stop = Arc::new(AtomicBool::new(false));
+    let shared_max_seen = Arc::new(AtomicU64::new(0));
 
     // Reader thread that continuously verifies data
     let idx_reader = Arc::clone(&index);
     let s_reader = Arc::clone(&stop);
+    let sms = Arc::clone(&shared_max_seen);
     let reader_handle = thread::spawn(move || {
-        let mut max_seen = 0u64;
         while !s_reader.load(Ordering::Relaxed) {
             let results: Vec<u64> = idx_reader.filter(true).iter().collect();
 
-            // Track maximum count seen
             let count = results.len() as u64;
-            if count > max_seen {
-                max_seen = count;
-            }
+            sms.fetch_max(count, Ordering::Release);
 
-            // Verify we never see less than before (monotonic growth)
-            // Note: This is not strictly required but helps detect issues
+            // Verify sorted
             if !results.is_empty() {
-                // Verify sorted
                 for i in 1..results.len() {
                     assert!(results[i] > results[i - 1], "Results not sorted");
                 }
             }
         }
-        max_seen
     });
 
     // Writer that adds batches and compacts
@@ -2209,13 +2204,24 @@ fn test_compaction_verification_under_load() {
         index.compact(batch + 1).unwrap();
     }
 
+    // Retry: wait for the reader to observe nearly all items before stopping.
+    let threshold = BATCH_SIZE * NUM_BATCHES - BATCH_SIZE;
+    let mut max_seen = shared_max_seen.load(Ordering::Acquire);
+    for _ in 0..100 {
+        if max_seen >= threshold {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+        max_seen = shared_max_seen.load(Ordering::Acquire);
+    }
+
     stop.store(true, Ordering::Relaxed);
-    let max_seen = reader_handle.join().unwrap();
+    reader_handle.join().unwrap();
 
     // Reader should have eventually seen all items
     assert!(
-        max_seen >= BATCH_SIZE * NUM_BATCHES - BATCH_SIZE,
-        "Reader didn't see enough items: max was {max_seen}"
+        max_seen >= threshold,
+        "Reader didn't see enough items: max was {max_seen}, expected at least {threshold}"
     );
 
     // Final verification
