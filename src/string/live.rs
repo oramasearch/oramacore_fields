@@ -26,6 +26,11 @@ pub struct LiveLayer {
     /// Cached snapshot of the current state.
     cached_snapshot: Arc<LiveSnapshot>,
     snapshot_dirty: bool,
+    // Incremental refresh state: maintained across refreshes, reset on compaction drain.
+    replay_doc_terms: HashMap<u64, (u16, HashMap<String, TermData>)>,
+    replay_delete_set: HashSet<u64>,
+    replay_compacted_deletes_count: u64,
+    replay_applied_ops: usize,
 }
 
 impl Default for LiveLayer {
@@ -34,6 +39,10 @@ impl Default for LiveLayer {
             ops: Vec::new(),
             cached_snapshot: Arc::new(LiveSnapshot::empty()),
             snapshot_dirty: false,
+            replay_doc_terms: HashMap::new(),
+            replay_delete_set: HashSet::new(),
+            replay_compacted_deletes_count: 0,
+            replay_applied_ops: 0,
         }
     }
 }
@@ -52,39 +61,37 @@ impl LiveLayer {
     }
 
     /// Rebuild the cached snapshot from the current operations log.
+    /// Uses incremental replay: only processes ops added since the last refresh.
     pub fn refresh_snapshot(&mut self) {
-        // Replay ops to build current state
-        // Per doc: latest field_length, per-term positions
-        let mut doc_terms: HashMap<u64, (u16, HashMap<String, TermData>)> = HashMap::new();
-        let mut delete_set: HashSet<u64> = HashSet::new();
-        let mut compacted_deletes_count: u64 = 0;
-
-        for op in &self.ops {
+        // Phase 1: Incrementally process only new operations into replay state
+        for op in &self.ops[self.replay_applied_ops..] {
             match op {
                 LiveOp::Insert {
                     doc_id,
                     field_length,
                     terms,
                 } => {
-                    delete_set.remove(doc_id);
-                    doc_terms.insert(*doc_id, (*field_length, terms.clone()));
+                    self.replay_delete_set.remove(doc_id);
+                    self.replay_doc_terms
+                        .insert(*doc_id, (*field_length, terms.clone()));
                 }
                 LiveOp::Delete(doc_id) => {
-                    let was_live = doc_terms.remove(doc_id).is_some();
-                    delete_set.insert(*doc_id);
+                    let was_live = self.replay_doc_terms.remove(doc_id).is_some();
+                    self.replay_delete_set.insert(*doc_id);
                     if !was_live {
-                        compacted_deletes_count += 1;
+                        self.replay_compacted_deletes_count += 1;
                     }
                 }
             }
         }
+        self.replay_applied_ops = self.ops.len();
 
-        // Build per-term postings sorted by doc_id
+        // Phase 2: Build per-term postings sorted by doc_id
         let mut term_postings: HashMap<String, Vec<PostingTuple>> = HashMap::new();
         let mut doc_lengths: HashMap<u64, u16> = HashMap::new();
         let mut total_field_length: u64 = 0;
 
-        for (doc_id, (field_length, terms)) in &doc_terms {
+        for (doc_id, (field_length, terms)) in &self.replay_doc_terms {
             doc_lengths.insert(*doc_id, *field_length);
             total_field_length += *field_length as u64;
 
@@ -102,10 +109,11 @@ impl LiveLayer {
             postings.sort_unstable_by_key(|(doc_id, _, _)| *doc_id);
         }
 
-        let mut deletes_sorted: Vec<u64> = delete_set.iter().copied().collect();
+        let mut deletes_sorted: Vec<u64> =
+            self.replay_delete_set.iter().copied().collect();
         deletes_sorted.sort_unstable();
 
-        let total_documents = doc_terms.len() as u64;
+        let total_documents = self.replay_doc_terms.len() as u64;
 
         let mut term_tree = RadixTree::new();
         for key in term_postings.keys() {
@@ -115,15 +123,26 @@ impl LiveLayer {
         self.cached_snapshot = Arc::new(LiveSnapshot {
             term_postings,
             doc_lengths,
-            deletes: Arc::new(delete_set),
+            deletes: Arc::new(self.replay_delete_set.clone()),
             deletes_sorted,
             total_field_length,
             total_documents,
-            compacted_deletes_count,
+            compacted_deletes_count: self.replay_compacted_deletes_count,
             ops_len: self.ops.len(),
             term_tree,
         });
         self.snapshot_dirty = false;
+    }
+
+    /// Drain ops that have been compacted to disk and reset incremental state.
+    /// Must be followed by `refresh_snapshot()` to rebuild from remaining ops.
+    pub fn drain_compacted_ops(&mut self, count: usize) {
+        self.ops.drain(..count);
+        self.replay_doc_terms.clear();
+        self.replay_delete_set.clear();
+        self.replay_compacted_deletes_count = 0;
+        self.replay_applied_ops = 0;
+        self.snapshot_dirty = true;
     }
 
     pub fn insert(&mut self, doc_id: u64, value: IndexedValue) {

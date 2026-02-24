@@ -149,7 +149,7 @@ impl StringStorage {
             let new_version = CompactedVersion::load(&self.base_path, version_number)?;
             self.version.store(Arc::new(new_version));
 
-            live.ops.drain(..snapshot.ops_len);
+            live.drain_compacted_ops(snapshot.ops_len);
             live.refresh_snapshot();
         }
 
