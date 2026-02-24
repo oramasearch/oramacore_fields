@@ -68,6 +68,16 @@ impl SearchResult {
     }
 }
 
+/// Accumulator for per-document normalized TF values.
+/// Uses a Vec when only one term matches (tolerance=0) to avoid HashMap overhead,
+/// and a HashMap when multiple terms can match (fuzzy/prefix) to aggregate scores.
+enum PerDocNtf {
+    /// Single term match: each doc appears at most once, stored in a flat Vec.
+    SingleTerm(Vec<(u64, f32)>),
+    /// Multiple term matches: aggregate NTF in a HashMap.
+    MultiTerm(HashMap<u64, f32>),
+}
+
 /// Holds references to compacted + live data and executes searches.
 pub struct SearchHandle {
     version: Arc<CompactedVersion>,
@@ -138,11 +148,18 @@ impl SearchHandle {
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
-        let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
+        let mut per_doc_ntf = if params.tolerance == Some(0) {
+            PerDocNtf::SingleTerm(Vec::new())
+        } else {
+            PerDocNtf::MultiTerm(HashMap::new())
+        };
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
             let token_bit = token_bit(token_idx);
-            per_doc_ntf.clear();
+            match &mut per_doc_ntf {
+                PerDocNtf::SingleTerm(v) => v.clear(),
+                PerDocNtf::MultiTerm(m) => m.clear(),
+            }
             let mut corpus_df: u64 = 0;
 
             // Search compacted layer (zero-copy)
@@ -185,8 +202,11 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(entry.doc_id).or_insert(0.0) +=
-                        ntf * params.boost * exact_boost;
+                    let value = ntf * params.boost * exact_boost;
+                    match &mut per_doc_ntf {
+                        PerDocNtf::SingleTerm(v) => v.push((entry.doc_id, value)),
+                        PerDocNtf::MultiTerm(m) => *m.entry(entry.doc_id).or_insert(0.0) += value,
+                    }
                 }
             })?;
 
@@ -229,15 +249,29 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
+                    let value = ntf * params.boost * exact_boost;
+                    match &mut per_doc_ntf {
+                        PerDocNtf::SingleTerm(v) => v.push((*doc_id, value)),
+                        PerDocNtf::MultiTerm(m) => *m.entry(*doc_id).or_insert(0.0) += value,
+                    }
                 }
             });
 
             // Compute IDF for this token and feed directly into scorer
             let idf = calculate_idf(total_documents, corpus_df);
-            for (&doc_id, &aggregated_ntf) in per_doc_ntf.iter() {
-                let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
-                scorer.add(doc_id, score, token_bit);
+            match &per_doc_ntf {
+                PerDocNtf::SingleTerm(v) => {
+                    for &(doc_id, ntf) in v {
+                        let score = bm25f_score(ntf, params.bm25_params.k, idf);
+                        scorer.add(doc_id, score, token_bit);
+                    }
+                }
+                PerDocNtf::MultiTerm(m) => {
+                    for (&doc_id, &aggregated_ntf) in m {
+                        let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
+                        scorer.add(doc_id, score, token_bit);
+                    }
+                }
             }
         }
 
@@ -278,14 +312,21 @@ impl SearchHandle {
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
-        let mut per_doc_ntf: HashMap<u64, f32> = HashMap::new();
+        let mut per_doc_ntf = if params.tolerance == Some(0) {
+            PerDocNtf::SingleTerm(Vec::new())
+        } else {
+            PerDocNtf::MultiTerm(HashMap::new())
+        };
         let mut prev_raw: Vec<(u64, u32)> = Vec::new();
         let mut curr_raw: Vec<(u64, u32)> = Vec::new();
         let mut consecutive_counts: HashMap<u64, usize> = HashMap::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
             let token_bit = token_bit(token_idx);
-            per_doc_ntf.clear();
+            match &mut per_doc_ntf {
+                PerDocNtf::SingleTerm(v) => v.clear(),
+                PerDocNtf::MultiTerm(m) => m.clear(),
+            }
             curr_raw.clear();
             let mut corpus_df: u64 = 0;
 
@@ -342,8 +383,11 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(entry.doc_id).or_insert(0.0) +=
-                        ntf * params.boost * exact_boost;
+                    let value = ntf * params.boost * exact_boost;
+                    match &mut per_doc_ntf {
+                        PerDocNtf::SingleTerm(v) => v.push((entry.doc_id, value)),
+                        PerDocNtf::MultiTerm(m) => *m.entry(entry.doc_id).or_insert(0.0) += value,
+                    }
                 }
             })?;
 
@@ -399,7 +443,11 @@ impl SearchHandle {
                         params.bm25_params.b,
                     );
 
-                    *per_doc_ntf.entry(*doc_id).or_insert(0.0) += ntf * params.boost * exact_boost;
+                    let value = ntf * params.boost * exact_boost;
+                    match &mut per_doc_ntf {
+                        PerDocNtf::SingleTerm(v) => v.push((*doc_id, value)),
+                        PerDocNtf::MultiTerm(m) => *m.entry(*doc_id).or_insert(0.0) += value,
+                    }
                 }
             });
 
@@ -414,13 +462,25 @@ impl SearchHandle {
 
             // Compute IDF for this token and feed directly into scorer
             let idf = calculate_idf(total_documents, corpus_df);
-            for (&doc_id, &aggregated_ntf) in per_doc_ntf.iter() {
-                let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
-                scorer.add(doc_id, score, token_bit);
-            }
-
-            if token_idx == 0 {
-                consecutive_counts.reserve(per_doc_ntf.len());
+            match &per_doc_ntf {
+                PerDocNtf::SingleTerm(v) => {
+                    for &(doc_id, ntf) in v {
+                        let score = bm25f_score(ntf, params.bm25_params.k, idf);
+                        scorer.add(doc_id, score, token_bit);
+                    }
+                    if token_idx == 0 {
+                        consecutive_counts.reserve(v.len());
+                    }
+                }
+                PerDocNtf::MultiTerm(m) => {
+                    for (&doc_id, &aggregated_ntf) in m {
+                        let score = bm25f_score(aggregated_ntf, params.bm25_params.k, idf);
+                        scorer.add(doc_id, score, token_bit);
+                    }
+                    if token_idx == 0 {
+                        consecutive_counts.reserve(m.len());
+                    }
+                }
             }
         }
 
