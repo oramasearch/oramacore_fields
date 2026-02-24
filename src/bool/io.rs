@@ -39,7 +39,9 @@ pub fn copy_and_append_postings(
 
         // If we won't append (which would sync), sync the copy explicitly
         if new_values.is_empty() {
-            File::open(dst)
+            OpenOptions::new()
+                .write(true)
+                .open(dst)
                 .with_context(|| format!("Failed to open {dst:?} for sync"))?
                 .sync_all()
                 .with_context(|| format!("Failed to sync {dst:?}"))?;
