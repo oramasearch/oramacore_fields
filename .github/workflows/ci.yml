@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: CI
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,19 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Build docs
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Tests (default features)
         run: cargo test
       - name: Tests alloc
@@ -27,5 +40,3 @@ jobs:
         run: cargo test --features cli cli
       - name: Build examples
         run: cargo build --examples --all-features
-      - name: Build docs
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
