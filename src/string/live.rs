@@ -32,6 +32,9 @@ pub struct LiveLayer {
     replay_delete_set: HashSet<u64>,
     replay_compacted_deletes_count: u64,
     replay_applied_ops: usize,
+    // Incremental RadixTree state: terms affected by new ops since last tree sync.
+    replay_dirty_terms: Vec<String>,
+    replay_term_tree_arc: Arc<RadixTree<()>>,
 }
 
 impl Default for LiveLayer {
@@ -44,6 +47,8 @@ impl Default for LiveLayer {
             replay_delete_set: HashSet::new(),
             replay_compacted_deletes_count: 0,
             replay_applied_ops: 0,
+            replay_dirty_terms: Vec::new(),
+            replay_term_tree_arc: Arc::new(RadixTree::new()),
         }
     }
 }
@@ -73,11 +78,27 @@ impl LiveLayer {
                     terms,
                 } => {
                     self.replay_delete_set.remove(doc_id);
+                    // Track dirty terms: old terms (if replacing existing doc) and new terms
+                    if let Some((_fl, old_terms)) = self.replay_doc_terms.get(doc_id) {
+                        for term in old_terms.keys() {
+                            self.replay_dirty_terms.push(term.clone());
+                        }
+                    }
+                    for term in terms.keys() {
+                        self.replay_dirty_terms.push(term.clone());
+                    }
                     self.replay_doc_terms
                         .insert(*doc_id, (*field_length, terms.clone()));
                 }
                 LiveOp::Delete(doc_id) => {
-                    let was_live = self.replay_doc_terms.remove(doc_id).is_some();
+                    let removed = self.replay_doc_terms.remove(doc_id);
+                    let was_live = removed.is_some();
+                    // Track dirty terms from the deleted doc
+                    if let Some((_fl, old_terms)) = removed {
+                        for term in old_terms.keys() {
+                            self.replay_dirty_terms.push(term.clone());
+                        }
+                    }
                     self.replay_delete_set.insert(*doc_id);
                     if !was_live {
                         self.replay_compacted_deletes_count += 1;
@@ -118,10 +139,49 @@ impl LiveLayer {
 
         let total_documents = self.replay_doc_terms.len() as u64;
 
-        let mut term_tree = RadixTree::new();
-        for key in term_postings.keys() {
-            term_tree.insert(key, ());
-        }
+        // Phase 3: Incrementally update RadixTree for dirty terms only
+        let term_tree_arc = if self.replay_dirty_terms.is_empty() {
+            // No terms changed, reuse existing tree
+            Arc::clone(&self.replay_term_tree_arc)
+        } else {
+            // Drop old snapshot to release its tree reference
+            self.cached_snapshot = Arc::new(LiveSnapshot::empty());
+
+            // Try to reuse the existing tree via exclusive ownership
+            let old_arc = std::mem::replace(
+                &mut self.replay_term_tree_arc,
+                Arc::new(RadixTree::new()),
+            );
+
+            let tree = match Arc::try_unwrap(old_arc) {
+                Ok(mut tree) => {
+                    // Sole owner: apply incremental updates for dirty terms only
+                    for term in self.replay_dirty_terms.drain(..) {
+                        if term_postings.contains_key(&term) {
+                            tree.insert(&term, ());
+                        } else {
+                            tree.mut_value(&term, |v| {
+                                *v = None;
+                            });
+                        }
+                    }
+                    tree
+                }
+                Err(_) => {
+                    // Old snapshot still held by readers, build from scratch
+                    self.replay_dirty_terms.clear();
+                    let mut tree = RadixTree::new();
+                    for key in term_postings.keys() {
+                        tree.insert(key, ());
+                    }
+                    tree
+                }
+            };
+
+            let arc = Arc::new(tree);
+            self.replay_term_tree_arc = Arc::clone(&arc);
+            arc
+        };
 
         self.cached_snapshot = Arc::new(LiveSnapshot {
             term_postings,
@@ -131,7 +191,7 @@ impl LiveLayer {
             total_documents,
             compacted_deletes_count: self.replay_compacted_deletes_count,
             ops_len: self.ops.len(),
-            term_tree,
+            term_tree: term_tree_arc,
         });
         self.snapshot_dirty = false;
     }
@@ -144,6 +204,8 @@ impl LiveLayer {
         self.replay_delete_set.clear();
         self.replay_compacted_deletes_count = 0;
         self.replay_applied_ops = 0;
+        self.replay_dirty_terms.clear();
+        self.replay_term_tree_arc = Arc::new(RadixTree::new());
         self.snapshot_dirty = true;
     }
 
@@ -180,7 +242,7 @@ pub struct LiveSnapshot {
     /// Number of operations included in this snapshot.
     pub ops_len: usize,
     /// Radix tree for prefix key lookup (keys mirror term_postings).
-    term_tree: RadixTree<()>,
+    term_tree: Arc<RadixTree<()>>,
 }
 
 impl LiveSnapshot {
@@ -193,7 +255,7 @@ impl LiveSnapshot {
             total_documents: 0,
             compacted_deletes_count: 0,
             ops_len: 0,
-            term_tree: RadixTree::new(),
+            term_tree: Arc::new(RadixTree::new()),
         }
     }
 
