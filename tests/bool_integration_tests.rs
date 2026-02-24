@@ -2468,10 +2468,14 @@ fn test_integrity_check_corrupted_binary_file() {
     index.insert(&IndexedValue::Plain(true), 1);
     index.compact(1).unwrap();
 
+    // Drop the index to release mmaps (required on Windows where mmap holds file locks)
+    drop(index);
+
     // Overwrite true.bin with bytes not a multiple of 8
     let true_bin = tmp.path().join("versions").join("1").join("true.bin");
     std::fs::write(&true_bin, b"12345").unwrap();
 
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
     let result = index.integrity_check();
     assert!(
         !result.passed,
@@ -2494,11 +2498,15 @@ fn test_integrity_check_unsorted_binary_file() {
     index.insert(&IndexedValue::Plain(true), 2);
     index.compact(1).unwrap();
 
+    // Drop the index to release mmaps (required on Windows where mmap holds file locks)
+    drop(index);
+
     // Overwrite true.bin with valid-length but unsorted u64 values
     let true_bin = tmp.path().join("versions").join("1").join("true.bin");
     let unsorted: Vec<u8> = [10u64, 5u64].iter().flat_map(|v| v.to_ne_bytes()).collect();
     std::fs::write(&true_bin, &unsorted).unwrap();
 
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
     let result = index.integrity_check();
     assert!(
         !result.passed,
