@@ -635,14 +635,20 @@ fn distribute_deletes(segments: &[super::segment::Segment], deletes: &[u64]) -> 
 }
 
 /// Count surviving nodes in a segment (total - nodes that are deleted).
+/// Uses a two-pointer merge scan (O(N + D)) instead of binary search per element (O(N log D)).
 fn surviving_count(num_nodes: usize, doc_ids: &[u64], deletes: &[u64]) -> usize {
     if deletes.is_empty() {
         return num_nodes;
     }
     let mut deleted = 0;
+    let mut d = 0;
     for &doc_id in doc_ids {
-        if deletes.binary_search(&doc_id).is_ok() {
+        while d < deletes.len() && deletes[d] < doc_id {
+            d += 1;
+        }
+        if d < deletes.len() && deletes[d] == doc_id {
             deleted += 1;
+            d += 1;
         }
     }
     num_nodes - deleted
@@ -658,12 +664,18 @@ fn collect_surviving(
     deletes: &[u64],
     dimensions: usize,
 ) -> (Vec<f32>, Vec<u64>) {
-    let mut vectors = Vec::new();
-    let mut doc_ids = Vec::new();
+    let surviving = surviving_count(segment.num_nodes, segment.doc_ids_slice(), deletes);
+    let mut vectors = Vec::with_capacity(surviving * dimensions);
+    let mut doc_ids = Vec::with_capacity(surviving);
 
+    let mut d = 0;
     for i in 0..segment.num_nodes {
         let doc_id = segment.doc_id_at_unchecked(i as u32);
-        if deletes.binary_search(&doc_id).is_ok() {
+        while d < deletes.len() && deletes[d] < doc_id {
+            d += 1;
+        }
+        if d < deletes.len() && deletes[d] == doc_id {
+            d += 1;
             continue;
         }
         let raw_vec = segment.raw_vector_unchecked(i as u32, dimensions);
