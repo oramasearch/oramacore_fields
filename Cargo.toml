@@ -18,6 +18,7 @@ xtri = "0.1"
 memmap2 = "0.9"
 rand = "0.10"
 serde_json = "1.0"
+smallvec = "1"
 tracing = "0.1"
 clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

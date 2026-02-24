@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use smallvec::SmallVec;
 use xtri::RadixTree;
 
 use super::indexer::{IndexedValue, TermData};
 
 /// A posting entry: (doc_id, exact_positions, stemmed_positions).
-pub type PostingTuple = (u64, Vec<u32>, Vec<u32>);
+pub type PostingTuple = (u64, SmallVec<[u32; 4]>, SmallVec<[u32; 4]>);
 
 /// A single insert or delete operation.
 #[derive(Debug, Clone)]
@@ -98,8 +99,8 @@ impl LiveLayer {
             for (term, data) in terms {
                 term_postings.entry(term.clone()).or_default().push((
                     *doc_id,
-                    data.exact_positions.clone(),
-                    data.stemmed_positions.clone(),
+                    SmallVec::from_slice(&data.exact_positions),
+                    SmallVec::from_slice(&data.stemmed_positions),
                 ));
             }
         }

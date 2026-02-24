@@ -1,5 +1,4 @@
 use super::io::{version_dir, write_deleted_from_iter, write_global_info};
-use super::live::PostingTuple;
 use super::platform::advise_random;
 use anyhow::{Context, Result};
 use fst::automaton::{Levenshtein, Str};
@@ -398,9 +397,9 @@ impl CompactedVersion {
     /// - `deletes_to_write`: doc_ids to write to deleted.bin
     /// - `path`: version directory to write into
     #[allow(clippy::too_many_arguments)]
-    pub fn build_from_sorted_sources<'a>(
+    pub fn build_from_sorted_sources<'a, P: std::ops::Deref<Target = [u32]>>(
         compacted_terms: &mut CompactedTermIterator<'a>,
-        live_terms: &[(&str, &[PostingTuple])],
+        live_terms: &[(&str, &[(u64, P, P)])],
         compacted_doc_lengths: &mut DocLengthIterator<'_>,
         live_doc_lengths: &[(u64, u16)],
         deleted_set: Option<&HashSet<u64>>,
