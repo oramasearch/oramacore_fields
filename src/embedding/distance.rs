@@ -1,175 +1,117 @@
+use super::simd;
+
 #[inline]
+#[allow(unreachable_code)]
 pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut sum = 0.0f32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            let d = ca[i] - cb[i];
-            sum += d * d;
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::f32_ops::neon::l2_distance(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        let d = x - y;
-        sum += d * d;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::f32_ops::avx2::l2_distance(a, b) };
     }
-    sum
+
+    simd::f32_ops::scalar::l2_distance(a, b)
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn dot_product_distance(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut sum = 0.0f32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            sum += ca[i] * cb[i];
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::f32_ops::neon::dot_product_distance(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        sum += x * y;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::f32_ops::avx2::dot_product_distance(a, b) };
     }
-    -sum
+
+    simd::f32_ops::scalar::dot_product_distance(a, b)
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            dot += ca[i] * cb[i];
-            norm_a += ca[i] * ca[i];
-            norm_b += cb[i] * cb[i];
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::f32_ops::neon::cosine_distance(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::f32_ops::avx2::cosine_distance(a, b) };
     }
-    let denom = (norm_a * norm_b).sqrt();
-    if denom == 0.0 {
-        1.0
-    } else {
-        1.0 - dot / denom
-    }
+
+    simd::f32_ops::scalar::cosine_distance(a, b)
 }
 
 /// Cosine distance where `a` is already a unit vector (||a|| = 1).
 /// Skips computing norm_a, saving `dim` multiply-accumulate operations per call.
 #[inline]
+#[allow(unreachable_code)]
 pub fn cosine_distance_prenorm(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut dot = 0.0f32;
-    let mut norm_b = 0.0f32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            dot += ca[i] * cb[i];
-            norm_b += cb[i] * cb[i];
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::f32_ops::neon::cosine_distance_prenorm(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        dot += x * y;
-        norm_b += y * y;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::f32_ops::avx2::cosine_distance_prenorm(a, b) };
     }
-    let denom = norm_b.sqrt();
-    if denom == 0.0 {
-        1.0
-    } else {
-        1.0 - dot / denom
-    }
+
+    simd::f32_ops::scalar::cosine_distance_prenorm(a, b)
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn l2_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut sum = 0i32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            let d = ca[i] as i32 - cb[i] as i32;
-            sum += d * d;
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::i8_ops::neon::l2_distance_i8(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        let d = x as i32 - y as i32;
-        sum += d * d;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::i8_ops::avx2::l2_distance_i8(a, b) };
     }
-    sum
+
+    simd::i8_ops::scalar::l2_distance_i8(a, b)
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn dot_product_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut sum = 0i32;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            sum += ca[i] as i32 * cb[i] as i32;
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::i8_ops::neon::dot_product_distance_i8(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        sum += x as i32 * y as i32;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::i8_ops::avx2::dot_product_distance_i8(a, b) };
     }
-    -sum
+
+    simd::i8_ops::scalar::dot_product_distance_i8(a, b)
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn cosine_distance_i8(a: &[i8], b: &[i8]) -> i32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut dot: i64 = 0;
-    let mut norm_a: i64 = 0;
-    let mut norm_b: i64 = 0;
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        for i in 0..8 {
-            let xi = ca[i] as i64;
-            let yi = cb[i] as i64;
-            dot += xi * yi;
-            norm_a += xi * xi;
-            norm_b += yi * yi;
-        }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd::i8_ops::neon::cosine_distance_i8(a, b);
     }
-    for (&x, &y) in rem_a.iter().zip(rem_b.iter()) {
-        let xi = x as i64;
-        let yi = y as i64;
-        dot += xi * yi;
-        norm_a += xi * xi;
-        norm_b += yi * yi;
+
+    #[cfg(target_arch = "x86_64")]
+    if simd::x86_has_avx2_fma() {
+        return unsafe { simd::i8_ops::avx2::cosine_distance_i8(a, b) };
     }
-    let denom_sq = norm_a * norm_b;
-    if denom_sq == 0 {
-        return 1_000_000;
-    }
-    let denom = (denom_sq as f64).sqrt();
-    let cos_sim = dot as f64 / denom;
-    ((1.0 - cos_sim) * 1_000_000.0) as i32
+
+    simd::i8_ops::scalar::cosine_distance_i8(a, b)
 }
 
 pub trait Distance {

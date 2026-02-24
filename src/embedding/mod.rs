@@ -101,6 +101,7 @@
 mod config;
 mod distance;
 mod error;
+mod simd;
 mod hnsw;
 mod indexer;
 mod info;

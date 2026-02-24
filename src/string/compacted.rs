@@ -434,7 +434,11 @@ impl CompactedVersion {
         let mut compacted_entry: Option<PostingsReader<'a>> =
             compacted_terms.next_term_into(&mut compacted_key_buf);
 
+        let mut delete_cursor = SortedDeleteCursor::new(deleted_set);
+
         loop {
+            delete_cursor.reset();
+
             let live_peek = if live_idx < live_terms.len() {
                 Some(live_terms[live_idx])
             } else {
@@ -447,7 +451,7 @@ impl CompactedVersion {
                     entries_buf.clear();
                     let mut count: u32 = 0;
                     while let Some(entry) = reader.next_ref() {
-                        if deleted_set.is_none_or(|s| s.binary_search(&entry.doc_id).is_err()) {
+                        if delete_cursor.should_keep(entry.doc_id) {
                             write_entry_to_buf(
                                 &mut entries_buf,
                                 entry.doc_id,
@@ -475,7 +479,7 @@ impl CompactedVersion {
                     entries_buf.clear();
                     let mut count: u32 = 0;
                     for &(doc_id, ref exact, ref stemmed) in live_postings {
-                        if deleted_set.is_none_or(|s| s.binary_search(&doc_id).is_err()) {
+                        if delete_cursor.should_keep(doc_id) {
                             write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
                             count += 1;
                         }
@@ -499,7 +503,7 @@ impl CompactedVersion {
                             entries_buf.clear();
                             let mut count: u32 = 0;
                             while let Some(entry) = reader.next_ref() {
-                                if deleted_set.is_none_or(|s| s.binary_search(&entry.doc_id).is_err()) {
+                                if delete_cursor.should_keep(entry.doc_id) {
                                     write_entry_to_buf(
                                         &mut entries_buf,
                                         entry.doc_id,
@@ -530,7 +534,7 @@ impl CompactedVersion {
                             entries_buf.clear();
                             let mut count: u32 = 0;
                             for &(doc_id, ref exact, ref stemmed) in live_postings {
-                                if deleted_set.is_none_or(|s| s.binary_search(&doc_id).is_err()) {
+                                if delete_cursor.should_keep(doc_id) {
                                     write_entry_to_buf(&mut entries_buf, doc_id, exact, stemmed);
                                     count += 1;
                                 }
@@ -567,7 +571,7 @@ impl CompactedVersion {
                                 match (&compacted_next, live_peek_entry) {
                                     (None, None) => break,
                                     (Some(c), None) => {
-                                        if deleted_set.is_none_or(|s| s.binary_search(&c.doc_id).is_err()) {
+                                        if delete_cursor.should_keep(c.doc_id) {
                                             write_entry_to_buf(
                                                 &mut entries_buf,
                                                 c.doc_id,
@@ -579,7 +583,7 @@ impl CompactedVersion {
                                         compacted_next = reader.next_ref();
                                     }
                                     (None, Some(l)) => {
-                                        if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
+                                        if delete_cursor.should_keep(l.0) {
                                             write_entry_to_buf(&mut entries_buf, l.0, &l.1, &l.2);
                                             count += 1;
                                         }
@@ -587,7 +591,7 @@ impl CompactedVersion {
                                     }
                                     (Some(c), Some(l)) => match c.doc_id.cmp(&l.0) {
                                         std::cmp::Ordering::Less => {
-                                            if deleted_set.is_none_or(|s| s.binary_search(&c.doc_id).is_err()) {
+                                            if delete_cursor.should_keep(c.doc_id) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     c.doc_id,
@@ -599,7 +603,7 @@ impl CompactedVersion {
                                             compacted_next = reader.next_ref();
                                         }
                                         std::cmp::Ordering::Greater => {
-                                            if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
+                                            if delete_cursor.should_keep(l.0) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -612,7 +616,7 @@ impl CompactedVersion {
                                         }
                                         std::cmp::Ordering::Equal => {
                                             // Live wins
-                                            if deleted_set.is_none_or(|s| s.binary_search(&l.0).is_err()) {
+                                            if delete_cursor.should_keep(l.0) {
                                                 write_entry_to_buf(
                                                     &mut entries_buf,
                                                     l.0,
@@ -845,6 +849,39 @@ fn flush_term_buf(
     Ok(())
 }
 
+/// Cursor-based membership checker for a sorted slice of `u64` values.
+///
+/// When doc_ids are checked in non-decreasing order, each check is O(1) amortized
+/// instead of O(log D) with binary search, because the cursor only advances forward.
+struct SortedDeleteCursor<'a> {
+    slice: Option<&'a [u64]>,
+    pos: usize,
+}
+
+impl<'a> SortedDeleteCursor<'a> {
+    fn new(slice: Option<&'a [u64]>) -> Self {
+        Self { slice, pos: 0 }
+    }
+
+    fn reset(&mut self) {
+        self.pos = 0;
+    }
+
+    /// Returns `true` if `doc_id` should be kept (i.e., is NOT in the delete set).
+    ///
+    /// Must be called with non-decreasing `doc_id` values between resets.
+    fn should_keep(&mut self, doc_id: u64) -> bool {
+        let slice = match self.slice {
+            None => return true,
+            Some(s) => s,
+        };
+        while self.pos < slice.len() && slice[self.pos] < doc_id {
+            self.pos += 1;
+        }
+        self.pos >= slice.len() || slice[self.pos] != doc_id
+    }
+}
+
 /// Merge compacted doc_lengths with live doc_lengths, write directly to disk,
 /// and return (total_doc_length, total_documents). No intermediate Vec.
 fn merge_and_write_doc_lengths(
@@ -863,6 +900,9 @@ fn merge_and_write_doc_lengths(
     let mut li = 0;
     let mut compacted_next = compacted.next();
 
+    let mut delete_cursor = SortedDeleteCursor::new(deleted_set);
+    let mut count_cursor = SortedDeleteCursor::new(count_exclude_set);
+
     loop {
         let live_peek = if li < live.len() {
             Some((live[li].0, live[li].1 as u32))
@@ -873,22 +913,22 @@ fn merge_and_write_doc_lengths(
         match (compacted_next, live_peek) {
             (None, None) => break,
             (Some((c_id, c_len)), None) => {
-                if deleted_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
+                if delete_cursor.should_keep(c_id) {
                     writer.write_all(&c_id.to_ne_bytes())?;
                     writer.write_all(&c_len.to_ne_bytes())?;
                 }
-                if count_exclude_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
+                if count_cursor.should_keep(c_id) {
                     total_doc_length += c_len as u64;
                     total_documents += 1;
                 }
                 compacted_next = compacted.next();
             }
             (None, Some((l_id, l_len))) => {
-                if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                if delete_cursor.should_keep(l_id) {
                     writer.write_all(&l_id.to_ne_bytes())?;
                     writer.write_all(&l_len.to_ne_bytes())?;
                 }
-                if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                if count_cursor.should_keep(l_id) {
                     total_doc_length += l_len as u64;
                     total_documents += 1;
                 }
@@ -896,22 +936,22 @@ fn merge_and_write_doc_lengths(
             }
             (Some((c_id, c_len)), Some((l_id, l_len))) => match c_id.cmp(&l_id) {
                 std::cmp::Ordering::Less => {
-                    if deleted_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
+                    if delete_cursor.should_keep(c_id) {
                         writer.write_all(&c_id.to_ne_bytes())?;
                         writer.write_all(&c_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| s.binary_search(&c_id).is_err()) {
+                    if count_cursor.should_keep(c_id) {
                         total_doc_length += c_len as u64;
                         total_documents += 1;
                     }
                     compacted_next = compacted.next();
                 }
                 std::cmp::Ordering::Greater => {
-                    if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                    if delete_cursor.should_keep(l_id) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                    if count_cursor.should_keep(l_id) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
@@ -919,11 +959,11 @@ fn merge_and_write_doc_lengths(
                 }
                 std::cmp::Ordering::Equal => {
                     // Live wins
-                    if deleted_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                    if delete_cursor.should_keep(l_id) {
                         writer.write_all(&l_id.to_ne_bytes())?;
                         writer.write_all(&l_len.to_ne_bytes())?;
                     }
-                    if count_exclude_set.is_none_or(|s| s.binary_search(&l_id).is_err()) {
+                    if count_cursor.should_keep(l_id) {
                         total_doc_length += l_len as u64;
                         total_documents += 1;
                     }
