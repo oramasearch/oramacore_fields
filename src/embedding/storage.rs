@@ -622,12 +622,12 @@ fn deduplicate_and_truncate(results: &mut Vec<(u64, f32)>, k: usize) {
 fn distribute_deletes(segments: &[super::segment::Segment], deletes: &[u64]) -> Vec<Vec<u64>> {
     let mut per_segment: Vec<Vec<u64>> = vec![Vec::new(); segments.len()];
     for &doc_id in deletes {
-        // Find which segment this doc_id belongs to
-        for (i, seg) in segments.iter().enumerate() {
-            if doc_id >= seg.min_doc_id && doc_id <= seg.max_doc_id {
-                per_segment[i].push(doc_id);
-                break;
-            }
+        let idx = segments.partition_point(|seg| seg.max_doc_id < doc_id);
+        if idx < segments.len()
+            && doc_id >= segments[idx].min_doc_id
+            && doc_id <= segments[idx].max_doc_id
+        {
+            per_segment[idx].push(doc_id);
         }
     }
     // Each per-segment list is already sorted because deletes is sorted
