@@ -2,7 +2,7 @@ use crate::embedding::IndexedValue;
 
 use super::config::{EmbeddingConfig, SegmentConfig};
 use super::config::DistanceMetric;
-use super::distance::{cosine_distance_prenorm, resolve_distance_fn, Distance, DistanceFn};
+use super::distance::Distance;
 use super::error::Error;
 use super::hnsw::HnswBuilder;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
@@ -28,7 +28,6 @@ pub struct EmbeddingStorage {
     compaction_lock: Mutex<()>,
     config: EmbeddingConfig,
     segment_config: SegmentConfig,
-    distance_fn: DistanceFn,
 }
 
 impl EmbeddingStorage {
@@ -38,8 +37,6 @@ impl EmbeddingStorage {
         segment_config: SegmentConfig,
     ) -> Result<Self, Error> {
         std::fs::create_dir_all(&base_path)?;
-
-        let distance_fn = resolve_distance_fn(config.metric);
 
         let segment_list = match read_current(&base_path)? {
             Some((format_version, version_number)) => {
@@ -61,7 +58,6 @@ impl EmbeddingStorage {
             compaction_lock: Mutex::new(()),
             config,
             segment_config,
-            distance_fn,
         })
     }
 
@@ -114,18 +110,18 @@ impl EmbeddingStorage {
 
         match self.config.metric {
             DistanceMetric::L2 => {
-                self.search_inner::<super::distance::L2>(query, k, ef_search, self.distance_fn)
+                self.search_inner::<super::distance::L2>(query, k, ef_search)
             }
             DistanceMetric::DotProduct => {
-                self.search_inner::<super::distance::DotProduct>(query, k, ef_search, self.distance_fn)
+                self.search_inner::<super::distance::DotProduct>(query, k, ef_search)
             }
             DistanceMetric::Cosine => {
                 let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if norm == 0.0 {
-                    self.search_inner::<super::distance::Cosine>(query, k, ef_search, self.distance_fn)
+                    self.search_inner::<super::distance::Cosine>(query, k, ef_search)
                 } else {
                     let normalized: Vec<f32> = query.iter().map(|x| x / norm).collect();
-                    self.search_inner::<super::distance::CosineNorm>(&normalized, k, ef_search, cosine_distance_prenorm)
+                    self.search_inner::<super::distance::CosineNorm>(&normalized, k, ef_search)
                 }
             }
         }
@@ -136,7 +132,6 @@ impl EmbeddingStorage {
         query: &[f32],
         k: usize,
         ef_search: Option<usize>,
-        distance_fn: DistanceFn,
     ) -> Result<Vec<(u64, f32)>, Error> {
         let snapshot = self.fresh_snapshot();
         let segment_list = self.segments.load();
@@ -174,7 +169,7 @@ impl EmbeddingStorage {
         }
 
         // Search live layer (brute force)
-        let live_results = snapshot.search(query, k, distance_fn, &snapshot.deletes);
+        let live_results = snapshot.search::<D>(query, k, &snapshot.deletes);
         all_results.extend(live_results);
 
         // Merge: sort by distance, deduplicate by doc_id, take top-k
@@ -201,6 +196,27 @@ impl EmbeddingStorage {
             return Ok(());
         }
 
+        match self.config.metric {
+            DistanceMetric::L2 => {
+                self.compact_inner::<super::distance::L2>(version_number, &snapshot, &current)?;
+            }
+            DistanceMetric::DotProduct => {
+                self.compact_inner::<super::distance::DotProduct>(version_number, &snapshot, &current)?;
+            }
+            DistanceMetric::Cosine => {
+                self.compact_inner::<super::distance::Cosine>(version_number, &snapshot, &current)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn compact_inner<D: Distance>(
+        &self,
+        version_number: u64,
+        snapshot: &LiveSnapshot,
+        current: &SegmentList,
+    ) -> Result<(), Error> {
         let new_version_dir = ensure_version_dir(&self.base_path, version_number)?;
         let mut new_manifest_entries: Vec<ManifestEntry> = Vec::new();
         let mut next_seg_id = current
@@ -271,14 +287,13 @@ impl EmbeddingStorage {
                     }
 
                     let params = QuantizationParams::calibrate(&all_vecs, dimensions);
-                    build_and_write_segment(
+                    build_and_write_segment::<D>(
                         &self.base_path,
                         seg_id,
                         &all_vecs,
                         &all_ids,
                         &self.config,
                         &params,
-                        self.distance_fn,
                     )?;
                     write_delete_file(&new_version_dir, seg_id, &[])?;
 
@@ -294,13 +309,12 @@ impl EmbeddingStorage {
                 } else {
                     // INCREMENTAL INSERT
                     let new_num_nodes = segment.num_nodes + snapshot.entries.len();
-                    incremental_insert_segment(
+                    incremental_insert_segment::<D>(
                         &self.base_path,
                         segment,
                         seg_id,
                         &snapshot.entries,
                         &self.config,
-                        self.distance_fn,
                     )?;
 
                     // Carry forward deletes (not applied, just kept)
@@ -335,14 +349,13 @@ impl EmbeddingStorage {
                 next_seg_id += 1;
 
                 let params = QuantizationParams::calibrate(&vectors, dimensions);
-                build_and_write_segment(
+                build_and_write_segment::<D>(
                     &self.base_path,
                     seg_id,
                     &vectors,
                     &doc_ids,
                     &self.config,
                     &params,
-                    self.distance_fn,
                 )?;
                 write_delete_file(&new_version_dir, seg_id, &[])?;
 
@@ -380,14 +393,13 @@ impl EmbeddingStorage {
                 let seg_id = next_seg_id;
 
                 let params = QuantizationParams::calibrate(live_vecs, dimensions);
-                build_and_write_segment(
+                build_and_write_segment::<D>(
                     &self.base_path,
                     seg_id,
                     live_vecs,
                     live_ids,
                     &self.config,
                     &params,
-                    self.distance_fn,
                 )?;
                 write_delete_file(&new_version_dir, seg_id, &[])?;
 
@@ -691,21 +703,20 @@ fn collect_surviving(
 }
 
 /// Build an HNSW graph and write all segment files to disk.
-fn build_and_write_segment(
+fn build_and_write_segment<D: Distance>(
     base_path: &std::path::Path,
     seg_id: u64,
     vectors: &[f32],
     doc_ids: &[u64],
     config: &EmbeddingConfig,
     quant_params: &QuantizationParams,
-    distance_fn: DistanceFn,
 ) -> Result<(), Error> {
     let seg_dir = ensure_segment_dir(base_path, seg_id)?;
     let dimensions = config.dimensions;
     let num_nodes = doc_ids.len();
 
     // Build HNSW graph
-    let mut builder = HnswBuilder::new(config, distance_fn);
+    let mut builder = HnswBuilder::<D>::new(config);
     builder.build(vectors, doc_ids, dimensions)?;
 
     // Write raw vectors
@@ -738,13 +749,12 @@ fn build_and_write_segment(
 }
 
 /// Incremental insert: append live entries to an existing segment, producing a new segment.
-fn incremental_insert_segment(
+fn incremental_insert_segment<D: Distance>(
     base_path: &std::path::Path,
     old_segment: &super::segment::Segment,
     new_seg_id: u64,
     live_entries: &super::live::FlatEntries,
     config: &EmbeddingConfig,
-    distance_fn: DistanceFn,
 ) -> Result<(), Error> {
     let seg_dir = ensure_segment_dir(base_path, new_seg_id)?;
     let dimensions = config.dimensions;
@@ -797,11 +807,10 @@ fn incremental_insert_segment(
     }
 
     // 5. Load old graph, insert new nodes, write updated graph
-    let mut builder = HnswBuilder::load_from_graph(
+    let mut builder = HnswBuilder::<D>::load_from_graph(
         old_segment.graph_bytes(),
         old_levels,
         config,
-        distance_fn,
         old_segment.config.node_block_size,
     )?;
 

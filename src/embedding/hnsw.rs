@@ -1,9 +1,10 @@
 use super::config::EmbeddingConfig;
-use super::distance::DistanceFn;
+use super::distance::Distance;
 use super::error::Error;
 use rand::RngExt;
 use std::collections::BinaryHeap;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::path::Path;
 
 pub const GRAPH_HEADER_SIZE: usize = 16;
@@ -49,12 +50,12 @@ impl VisitedBitset {
 }
 
 /// In-memory HNSW graph builder.
-pub struct HnswBuilder {
+pub struct HnswBuilder<D: Distance> {
     config: EmbeddingConfig,
     nodes: Vec<HnswNode>,
     entry_point: usize,
     current_max_level: usize,
-    distance_fn: DistanceFn,
+    _phantom: PhantomData<D>,
 }
 
 struct HnswNode {
@@ -64,10 +65,9 @@ struct HnswNode {
 
 /// Heuristic neighbor selection (Algorithm 4 from HNSW paper).
 /// Free function to avoid borrow issues.
-fn select_neighbors_heuristic(
+fn select_neighbors_heuristic<D: Distance>(
     candidates: &[(u32, f32)],
     max_neighbors: usize,
-    distance_fn: DistanceFn,
     vectors: &[f32],
     dimensions: usize,
 ) -> Vec<u32> {
@@ -90,7 +90,7 @@ fn select_neighbors_heuristic(
         let c_vec = &vectors[c_idx as usize * dimensions..(c_idx as usize + 1) * dimensions];
         for &s_idx in &selected {
             let s_vec = &vectors[s_idx as usize * dimensions..(s_idx as usize + 1) * dimensions];
-            let dist_to_selected = distance_fn(c_vec, s_vec);
+            let dist_to_selected = D::distance(c_vec, s_vec);
             if dist_to_selected < c_dist {
                 good = false;
                 break;
@@ -117,14 +117,14 @@ fn select_neighbors_heuristic(
     selected
 }
 
-impl HnswBuilder {
-    pub fn new(config: &EmbeddingConfig, distance_fn: DistanceFn) -> Self {
+impl<D: Distance> HnswBuilder<D> {
+    pub fn new(config: &EmbeddingConfig) -> Self {
         Self {
             config: config.clone(),
             nodes: Vec::new(),
             entry_point: 0,
             current_max_level: 0,
-            distance_fn,
+            _phantom: PhantomData,
         }
     }
 
@@ -206,7 +206,6 @@ impl HnswBuilder {
         // For each level from min(node_level, current_max_level) down to 0:
         // search for ef_construction nearest, connect
         let start_level = node_level.min(self.current_max_level);
-        let distance_fn = self.distance_fn;
         let ef_construction = self.config.ef_construction;
         let m = self.config.m;
         let m0 = self.config.m0;
@@ -219,10 +218,9 @@ impl HnswBuilder {
                 self.search_layer(ep, node_vec, ef_construction, level, vectors, dimensions, visited);
 
             // Select neighbors using heuristic
-            let selected = select_neighbors_heuristic(
+            let selected = select_neighbors_heuristic::<D>(
                 &candidates,
                 max_neighbors,
-                distance_fn,
                 vectors,
                 dimensions,
             );
@@ -245,14 +243,13 @@ impl HnswBuilder {
                         .map(|&n| {
                             let nv =
                                 &vectors[n as usize * dimensions..(n as usize + 1) * dimensions];
-                            let d = distance_fn(neighbor_vec, nv);
+                            let d = D::distance(neighbor_vec, nv);
                             (n, d)
                         })
                         .collect();
-                    let pruned = select_neighbors_heuristic(
+                    let pruned = select_neighbors_heuristic::<D>(
                         &neighbor_candidates,
                         max_neighbors,
-                        distance_fn,
                         vectors,
                         dimensions,
                     );
@@ -284,7 +281,7 @@ impl HnswBuilder {
     ) -> usize {
         let mut current = start;
         let start_vec = &vectors[current * dimensions..(current + 1) * dimensions];
-        let mut current_dist = (self.distance_fn)(query, start_vec);
+        let mut current_dist = D::distance(query, start_vec);
 
         loop {
             let mut changed = false;
@@ -298,7 +295,7 @@ impl HnswBuilder {
                 }
                 let nv = &vectors
                     [neighbor_idx as usize * dimensions..(neighbor_idx as usize + 1) * dimensions];
-                let d = (self.distance_fn)(query, nv);
+                let d = D::distance(query, nv);
                 if d < current_dist {
                     current = neighbor_idx as usize;
                     current_dist = d;
@@ -326,7 +323,7 @@ impl HnswBuilder {
         visited: &mut VisitedBitset,
     ) -> Vec<(u32, f32)> {
         let entry_vec = &vectors[entry * dimensions..(entry + 1) * dimensions];
-        let entry_dist = (self.distance_fn)(query, entry_vec);
+        let entry_dist = D::distance(query, entry_vec);
 
         let mut candidates: BinaryHeap<MinHeapItem> = BinaryHeap::new();
         let mut results: BinaryHeap<MaxHeapItem> = BinaryHeap::new();
@@ -366,7 +363,7 @@ impl HnswBuilder {
                 }
 
                 let nv = &vectors[n * dimensions..(n + 1) * dimensions];
-                let d = (self.distance_fn)(query, nv);
+                let d = D::distance(query, nv);
 
                 let worst_result_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                 if d < worst_result_dist || results.len() < ef {
@@ -461,7 +458,6 @@ impl HnswBuilder {
         graph_bytes: &[u8],
         levels_bytes: &[u8],
         config: &EmbeddingConfig,
-        distance_fn: DistanceFn,
         node_block_size: usize,
     ) -> Result<Self, Error> {
         if graph_bytes.len() < GRAPH_HEADER_SIZE {
@@ -477,7 +473,7 @@ impl HnswBuilder {
                 nodes: Vec::new(),
                 entry_point: 0,
                 current_max_level: 0,
-                distance_fn,
+                _phantom: PhantomData,
             });
         }
 
@@ -522,7 +518,7 @@ impl HnswBuilder {
             nodes,
             entry_point,
             current_max_level,
-            distance_fn,
+            _phantom: PhantomData,
         })
     }
 
@@ -625,13 +621,13 @@ impl Ord for MaxHeapItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::distance::l2_distance;
+    use crate::embedding::distance::L2;
     use tempfile::TempDir;
 
     #[test]
     fn test_build_small_graph() {
         let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
-        let mut builder = HnswBuilder::new(&config, l2_distance);
+        let mut builder = HnswBuilder::<L2>::new(&config);
 
         let vectors = vec![
             0.0, 0.0, // node 0
@@ -648,7 +644,7 @@ mod tests {
     #[test]
     fn test_write_graph() {
         let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
-        let mut builder = HnswBuilder::new(&config, l2_distance);
+        let mut builder = HnswBuilder::<L2>::new(&config);
 
         let vectors = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         let doc_ids = vec![10, 20, 30];
@@ -668,7 +664,7 @@ mod tests {
     #[test]
     fn test_empty_build() {
         let config = EmbeddingConfig::new(2, crate::embedding::config::DistanceMetric::L2).unwrap();
-        let mut builder = HnswBuilder::new(&config, l2_distance);
+        let mut builder = HnswBuilder::<L2>::new(&config);
         builder.build(&[], &[], 2).unwrap();
         assert_eq!(builder.num_nodes(), 0);
     }

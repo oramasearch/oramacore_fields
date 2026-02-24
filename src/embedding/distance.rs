@@ -1,8 +1,3 @@
-use super::config::DistanceMetric;
-
-pub type DistanceFn = fn(&[f32], &[f32]) -> f32;
-pub type QuantizedDistanceFn = fn(&[i8], &[i8]) -> i32;
-
 #[inline]
 pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
@@ -177,22 +172,6 @@ pub fn cosine_distance_i8(a: &[i8], b: &[i8]) -> i32 {
     ((1.0 - cos_sim) * 1_000_000.0) as i32
 }
 
-pub fn resolve_distance_fn(metric: DistanceMetric) -> DistanceFn {
-    match metric {
-        DistanceMetric::L2 => l2_distance,
-        DistanceMetric::DotProduct => dot_product_distance,
-        DistanceMetric::Cosine => cosine_distance,
-    }
-}
-
-pub fn resolve_quantized_distance_fn(metric: DistanceMetric) -> QuantizedDistanceFn {
-    match metric {
-        DistanceMetric::L2 => l2_distance_i8,
-        DistanceMetric::DotProduct => dot_product_distance_i8,
-        DistanceMetric::Cosine => cosine_distance_i8,
-    }
-}
-
 pub trait Distance {
     fn distance(a: &[f32], b: &[f32]) -> f32;
     fn quantized_distance(a: &[i8], b: &[i8]) -> i32;
@@ -311,12 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_functions() {
-        let _ = resolve_distance_fn(DistanceMetric::L2);
-        let _ = resolve_distance_fn(DistanceMetric::DotProduct);
-        let _ = resolve_distance_fn(DistanceMetric::Cosine);
-        let _ = resolve_quantized_distance_fn(DistanceMetric::L2);
-        let _ = resolve_quantized_distance_fn(DistanceMetric::DotProduct);
-        let _ = resolve_quantized_distance_fn(DistanceMetric::Cosine);
+    fn test_distance_trait() {
+        let a = [1.0f32, 2.0, 3.0];
+        let b = [4.0f32, 5.0, 6.0];
+        assert!((L2::distance(&a, &b) - 27.0).abs() < 1e-6);
+        assert!((DotProduct::distance(&a, &b) - (-32.0)).abs() < 1e-6);
+        assert!(Cosine::distance(&a, &a).abs() < 1e-6);
+
+        let ai: [i8; 3] = [1, 2, 3];
+        let bi: [i8; 3] = [4, 5, 6];
+        assert_eq!(L2::quantized_distance(&ai, &bi), 27);
+        assert_eq!(DotProduct::quantized_distance(&ai, &bi), -32);
     }
 }

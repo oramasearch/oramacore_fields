@@ -1,4 +1,4 @@
-use super::distance::DistanceFn;
+use super::distance::Distance;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -219,11 +219,10 @@ impl LiveSnapshot {
 
     /// Brute-force search over live entries.
     /// Returns (doc_id, distance) pairs sorted by distance ascending.
-    pub fn search(
+    pub fn search<D: Distance>(
         &self,
         query: &[f32],
         k: usize,
-        distance_fn: DistanceFn,
         excluded: &[u64],
     ) -> Vec<(u64, f32)> {
         if self.entries.is_empty() || k == 0 {
@@ -238,7 +237,7 @@ impl LiveSnapshot {
                 continue;
             }
 
-            let dist = distance_fn(query, vector);
+            let dist = D::distance(query, vector);
             if heap.len() < k {
                 heap.push(HeapItem {
                     doc_id: *doc_id,
@@ -296,7 +295,7 @@ impl Ord for HeapItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::distance::l2_distance;
+    use crate::embedding::distance::L2;
 
     #[test]
     fn test_live_layer_insert_delete() {
@@ -356,7 +355,7 @@ mod tests {
         let snapshot = layer.get_snapshot();
 
         let query = [0.1, 0.0];
-        let results = snapshot.search(&query, 2, l2_distance, &[]);
+        let results = snapshot.search::<L2>(&query, 2, &[]);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, 1); // closest: (0,0) dist=0.01
         assert_eq!(results[1].0, 2); // next: (1,0) dist=0.81
@@ -371,7 +370,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let results = snapshot.search(&[0.0], 3, l2_distance, &[1]);
+        let results = snapshot.search::<L2>(&[0.0], 3, &[1]);
         assert_eq!(results.len(), 2);
         // Doc 1 excluded
         assert!(results.iter().all(|(id, _)| *id != 1));
@@ -380,7 +379,7 @@ mod tests {
     #[test]
     fn test_search_empty() {
         let snapshot = LiveSnapshot::empty();
-        let results = snapshot.search(&[1.0], 5, l2_distance, &[]);
+        let results = snapshot.search::<L2>(&[1.0], 5, &[]);
         assert!(results.is_empty());
     }
 }
