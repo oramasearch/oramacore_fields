@@ -1,9 +1,8 @@
 use crate::embedding::IndexedValue;
 
 use super::config::{EmbeddingConfig, SegmentConfig};
-use super::distance::{
-    resolve_distance_fn, resolve_quantized_distance_fn, DistanceFn, QuantizedDistanceFn,
-};
+use super::config::DistanceMetric;
+use super::distance::{resolve_distance_fn, Distance, DistanceFn};
 use super::error::Error;
 use super::hnsw::HnswBuilder;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
@@ -30,7 +29,6 @@ pub struct EmbeddingStorage {
     config: EmbeddingConfig,
     segment_config: SegmentConfig,
     distance_fn: DistanceFn,
-    quantized_distance_fn: QuantizedDistanceFn,
 }
 
 impl EmbeddingStorage {
@@ -42,7 +40,6 @@ impl EmbeddingStorage {
         std::fs::create_dir_all(&base_path)?;
 
         let distance_fn = resolve_distance_fn(config.metric);
-        let quantized_distance_fn = resolve_quantized_distance_fn(config.metric);
 
         let segment_list = match read_current(&base_path)? {
             Some((format_version, version_number)) => {
@@ -65,7 +62,6 @@ impl EmbeddingStorage {
             config,
             segment_config,
             distance_fn,
-            quantized_distance_fn,
         })
     }
 
@@ -116,6 +112,23 @@ impl EmbeddingStorage {
             return Ok(Vec::new());
         }
 
+        match self.config.metric {
+            DistanceMetric::L2 => self.search_inner::<super::distance::L2>(query, k, ef_search),
+            DistanceMetric::DotProduct => {
+                self.search_inner::<super::distance::DotProduct>(query, k, ef_search)
+            }
+            DistanceMetric::Cosine => {
+                self.search_inner::<super::distance::Cosine>(query, k, ef_search)
+            }
+        }
+    }
+
+    fn search_inner<D: Distance>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> Result<Vec<(u64, f32)>, Error> {
         let snapshot = self.fresh_snapshot();
         let segment_list = self.segments.load();
         let ef = ef_search.unwrap_or(self.config.ef_search);
@@ -139,13 +152,11 @@ impl EmbeddingStorage {
                 .partition_point(|&d| d <= segment.max_doc_id);
             let targeted_live_deletes = &snapshot.deletes[start..end];
 
-            let segment_results = segment.search(
+            let segment_results = segment.search::<D>(
                 query,
                 &query_quantized,
                 k,
                 ef,
-                self.distance_fn,
-                self.quantized_distance_fn,
                 segment.deletes_slice(),
                 targeted_live_deletes,
             );

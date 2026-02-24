@@ -164,6 +164,47 @@ pub fn resolve_quantized_distance_fn(metric: DistanceMetric) -> QuantizedDistanc
     }
 }
 
+pub trait Distance {
+    fn distance(a: &[f32], b: &[f32]) -> f32;
+    fn quantized_distance(a: &[i8], b: &[i8]) -> i32;
+}
+
+pub struct L2;
+impl Distance for L2 {
+    #[inline(always)]
+    fn distance(a: &[f32], b: &[f32]) -> f32 {
+        l2_distance(a, b)
+    }
+    #[inline(always)]
+    fn quantized_distance(a: &[i8], b: &[i8]) -> i32 {
+        l2_distance_i8(a, b)
+    }
+}
+
+pub struct DotProduct;
+impl Distance for DotProduct {
+    #[inline(always)]
+    fn distance(a: &[f32], b: &[f32]) -> f32 {
+        dot_product_distance(a, b)
+    }
+    #[inline(always)]
+    fn quantized_distance(a: &[i8], b: &[i8]) -> i32 {
+        dot_product_distance_i8(a, b)
+    }
+}
+
+pub struct Cosine;
+impl Distance for Cosine {
+    #[inline(always)]
+    fn distance(a: &[f32], b: &[f32]) -> f32 {
+        cosine_distance(a, b)
+    }
+    #[inline(always)]
+    fn quantized_distance(a: &[i8], b: &[i8]) -> i32 {
+        cosine_distance_i8(a, b)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

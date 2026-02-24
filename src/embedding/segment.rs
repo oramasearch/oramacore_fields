@@ -1,5 +1,5 @@
 use super::config::DistanceMetric;
-use super::distance::{DistanceFn, QuantizedDistanceFn};
+use super::distance::Distance;
 use super::error::Error;
 use super::hnsw::{VisitedBitset, GRAPH_HEADER_SIZE, SENTINEL};
 use super::io::{load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry};
@@ -195,15 +195,12 @@ impl Segment {
     /// Two-phase HNSW search on this segment.
     /// Phase 1: Quantized distance for beam search.
     /// Phase 2: Rescore top candidates with raw f32 distance.
-    #[allow(clippy::too_many_arguments)]
-    pub fn search(
+    pub fn search<D: Distance>(
         &self,
         query_raw: &[f32],
         query_quantized: &[i8],
         k: usize,
         ef: usize,
-        distance_fn: DistanceFn,
-        quantized_distance_fn: QuantizedDistanceFn,
         segment_deletes: &[u64],
         live_deletes: &[u64],
     ) -> Vec<(u64, f32)> {
@@ -223,14 +220,14 @@ impl Segment {
                 let mut changed = false;
                 let neighbor_bytes = self.get_neighbors(current, level);
                 let current_qvec = self.quantized_vector(current, dimensions);
-                let mut best_dist = quantized_distance_fn(query_quantized, current_qvec);
+                let mut best_dist = D::quantized_distance(query_quantized, current_qvec);
 
                 for neighbor_idx in Self::parse_neighbors(neighbor_bytes) {
                     if self.node_level(neighbor_idx) < level as u8 {
                         continue;
                     }
                     let nq = self.quantized_vector(neighbor_idx, dimensions);
-                    let d = quantized_distance_fn(query_quantized, nq);
+                    let d = D::quantized_distance(query_quantized, nq);
                     if d < best_dist {
                         current = neighbor_idx;
                         best_dist = d;
@@ -250,7 +247,7 @@ impl Segment {
         let mut visited = VisitedBitset::new(self.config.num_nodes);
 
         let entry_qvec = self.quantized_vector(current, dimensions);
-        let entry_dist = quantized_distance_fn(query_quantized, entry_qvec);
+        let entry_dist = D::quantized_distance(query_quantized, entry_qvec);
         candidates.push(MinHeapItemI32 {
             index: current,
             distance: entry_dist,
@@ -279,7 +276,7 @@ impl Segment {
                 }
 
                 let nq = self.quantized_vector(neighbor_idx, dimensions);
-                let d = quantized_distance_fn(query_quantized, nq);
+                let d = D::quantized_distance(query_quantized, nq);
 
                 let worst = results.peek().map(|r| r.distance).unwrap_or(i32::MAX);
                 if d < worst || results.len() < ef_actual {
@@ -309,7 +306,7 @@ impl Segment {
                     return None;
                 }
                 let raw_vec = self.raw_vector(item.index, dimensions);
-                let dist = distance_fn(query_raw, raw_vec);
+                let dist = D::distance(query_raw, raw_vec);
                 Some((doc_id, dist))
             })
             .collect();
