@@ -1,6 +1,6 @@
 use super::io::{version_dir, write_deleted_from_iter, write_global_info};
 use super::live::PostingTuple;
-use super::platform::advise_sequential;
+use super::platform::advise_random;
 use anyhow::{Context, Result};
 use fst::automaton::{Levenshtein, Str};
 use fst::{Automaton, IntoStreamer, Map, Streamer};
@@ -96,6 +96,8 @@ impl CompactedVersion {
             Mmap::map(&file).with_context(|| format!("Failed to mmap FST file: {path:?}"))?
         };
 
+        advise_random(&mmap);
+
         let map = Map::new(mmap).map_err(|e| anyhow::anyhow!("Failed to parse FST file: {e}"))?;
 
         Ok(Some(map))
@@ -120,7 +122,7 @@ impl CompactedVersion {
         let mmap =
             unsafe { Mmap::map(&file).with_context(|| format!("Failed to mmap file: {path:?}"))? };
 
-        advise_sequential(&mmap);
+        advise_random(&mmap);
 
         Ok(Some(mmap))
     }
