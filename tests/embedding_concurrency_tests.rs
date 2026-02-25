@@ -651,3 +651,67 @@ fn test_concurrent_writes_during_multi_segment_compaction() {
         results.len()
     );
 }
+
+// ============================================================================
+// I. Concurrent Search During Cleanup
+// ============================================================================
+
+#[test]
+fn test_concurrent_search_during_cleanup() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 1_000_000,
+        deletion_threshold: DeletionThreshold::default(),
+        insertion_rebuild_threshold: 0.0, // forces full rebuild → orphans old segment
+    };
+    let (_tmp, storage, _indexer) = make_storage_with_config(3, seg_config);
+
+    // Create seg_1
+    for i in 0..20u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+
+    // Create seg_2 via full rebuild (seg_1 is now orphaned)
+    for i in 20..30u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(2).unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let barrier = Arc::new(Barrier::new(5)); // 4 readers + 1 main
+    let mut handles = Vec::new();
+
+    // 4 reader threads doing search in a loop
+    for _ in 0..4 {
+        let s = Arc::clone(&storage);
+        let st = Arc::clone(&stop);
+        let b = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            b.wait();
+            let mut count = 0u64;
+            while !st.load(Ordering::Relaxed) {
+                let results = s.search(&[10.0, 0.0, 0.0], 10, Some(100)).unwrap();
+                assert!(!results.is_empty(), "search should always return results");
+                assert!(results.len() <= 10);
+                count += 1;
+                thread::yield_now();
+            }
+            count
+        }));
+    }
+
+    // Main thread calls cleanup while readers are active
+    barrier.wait();
+    storage.cleanup();
+    stop.store(true, Ordering::Relaxed);
+
+    let mut total_searches = 0u64;
+    for h in handles {
+        total_searches += h.join().unwrap();
+    }
+    assert!(total_searches > 0, "readers should have completed some searches");
+
+    // Search results correct after cleanup
+    let results = storage.search(&[0.0, 0.0, 0.0], 50, Some(200)).unwrap();
+    assert_eq!(results.len(), 30);
+}

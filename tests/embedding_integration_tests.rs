@@ -1270,3 +1270,344 @@ fn read_manifest(base_path: &std::path::Path, version_number: u64) -> Vec<serde_
     let v: serde_json::Value = serde_json::from_str(&content).unwrap();
     v["segments"].as_array().unwrap().clone()
 }
+
+/// Scan `base_path/segments/` and return sorted list of segment IDs found on disk.
+fn list_segment_dirs_on_disk(base_path: &std::path::Path) -> Vec<u64> {
+    let segments_dir = base_path.join("segments");
+    if !segments_dir.exists() {
+        return Vec::new();
+    }
+    let mut ids: Vec<u64> = std::fs::read_dir(&segments_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            name.strip_prefix("seg_")?.parse::<u64>().ok()
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn manifest_segment_ids(base_path: &std::path::Path, version_number: u64) -> Vec<u64> {
+    read_manifest(base_path, version_number)
+        .iter()
+        .map(|s| s["segment_id"].as_u64().unwrap())
+        .collect()
+}
+
+// ============================================================================
+// Cleanup safety tests
+// ============================================================================
+
+#[test]
+fn test_cleanup_preserves_carried_forward_segment() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 1000,
+        deletion_threshold: 0.5f64.try_into().unwrap(),
+        insertion_rebuild_threshold: 10.0,
+    };
+    let (tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // Insert 20 docs, compact → seg_1
+    for i in 0..20u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+    let m1_ids = manifest_segment_ids(tmp.path(), 1);
+    assert_eq!(m1_ids.len(), 1);
+    let seg_v1 = m1_ids[0];
+
+    // Delete 1 doc (1/20=0.05 < 0.5), no new inserts → carry forward
+    storage.delete(5);
+    storage.compact(2).unwrap();
+    let m2_ids = manifest_segment_ids(tmp.path(), 2);
+    assert_eq!(m2_ids.len(), 1);
+    assert_eq!(m2_ids[0], seg_v1, "segment should be carried forward with same id");
+
+    // cleanup: seg_v1 must survive, versions/1 removed
+    storage.cleanup();
+    assert!(!tmp.path().join("versions/1").exists());
+    assert!(tmp.path().join("versions/2").exists());
+    let on_disk = list_segment_dirs_on_disk(tmp.path());
+    assert!(on_disk.contains(&seg_v1), "carried-forward segment must survive cleanup");
+
+    // Search returns 19 results
+    let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
+    assert_eq!(results.len(), 19);
+}
+
+#[test]
+fn test_cleanup_multi_segment_mixed_carry_forward_and_rebuild() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 20,
+        deletion_threshold: 0.1f64.try_into().unwrap(),
+        insertion_rebuild_threshold: 0.3,
+    };
+    let (tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // Insert 20, compact(1) → seg_1
+    for i in 0..20u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+    let m1_ids = manifest_segment_ids(tmp.path(), 1);
+    assert_eq!(m1_ids.len(), 1);
+    let seg_1 = m1_ids[0];
+
+    // Insert 20 more, compact(2) → seg_1 carried forward + new seg for overflow
+    for i in 20..40u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(2).unwrap();
+    let m2_ids = manifest_segment_ids(tmp.path(), 2);
+    assert_eq!(m2_ids.len(), 2);
+    assert_eq!(m2_ids[0], seg_1, "seg_1 should be carried forward");
+    let seg_2 = m2_ids[1];
+
+    // Delete 5 from seg_1 range (5/20=0.25 > 0.1) → seg_1 rebuilt, seg_2 carried forward
+    for &doc_id in &[0u64, 2, 4, 6, 8] {
+        storage.delete(doc_id);
+    }
+    storage.compact(3).unwrap();
+    let m3_ids = manifest_segment_ids(tmp.path(), 3);
+    assert_eq!(m3_ids.len(), 2);
+    assert_ne!(m3_ids[0], seg_1, "seg_1 should have been rebuilt with new id");
+    let seg_3 = m3_ids[0];
+    assert_eq!(m3_ids[1], seg_2, "seg_2 should be carried forward");
+
+    // cleanup → seg_1 removed, seg_2 and seg_3 survive
+    storage.cleanup();
+    let on_disk = list_segment_dirs_on_disk(tmp.path());
+    assert!(!on_disk.contains(&seg_1), "old seg_1 should be removed");
+    assert!(on_disk.contains(&seg_2), "carried-forward seg_2 must survive");
+    assert!(on_disk.contains(&seg_3), "rebuilt seg_3 must survive");
+
+    // Search returns 35 results
+    let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
+    assert_eq!(results.len(), 35);
+}
+
+#[test]
+fn test_cleanup_after_all_segments_deleted() {
+    let (tmp, storage) = make_storage(3, DistanceMetric::L2);
+
+    // Insert 5, compact(1) → seg_1
+    for i in 0..5u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+    let seg_1 = manifest_segment_ids(tmp.path(), 1)[0];
+
+    // Delete all 5, compact(2) → empty manifest
+    for i in 0..5u64 {
+        storage.delete(i);
+    }
+    storage.compact(2).unwrap();
+    let m2 = read_manifest(tmp.path(), 2);
+    assert!(m2.is_empty(), "manifest should be empty after deleting all docs");
+
+    // cleanup → seg_1 removed
+    storage.cleanup();
+    let on_disk = list_segment_dirs_on_disk(tmp.path());
+    assert!(!on_disk.contains(&seg_1), "seg_1 should be removed after all docs deleted");
+
+    // Search returns 0
+    let results = storage.search(&[0.0, 0.0, 0.0], 10, None).unwrap();
+    assert!(results.is_empty());
+
+    // Insert new docs, compact, search works
+    for i in 100..103u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(3).unwrap();
+    let results = storage.search(&[0.0, 0.0, 0.0], 10, None).unwrap();
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn test_cleanup_multiple_compactions_accumulating_old_segments() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 1_000_000,
+        deletion_threshold: DeletionThreshold::default(),
+        insertion_rebuild_threshold: 0.0, // forces full rebuild every compaction
+    };
+    let (tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // 4 rounds: each insert+compact produces a new segment via full rebuild
+    let mut expected_total = 0u64;
+    for round in 1..=4u64 {
+        let base = (round - 1) * 5;
+        for i in base..base + 3 + round - 1 {
+            storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+            expected_total += 1;
+        }
+        storage.compact(round).unwrap();
+    }
+
+    // Before cleanup: multiple segment dirs on disk
+    let before = list_segment_dirs_on_disk(tmp.path());
+    assert!(before.len() >= 2, "should have accumulated old segment dirs");
+
+    // Get current manifest segment id
+    let current_ids = manifest_segment_ids(tmp.path(), 4);
+    assert_eq!(current_ids.len(), 1);
+    let current_seg = current_ids[0];
+
+    // cleanup → only current segment survives
+    storage.cleanup();
+    let after = list_segment_dirs_on_disk(tmp.path());
+    assert_eq!(after, vec![current_seg], "only current segment should survive");
+
+    // Search returns all docs
+    let results = storage
+        .search(&[0.0, 0.0, 0.0], 100, Some(200))
+        .unwrap();
+    assert_eq!(results.len(), expected_total as usize);
+
+    // Integrity check passes
+    assert!(storage.integrity_check().passed);
+}
+
+#[test]
+fn test_cleanup_preserves_search_correctness_multi_segment() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 15,
+        deletion_threshold: 0.5f64.try_into().unwrap(),
+        insertion_rebuild_threshold: 10.0,
+    };
+    let (_tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // Create segments via overflow: 15 + 15 + 5 docs
+    for i in 0..15u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+
+    for i in 15..30u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(2).unwrap();
+
+    for i in 30..35u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    // Delete a few (low ratio, should carry forward)
+    storage.delete(3);
+    storage.delete(18);
+    storage.compact(3).unwrap();
+
+    // Record search results before cleanup
+    let results_before = storage
+        .search(&[10.0, 0.0, 0.0], 50, Some(200))
+        .unwrap();
+    assert_eq!(results_before.len(), 33); // 35 - 2 deleted
+
+    // Cleanup
+    storage.cleanup();
+
+    // Search results must be identical after cleanup
+    let results_after = storage
+        .search(&[10.0, 0.0, 0.0], 50, Some(200))
+        .unwrap();
+    assert_eq!(results_after.len(), results_before.len());
+    for (a, b) in results_before.iter().zip(results_after.iter()) {
+        assert_eq!(a.0, b.0, "doc_id mismatch after cleanup");
+        assert!(
+            (a.1 - b.1).abs() < 1e-6,
+            "distance mismatch after cleanup for doc {}",
+            a.0
+        );
+    }
+}
+
+#[test]
+fn test_cleanup_carried_forward_across_three_versions() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 100,
+        deletion_threshold: 0.5f64.try_into().unwrap(),
+        insertion_rebuild_threshold: 10.0,
+    };
+    let (tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // Insert 20, compact(1) → seg_1
+    for i in 0..20u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+    let seg_1 = manifest_segment_ids(tmp.path(), 1)[0];
+
+    // Delete-only compactions for versions 2, 3, 4 (low ratio each time)
+    // Each deletes 1 doc: 1/20=0.05, 2/20=0.10, 3/20=0.15 — all < 0.5
+    storage.delete(0);
+    storage.compact(2).unwrap();
+    assert_eq!(manifest_segment_ids(tmp.path(), 2)[0], seg_1);
+
+    storage.delete(1);
+    storage.compact(3).unwrap();
+    assert_eq!(manifest_segment_ids(tmp.path(), 3)[0], seg_1);
+
+    storage.delete(2);
+    storage.compact(4).unwrap();
+    assert_eq!(manifest_segment_ids(tmp.path(), 4)[0], seg_1, "seg_1 should still be carried forward");
+
+    // cleanup → seg_1 survives, only versions/4 remains
+    storage.cleanup();
+    let on_disk = list_segment_dirs_on_disk(tmp.path());
+    assert!(on_disk.contains(&seg_1), "seg_1 must survive cleanup");
+
+    let version_dirs: Vec<_> = std::fs::read_dir(tmp.path().join("versions"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.parse::<u64>().ok())
+        .collect();
+    assert_eq!(version_dirs, vec![4], "only version 4 should remain");
+
+    // Search returns 17 results (20 - 3 deleted)
+    let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
+    assert_eq!(results.len(), 17);
+}
+
+#[test]
+fn test_cleanup_incremental_insert_then_carry_forward() {
+    let seg_config = SegmentConfig {
+        max_nodes_per_segment: 100,
+        deletion_threshold: 0.5f64.try_into().unwrap(),
+        insertion_rebuild_threshold: 0.3,
+    };
+    let (tmp, storage) = make_storage_with_segment_config(3, DistanceMetric::L2, seg_config);
+
+    // Insert 50, compact(1) → seg_1
+    for i in 0..50u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(1).unwrap();
+    let seg_1 = manifest_segment_ids(tmp.path(), 1)[0];
+
+    // Insert 10, compact(2) → incremental insert → new seg_2 (10/50=0.2 < 0.3), seg_1 orphaned
+    for i in 50..60u64 {
+        storage.insert(i, iv(3, &[i as f32, 0.0, 0.0]));
+    }
+    storage.compact(2).unwrap();
+    let m2_ids = manifest_segment_ids(tmp.path(), 2);
+    assert_eq!(m2_ids.len(), 1);
+    let seg_2 = m2_ids[0];
+    assert_ne!(seg_2, seg_1, "incremental insert creates new segment id");
+
+    // Delete 1 doc, compact(3) → seg_2 carried forward (1/60 < 0.5)
+    storage.delete(0);
+    storage.compact(3).unwrap();
+    let m3_ids = manifest_segment_ids(tmp.path(), 3);
+    assert_eq!(m3_ids.len(), 1);
+    assert_eq!(m3_ids[0], seg_2, "seg_2 should be carried forward");
+
+    // cleanup → seg_1 removed, seg_2 survives
+    storage.cleanup();
+    let on_disk = list_segment_dirs_on_disk(tmp.path());
+    assert!(!on_disk.contains(&seg_1), "old seg_1 should be removed");
+    assert!(on_disk.contains(&seg_2), "carried-forward seg_2 must survive");
+
+    // Search returns 59 results (60 - 1 deleted)
+    let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
+    assert_eq!(results.len(), 59);
+}
