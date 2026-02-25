@@ -820,24 +820,24 @@ fn flush_term_buf(
 ///
 /// When doc_ids are checked in non-decreasing order, each check is O(1) amortized
 /// instead of O(log D) with binary search, because the cursor only advances forward.
-struct SortedDeleteCursor<'a> {
+pub(super) struct SortedDeleteCursor<'a> {
     slice: Option<&'a [u64]>,
     pos: usize,
 }
 
 impl<'a> SortedDeleteCursor<'a> {
-    fn new(slice: Option<&'a [u64]>) -> Self {
+    pub(super) fn new(slice: Option<&'a [u64]>) -> Self {
         Self { slice, pos: 0 }
     }
 
-    fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.pos = 0;
     }
 
     /// Returns `true` if `doc_id` should be kept (i.e., is NOT in the delete set).
     ///
     /// Must be called with non-decreasing `doc_id` values between resets.
-    fn should_keep(&mut self, doc_id: u64) -> bool {
+    pub(super) fn should_keep(&mut self, doc_id: u64) -> bool {
         let slice = match self.slice {
             None => return true,
             Some(s) => s,

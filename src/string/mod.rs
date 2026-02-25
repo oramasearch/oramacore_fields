@@ -95,6 +95,7 @@ mod merge;
 mod platform;
 mod scorer;
 mod scoring;
+mod simd;
 mod storage;
 
 pub use config::{Bm25Params, Threshold};

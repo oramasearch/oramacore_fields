@@ -12,6 +12,18 @@ pub fn bm25f_normalized_tf(tf: f32, field_length: f32, avg_field_length: f32, b:
     tf / (1.0 - b + b * (field_length / avg_field_length))
 }
 
+/// Compute the BM25F normalized term frequency using a precomputed inverse average field length.
+///
+/// Equivalent to `bm25f_normalized_tf` but eliminates one division per call by accepting
+/// `inv_avg_fl = 1.0 / avg_field_length` (precomputed once per search).
+#[inline]
+pub fn bm25f_normalized_tf_fast(tf: f32, field_length: f32, inv_avg_fl: f32, b: f32) -> f32 {
+    if inv_avg_fl == 0.0 {
+        return 0.0;
+    }
+    tf / (1.0 - b + b * field_length * inv_avg_fl)
+}
+
 /// Compute the Lucene-style IDF (always non-negative).
 ///
 /// `total_documents` is the total number of documents in the corpus.
@@ -140,6 +152,33 @@ mod tests {
     #[test]
     fn test_bm25f_score_zero_aggregated() {
         let result = bm25f_score(0.0, 1.2, 2.0);
+        assert!((result - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalized_tf_fast_matches_original() {
+        let cases = [
+            (2.0, 10.0, 10.0, 0.75),
+            (1.0, 5.0, 10.0, 0.75),
+            (1.0, 20.0, 10.0, 0.75),
+            (3.0, 100.0, 10.0, 0.0),
+            (5.0, 8.0, 12.0, 0.5),
+            (1.0, 1.0, 1.0, 1.0),
+        ];
+        for (tf, fl, avg_fl, b) in cases {
+            let original = bm25f_normalized_tf(tf, fl, avg_fl, b);
+            let inv_avg_fl = if avg_fl > 0.0 { 1.0 / avg_fl } else { 0.0 };
+            let fast = bm25f_normalized_tf_fast(tf, fl, inv_avg_fl, b);
+            assert!(
+                (original - fast).abs() < 1e-6,
+                "Mismatch for tf={tf}, fl={fl}, avg_fl={avg_fl}, b={b}: original={original}, fast={fast}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalized_tf_fast_zero_inv_avg() {
+        let result = bm25f_normalized_tf_fast(1.0, 10.0, 0.0, 0.75);
         assert!((result - 0.0).abs() < 1e-6);
     }
 }

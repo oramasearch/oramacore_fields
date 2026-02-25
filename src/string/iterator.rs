@@ -3,11 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::compacted::CompactedVersion;
+use super::compacted::{CompactedVersion, SortedDeleteCursor};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
 use super::scorer::BM25Scorer;
-use super::scoring::{bm25f_normalized_tf, bm25f_score, calculate_idf};
+use super::scoring::{bm25f_score, calculate_idf};
+use super::simd;
 use super::DocumentFilter;
 
 /// Parameters for a search query.
@@ -78,6 +79,78 @@ enum PerDocNtf {
     MultiTerm(HashMap<u64, f32>),
 }
 
+const BATCH_SIZE: usize = 8;
+
+struct ScoringBatch {
+    doc_ids: [u64; BATCH_SIZE],
+    tfs: [f32; BATCH_SIZE],
+    field_lengths: [f32; BATCH_SIZE],
+    exact_boosts: [f32; BATCH_SIZE],
+    len: usize,
+}
+
+impl ScoringBatch {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            doc_ids: [0; BATCH_SIZE],
+            tfs: [0.0; BATCH_SIZE],
+            field_lengths: [0.0; BATCH_SIZE],
+            exact_boosts: [0.0; BATCH_SIZE],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, doc_id: u64, tf: f32, field_length: f32, exact_boost: f32) {
+        self.doc_ids[self.len] = doc_id;
+        self.tfs[self.len] = tf;
+        self.field_lengths[self.len] = field_length;
+        self.exact_boosts[self.len] = exact_boost;
+        self.len += 1;
+    }
+
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.len >= BATCH_SIZE
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+/// Flush a scoring batch: compute normalized TF via SIMD and push results to accumulator.
+#[inline]
+fn flush_batch(
+    batch: &ScoringBatch,
+    inv_avg_fl: f32,
+    b: f32,
+    boost: f32,
+    per_doc_ntf: &mut PerDocNtf,
+) {
+    if batch.len == 0 {
+        return;
+    }
+    let mut ntf_out = [0.0f32; BATCH_SIZE];
+    simd::batch_normalized_tf(
+        &batch.tfs,
+        &batch.field_lengths,
+        inv_avg_fl,
+        b,
+        &mut ntf_out,
+        batch.len,
+    );
+    for i in 0..batch.len {
+        let value = ntf_out[i] * boost * batch.exact_boosts[i];
+        match per_doc_ntf {
+            PerDocNtf::SingleTerm(v) => v.push((batch.doc_ids[i], value)),
+            PerDocNtf::MultiTerm(m) => *m.entry(batch.doc_ids[i]).or_insert(0.0) += value,
+        }
+    }
+}
+
 /// Holds references to compacted + live data and executes searches.
 pub struct SearchHandle {
     version: Arc<CompactedVersion>,
@@ -142,9 +215,29 @@ impl SearchHandle {
         } else {
             0.0
         };
+        let inv_avg_fl = if avg_field_length > 0.0 {
+            1.0 / avg_field_length
+        } else {
+            0.0
+        };
 
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
+
+        let mut live_del_cursor = SortedDeleteCursor::new(
+            if deletes.is_empty() {
+                None
+            } else {
+                Some(deletes.as_slice())
+            },
+        );
+        let mut compacted_del_cursor = SortedDeleteCursor::new(
+            if compacted_deletes.is_empty() {
+                None
+            } else {
+                Some(compacted_deletes)
+            },
+        );
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
@@ -162,9 +255,14 @@ impl SearchHandle {
             }
             let mut corpus_df: u64 = 0;
 
+            let mut batch = ScoringBatch::new();
+
             // Search compacted layer (zero-copy)
             let version = &self.version;
             version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+                live_del_cursor.reset();
+                compacted_del_cursor.reset();
+
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
@@ -173,7 +271,9 @@ impl SearchHandle {
 
                 let mut fl_cursor: usize = 0;
                 while let Some(entry) = reader.next_ref() {
-                    if is_deleted(entry.doc_id, deletes, compacted_deletes) {
+                    if !live_del_cursor.should_keep(entry.doc_id)
+                        || !compacted_del_cursor.should_keep(entry.doc_id)
+                    {
                         continue;
                     }
                     if let Some(filter) = filter {
@@ -196,24 +296,35 @@ impl SearchHandle {
                         .field_length_galloping(entry.doc_id, &mut fl_cursor)
                         .unwrap_or(0) as f32;
 
-                    let ntf = bm25f_normalized_tf(
-                        tf as f32,
-                        field_length,
-                        avg_field_length,
-                        params.bm25_params.b,
-                    );
-
-                    let value = ntf * params.boost * exact_boost;
-                    match &mut per_doc_ntf {
-                        PerDocNtf::SingleTerm(v) => v.push((entry.doc_id, value)),
-                        PerDocNtf::MultiTerm(m) => *m.entry(entry.doc_id).or_insert(0.0) += value,
+                    batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
+                    if batch.is_full() {
+                        flush_batch(
+                            &batch,
+                            inv_avg_fl,
+                            params.bm25_params.b,
+                            params.boost,
+                            &mut per_doc_ntf,
+                        );
+                        batch.clear();
                     }
                 }
+                // Flush remaining entries from this term match
+                flush_batch(
+                    &batch,
+                    inv_avg_fl,
+                    params.bm25_params.b,
+                    params.boost,
+                    &mut per_doc_ntf,
+                );
+                batch.clear();
             })?;
 
             // Search live layer
             let snapshot = &self.snapshot;
             snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
+                live_del_cursor.reset();
+                compacted_del_cursor.reset();
+
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
@@ -221,7 +332,9 @@ impl SearchHandle {
                 };
 
                 for (doc_id, exact, stemmed) in postings {
-                    if is_deleted(*doc_id, deletes, compacted_deletes) {
+                    if !live_del_cursor.should_keep(*doc_id)
+                        || !compacted_del_cursor.should_keep(*doc_id)
+                    {
                         continue;
                     }
                     if let Some(filter) = filter {
@@ -243,28 +356,56 @@ impl SearchHandle {
                     let field_length =
                         snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
 
-                    let ntf = bm25f_normalized_tf(
-                        tf as f32,
-                        field_length,
-                        avg_field_length,
-                        params.bm25_params.b,
-                    );
-
-                    let value = ntf * params.boost * exact_boost;
-                    match &mut per_doc_ntf {
-                        PerDocNtf::SingleTerm(v) => v.push((*doc_id, value)),
-                        PerDocNtf::MultiTerm(m) => *m.entry(*doc_id).or_insert(0.0) += value,
+                    batch.push(*doc_id, tf as f32, field_length, exact_boost);
+                    if batch.is_full() {
+                        flush_batch(
+                            &batch,
+                            inv_avg_fl,
+                            params.bm25_params.b,
+                            params.boost,
+                            &mut per_doc_ntf,
+                        );
+                        batch.clear();
                     }
                 }
+                // Flush remaining entries from this term match
+                flush_batch(
+                    &batch,
+                    inv_avg_fl,
+                    params.bm25_params.b,
+                    params.boost,
+                    &mut per_doc_ntf,
+                );
+                batch.clear();
             });
 
             // Compute IDF for this token and feed directly into scorer
             let idf = calculate_idf(total_documents, corpus_df);
             match &per_doc_ntf {
                 PerDocNtf::SingleTerm(v) => {
-                    for &(doc_id, ntf) in v {
-                        let score = bm25f_score(ntf, params.bm25_params.k, idf);
-                        scorer.add(doc_id, score, token_bit);
+                    let mut i = 0;
+                    let mut ntfs_buf = [0.0f32; BATCH_SIZE];
+                    let mut scores_buf = [0.0f32; BATCH_SIZE];
+                    while i + BATCH_SIZE <= v.len() {
+                        for j in 0..BATCH_SIZE {
+                            ntfs_buf[j] = v[i + j].1;
+                        }
+                        simd::batch_bm25f_score(
+                            &ntfs_buf,
+                            params.bm25_params.k,
+                            idf,
+                            &mut scores_buf,
+                            BATCH_SIZE,
+                        );
+                        for j in 0..BATCH_SIZE {
+                            scorer.add(v[i + j].0, scores_buf[j], token_bit);
+                        }
+                        i += BATCH_SIZE;
+                    }
+                    // Scalar tail
+                    for idx in i..v.len() {
+                        let score = bm25f_score(v[idx].1, params.bm25_params.k, idf);
+                        scorer.add(v[idx].0, score, token_bit);
                     }
                 }
                 PerDocNtf::MultiTerm(m) => {
@@ -307,9 +448,29 @@ impl SearchHandle {
         } else {
             0.0
         };
+        let inv_avg_fl = if avg_field_length > 0.0 {
+            1.0 / avg_field_length
+        } else {
+            0.0
+        };
 
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
+
+        let mut live_del_cursor = SortedDeleteCursor::new(
+            if deletes.is_empty() {
+                None
+            } else {
+                Some(deletes.as_slice())
+            },
+        );
+        let mut compacted_del_cursor = SortedDeleteCursor::new(
+            if compacted_deletes.is_empty() {
+                None
+            } else {
+                Some(compacted_deletes)
+            },
+        );
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
@@ -331,9 +492,14 @@ impl SearchHandle {
             curr_raw.clear();
             let mut corpus_df: u64 = 0;
 
+            let mut batch = ScoringBatch::new();
+
             // Search compacted layer (zero-copy)
             let version = &self.version;
             version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+                live_del_cursor.reset();
+                compacted_del_cursor.reset();
+
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
@@ -342,7 +508,9 @@ impl SearchHandle {
 
                 let mut fl_cursor: usize = 0;
                 while let Some(entry) = reader.next_ref() {
-                    if is_deleted(entry.doc_id, deletes, compacted_deletes) {
+                    if !live_del_cursor.should_keep(entry.doc_id)
+                        || !compacted_del_cursor.should_keep(entry.doc_id)
+                    {
                         continue;
                     }
                     if let Some(filter) = filter {
@@ -378,24 +546,34 @@ impl SearchHandle {
                         .field_length_galloping(entry.doc_id, &mut fl_cursor)
                         .unwrap_or(0) as f32;
 
-                    let ntf = bm25f_normalized_tf(
-                        tf as f32,
-                        field_length,
-                        avg_field_length,
-                        params.bm25_params.b,
-                    );
-
-                    let value = ntf * params.boost * exact_boost;
-                    match &mut per_doc_ntf {
-                        PerDocNtf::SingleTerm(v) => v.push((entry.doc_id, value)),
-                        PerDocNtf::MultiTerm(m) => *m.entry(entry.doc_id).or_insert(0.0) += value,
+                    batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
+                    if batch.is_full() {
+                        flush_batch(
+                            &batch,
+                            inv_avg_fl,
+                            params.bm25_params.b,
+                            params.boost,
+                            &mut per_doc_ntf,
+                        );
+                        batch.clear();
                     }
                 }
+                flush_batch(
+                    &batch,
+                    inv_avg_fl,
+                    params.bm25_params.b,
+                    params.boost,
+                    &mut per_doc_ntf,
+                );
+                batch.clear();
             })?;
 
             // Search live layer
             let snapshot = &self.snapshot;
             snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
+                live_del_cursor.reset();
+                compacted_del_cursor.reset();
+
                 let exact_boost = if is_exact {
                     exact_match_boost_multiplier
                 } else {
@@ -403,7 +581,9 @@ impl SearchHandle {
                 };
 
                 for (doc_id, exact, stemmed) in postings {
-                    if is_deleted(*doc_id, deletes, compacted_deletes) {
+                    if !live_del_cursor.should_keep(*doc_id)
+                        || !compacted_del_cursor.should_keep(*doc_id)
+                    {
                         continue;
                     }
                     if let Some(filter) = filter {
@@ -438,19 +618,26 @@ impl SearchHandle {
                     let field_length =
                         snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
 
-                    let ntf = bm25f_normalized_tf(
-                        tf as f32,
-                        field_length,
-                        avg_field_length,
-                        params.bm25_params.b,
-                    );
-
-                    let value = ntf * params.boost * exact_boost;
-                    match &mut per_doc_ntf {
-                        PerDocNtf::SingleTerm(v) => v.push((*doc_id, value)),
-                        PerDocNtf::MultiTerm(m) => *m.entry(*doc_id).or_insert(0.0) += value,
+                    batch.push(*doc_id, tf as f32, field_length, exact_boost);
+                    if batch.is_full() {
+                        flush_batch(
+                            &batch,
+                            inv_avg_fl,
+                            params.bm25_params.b,
+                            params.boost,
+                            &mut per_doc_ntf,
+                        );
+                        batch.clear();
                     }
                 }
+                flush_batch(
+                    &batch,
+                    inv_avg_fl,
+                    params.bm25_params.b,
+                    params.boost,
+                    &mut per_doc_ntf,
+                );
+                batch.clear();
             });
 
             // Sort and dedup positions, then check adjacency with previous token
@@ -466,9 +653,28 @@ impl SearchHandle {
             let idf = calculate_idf(total_documents, corpus_df);
             match &per_doc_ntf {
                 PerDocNtf::SingleTerm(v) => {
-                    for &(doc_id, ntf) in v {
-                        let score = bm25f_score(ntf, params.bm25_params.k, idf);
-                        scorer.add(doc_id, score, token_bit);
+                    let mut i = 0;
+                    let mut ntfs_buf = [0.0f32; BATCH_SIZE];
+                    let mut scores_buf = [0.0f32; BATCH_SIZE];
+                    while i + BATCH_SIZE <= v.len() {
+                        for j in 0..BATCH_SIZE {
+                            ntfs_buf[j] = v[i + j].1;
+                        }
+                        simd::batch_bm25f_score(
+                            &ntfs_buf,
+                            params.bm25_params.k,
+                            idf,
+                            &mut scores_buf,
+                            BATCH_SIZE,
+                        );
+                        for j in 0..BATCH_SIZE {
+                            scorer.add(v[i + j].0, scores_buf[j], token_bit);
+                        }
+                        i += BATCH_SIZE;
+                    }
+                    for idx in i..v.len() {
+                        let score = bm25f_score(v[idx].1, params.bm25_params.k, idf);
+                        scorer.add(v[idx].0, score, token_bit);
                     }
                     if token_idx == 0 {
                         consecutive_counts.reserve(v.len());
@@ -537,11 +743,6 @@ fn token_bit(token_idx: usize) -> u32 {
         return 0;
     }
     1u32 << (token_idx as u32)
-}
-
-#[inline]
-fn is_deleted(doc_id: u64, live_deletes: &[u64], compacted_deletes: &[u64]) -> bool {
-    live_deletes.binary_search(&doc_id).is_ok() || compacted_deletes.binary_search(&doc_id).is_ok()
 }
 
 #[cfg(test)]
