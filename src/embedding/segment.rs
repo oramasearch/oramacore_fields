@@ -1,13 +1,12 @@
 use super::config::DistanceMetric;
 use super::distance::Distance;
 use super::error::Error;
-use super::hnsw::{VisitedBitset, GRAPH_HEADER_SIZE, SENTINEL};
+use super::hnsw::{GRAPH_HEADER_SIZE, SENTINEL};
 use super::io::{load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry};
 use super::platform::{advise_random, advise_sequential};
 use super::quantization::QuantizationParams;
 use super::DocumentFilter;
 use memmap2::Mmap;
-use std::collections::BinaryHeap;
 use std::fs::File;
 use std::path::Path;
 
@@ -194,11 +193,10 @@ impl Segment {
         })
     }
 
-    /// Two-phase HNSW search on this segment.
-    /// Phase 1: Quantized distance for beam search.
-    /// Phase 2: Rescore top candidates with raw f32 distance.
+    /// Two-phase HNSW search reusing caller-provided buffers.
+    /// Results are left in `ctx.scored` (sorted by distance, truncated to k).
     #[allow(clippy::too_many_arguments)]
-    pub fn search<D: Distance, F: DocumentFilter>(
+    pub fn search_with_context<D: Distance, F: DocumentFilter>(
         &self,
         query_raw: &[f32],
         query_quantized: &[i8],
@@ -207,9 +205,11 @@ impl Segment {
         segment_deletes: &[u64],
         live_deletes: &[u64],
         filter: Option<&F>,
-    ) -> Vec<(u64, f32)> {
+        ctx: &mut super::search_context::SearchContext,
+    ) {
         if self.config.num_nodes == 0 {
-            return Vec::new();
+            ctx.scored.clear();
+            return;
         }
 
         let dimensions = self.config.dimensions;
@@ -246,83 +246,90 @@ impl Segment {
 
         // Phase 1b: Beam search at level 0 using quantized distance
         let ef_actual = ef.max(k);
-        let mut candidates: BinaryHeap<MinHeapItemI32> = BinaryHeap::new();
-        let mut results: BinaryHeap<MaxHeapItemI32> = BinaryHeap::new();
-        let mut visited = VisitedBitset::new(self.config.num_nodes);
+        ctx.candidates_i32.clear();
+        ctx.results_i32.clear();
+        ctx.visited.clear();
+        ctx.visited.grow(self.config.num_nodes);
 
         let entry_qvec = self.quantized_vector(current, dimensions);
         let entry_dist = D::quantized_distance(query_quantized, entry_qvec);
-        candidates.push(MinHeapItemI32 {
+        ctx.candidates_i32.push(MinHeapItemI32 {
             index: current,
             distance: entry_dist,
         });
-        results.push(MaxHeapItemI32 {
+        ctx.results_i32.push(MaxHeapItemI32 {
             index: current,
             distance: entry_dist,
         });
-        visited.visit(current as usize);
+        ctx.visited.visit(current as usize);
 
         while let Some(MinHeapItemI32 {
             index: c_idx,
             distance: c_dist,
-        }) = candidates.pop()
+        }) = ctx.candidates_i32.pop()
         {
-            let worst = results.peek().map(|r| r.distance).unwrap_or(i32::MAX);
-            if c_dist > worst && results.len() >= ef_actual {
+            let worst = ctx
+                .results_i32
+                .peek()
+                .map(|r| r.distance)
+                .unwrap_or(i32::MAX);
+            if c_dist > worst && ctx.results_i32.len() >= ef_actual {
                 break;
             }
 
             let neighbor_bytes = self.get_neighbors(c_idx, 0);
             for neighbor_idx in Self::parse_neighbors(neighbor_bytes) {
                 let n = neighbor_idx as usize;
-                if !visited.visit(n) {
+                if !ctx.visited.visit(n) {
                     continue;
                 }
 
                 let nq = self.quantized_vector(neighbor_idx, dimensions);
                 let d = D::quantized_distance(query_quantized, nq);
 
-                let worst = results.peek().map(|r| r.distance).unwrap_or(i32::MAX);
-                if d < worst || results.len() < ef_actual {
-                    candidates.push(MinHeapItemI32 {
+                let worst = ctx
+                    .results_i32
+                    .peek()
+                    .map(|r| r.distance)
+                    .unwrap_or(i32::MAX);
+                if d < worst || ctx.results_i32.len() < ef_actual {
+                    ctx.candidates_i32.push(MinHeapItemI32 {
                         index: neighbor_idx,
                         distance: d,
                     });
-                    results.push(MaxHeapItemI32 {
+                    ctx.results_i32.push(MaxHeapItemI32 {
                         index: neighbor_idx,
                         distance: d,
                     });
-                    if results.len() > ef_actual {
-                        results.pop();
+                    if ctx.results_i32.len() > ef_actual {
+                        ctx.results_i32.pop();
                     }
                 }
             }
         }
 
         // Phase 2: Rescore with raw f32 distance, filter deleted
-        let mut scored: Vec<(u64, f32)> = results
-            .into_iter()
-            .filter_map(|item| {
-                let doc_id = self.doc_id_at(item.index);
-                if segment_deletes.binary_search(&doc_id).is_ok()
-                    || live_deletes.binary_search(&doc_id).is_ok()
-                {
-                    return None;
+        ctx.scored.clear();
+        while let Some(item) = ctx.results_i32.pop() {
+            let doc_id = self.doc_id_at(item.index);
+            if segment_deletes.binary_search(&doc_id).is_ok()
+                || live_deletes.binary_search(&doc_id).is_ok()
+            {
+                continue;
+            }
+            if let Some(f) = filter {
+                if !f.contains(doc_id) {
+                    continue;
                 }
-                if let Some(f) = filter {
-                    if !f.contains(doc_id) {
-                        return None;
-                    }
-                }
-                let raw_vec = self.raw_vector(item.index, dimensions);
-                let dist = D::distance(query_raw, raw_vec);
-                Some((doc_id, dist))
-            })
-            .collect();
+            }
+            let raw_vec = self.raw_vector(item.index, dimensions);
+            let dist = D::distance(query_raw, raw_vec);
+            ctx.scored.push((doc_id, dist));
+        }
 
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(k);
-        scored
+        ctx.scored
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        ctx.scored.truncate(k);
     }
 
     /// Unchecked doc_id access (for internal use during compaction).
@@ -454,9 +461,9 @@ pub fn load_mmap_with_advice(path: &Path, advice_fn: fn(&Mmap)) -> Result<Option
 }
 
 // Min-heap for i32 distances
-struct MinHeapItemI32 {
-    index: u32,
-    distance: i32,
+pub(crate) struct MinHeapItemI32 {
+    pub(crate) index: u32,
+    pub(crate) distance: i32,
 }
 
 impl PartialEq for MinHeapItemI32 {
@@ -477,9 +484,9 @@ impl Ord for MinHeapItemI32 {
 }
 
 // Max-heap for i32 distances
-struct MaxHeapItemI32 {
-    index: u32,
-    distance: i32,
+pub(crate) struct MaxHeapItemI32 {
+    pub(crate) index: u32,
+    pub(crate) distance: i32,
 }
 
 impl PartialEq for MaxHeapItemI32 {

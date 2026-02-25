@@ -1,6 +1,6 @@
 use super::distance::Distance;
 use super::DocumentFilter;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -218,21 +218,23 @@ impl LiveSnapshot {
         self.entries.is_empty() && self.deletes.is_empty()
     }
 
-    /// Brute-force search over live entries.
-    /// Returns (doc_id, distance) pairs sorted by distance ascending.
-    pub fn search<D: Distance, F: DocumentFilter>(
+    /// Brute-force search reusing caller-provided buffers.
+    /// Results are left in `ctx.live_results` (sorted by distance ascending).
+    pub fn search_with_context<D: Distance, F: DocumentFilter>(
         &self,
         query: &[f32],
         k: usize,
         excluded: &[u64],
         filter: Option<&F>,
-    ) -> Vec<(u64, f32)> {
+        ctx: &mut super::search_context::SearchContext,
+    ) {
         if self.entries.is_empty() || k == 0 {
-            return Vec::new();
+            ctx.live_results.clear();
+            return;
         }
 
         // Max-heap: we keep the k closest, evicting the farthest
-        let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+        ctx.live_heap.clear();
 
         for (doc_id, vector) in &self.entries {
             if excluded.binary_search(doc_id).is_ok() {
@@ -245,15 +247,15 @@ impl LiveSnapshot {
             }
 
             let dist = D::distance(query, vector);
-            if heap.len() < k {
-                heap.push(HeapItem {
+            if ctx.live_heap.len() < k {
+                ctx.live_heap.push(HeapItem {
                     doc_id: *doc_id,
                     distance: dist,
                 });
-            } else if let Some(top) = heap.peek() {
+            } else if let Some(top) = ctx.live_heap.peek() {
                 if dist < top.distance {
-                    heap.pop();
-                    heap.push(HeapItem {
+                    ctx.live_heap.pop();
+                    ctx.live_heap.push(HeapItem {
                         doc_id: *doc_id,
                         distance: dist,
                     });
@@ -261,19 +263,19 @@ impl LiveSnapshot {
             }
         }
 
-        let mut results: Vec<(u64, f32)> = heap
-            .into_iter()
-            .map(|item| (item.doc_id, item.distance))
-            .collect();
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        results
+        ctx.live_results.clear();
+        while let Some(item) = ctx.live_heap.pop() {
+            ctx.live_results.push((item.doc_id, item.distance));
+        }
+        ctx.live_results
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     }
 }
 
 #[derive(Debug, Clone)]
-struct HeapItem {
-    doc_id: u64,
-    distance: f32,
+pub(crate) struct HeapItem {
+    pub(crate) doc_id: u64,
+    pub(crate) distance: f32,
 }
 
 impl PartialEq for HeapItem {
@@ -362,10 +364,11 @@ mod tests {
         let snapshot = layer.get_snapshot();
 
         let query = [0.1, 0.0];
-        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&query, 2, &[], None);
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, 1); // closest: (0,0) dist=0.01
-        assert_eq!(results[1].0, 2); // next: (1,0) dist=0.81
+        let mut ctx = crate::embedding::search_context::SearchContext::new();
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&query, 2, &[], None, &mut ctx);
+        assert_eq!(ctx.live_results.len(), 2);
+        assert_eq!(ctx.live_results[0].0, 1); // closest: (0,0) dist=0.01
+        assert_eq!(ctx.live_results[1].0, 2); // next: (1,0) dist=0.81
     }
 
     #[test]
@@ -377,16 +380,18 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&[0.0], 3, &[1], None);
-        assert_eq!(results.len(), 2);
+        let mut ctx = crate::embedding::search_context::SearchContext::new();
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&[0.0], 3, &[1], None, &mut ctx);
+        assert_eq!(ctx.live_results.len(), 2);
         // Doc 1 excluded
-        assert!(results.iter().all(|(id, _)| *id != 1));
+        assert!(ctx.live_results.iter().all(|(id, _)| *id != 1));
     }
 
     #[test]
     fn test_search_empty() {
         let snapshot = LiveSnapshot::empty();
-        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&[1.0], 5, &[], None);
-        assert!(results.is_empty());
+        let mut ctx = crate::embedding::search_context::SearchContext::new();
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&[1.0], 5, &[], None, &mut ctx);
+        assert!(ctx.live_results.is_empty());
     }
 }

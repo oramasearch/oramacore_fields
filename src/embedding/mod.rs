@@ -110,6 +110,7 @@ mod live;
 mod platform;
 mod quantization;
 pub(crate) mod segment;
+mod search_context;
 mod simd;
 mod storage;
 
@@ -117,6 +118,7 @@ pub use config::{DeletionThreshold, DistanceMetric, EmbeddingConfig, SegmentConf
 pub use error::Error;
 pub use indexer::{Embedding, EmbeddingIndexer, IndexedValue};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
+pub use search_context::SearchContext;
 pub use storage::EmbeddingStorage;
 
 pub trait DocumentFilter {
