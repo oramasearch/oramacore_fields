@@ -10,7 +10,7 @@ use super::iterator::{SearchHandle, SearchParams};
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::sorted_merge;
 use super::scorer::BM25Scorer;
-use super::DocumentFilter;
+use super::{DocumentFilter, NoFilter};
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use std::fs;
@@ -77,7 +77,26 @@ impl StringStorage {
     ///
     /// Both the compacted (mmap) and live (in-memory) layers are searched and merged, so
     /// results reflect all inserts/deletes without requiring a compaction first.
-    pub fn search<F: DocumentFilter>(
+    /// Search the index without document filtering.
+    pub fn search(
+        &self,
+        params: &SearchParams<'_>,
+        scorer: &mut BM25Scorer,
+    ) -> Result<()> {
+        self.search_filtered::<NoFilter>(params, None, scorer)
+    }
+
+    /// Search the index, filtering results by document ID.
+    pub fn search_with_filter<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: &F,
+        scorer: &mut BM25Scorer,
+    ) -> Result<()> {
+        self.search_filtered(params, Some(filter), scorer)
+    }
+
+    fn search_filtered<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
@@ -473,7 +492,6 @@ fn validate_deleted_file(path: &std::path::Path) -> Result<()> {
 mod tests {
     use super::super::indexer::TermData;
     use super::super::iterator::SearchResult;
-    use super::super::NoFilter;
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     use std::collections::HashMap;
@@ -500,12 +518,11 @@ mod tests {
         let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &owned,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -834,12 +851,11 @@ mod tests {
                 let tokens = vec!["term".to_string()];
                 let mut scorer = BM25Scorer::new();
                 index_clone
-                    .search::<NoFilter>(
+                    .search(
                         &SearchParams {
                             tokens: &tokens,
                             ..Default::default()
                         },
-                        None,
                         &mut scorer,
                     )
                     .unwrap();
@@ -983,13 +999,12 @@ mod tests {
         let tokens = vec!["app".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1014,13 +1029,12 @@ mod tests {
         let tokens = vec!["apple".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     tolerance: Some(1),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1045,13 +1059,12 @@ mod tests {
         let tokens = vec!["apple".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     tolerance: Some(1),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1063,13 +1076,12 @@ mod tests {
         // Search after compaction
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     tolerance: Some(1),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1095,13 +1107,12 @@ mod tests {
         let tokens = vec!["apple".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     tolerance: Some(1),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1143,13 +1154,12 @@ mod tests {
         let tokens = vec!["hello".to_string(), "world".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     phrase_boost: Some(2.0),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1186,12 +1196,11 @@ mod tests {
         // threshold=1.0 with 3 tokens => need all 3
         let mut scorer = BM25Scorer::with_threshold(3);
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1230,7 +1239,7 @@ mod tests {
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: false,
@@ -1238,7 +1247,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1274,7 +1282,7 @@ mod tests {
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: true,
@@ -1282,7 +1290,6 @@ mod tests {
                     tolerance: Some(0),
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1315,7 +1322,7 @@ mod tests {
         let tokens = vec!["term1".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: false,
@@ -1323,7 +1330,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1356,7 +1362,7 @@ mod tests {
         let tokens = vec!["hello".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: false,
@@ -1364,7 +1370,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1394,7 +1399,7 @@ mod tests {
         let tokens = vec!["run".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: false,
@@ -1402,7 +1407,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1417,7 +1421,7 @@ mod tests {
         // exact_match=true → tf=0, no results
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: true,
@@ -1425,7 +1429,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
@@ -1460,7 +1463,7 @@ mod tests {
         let tokens = vec!["word".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     exact_match: false,
@@ -1468,7 +1471,6 @@ mod tests {
                     tolerance: None,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();

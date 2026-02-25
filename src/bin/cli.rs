@@ -915,7 +915,7 @@ fn string_search(
     format: OutputFormat,
 ) -> Result<(), String> {
     use oramacore_fields::string::{
-        BM25Scorer, Bm25Params, NoFilter, SearchParams, StringStorage, Threshold,
+        BM25Scorer, Bm25Params, SearchParams, StringStorage, Threshold,
     };
 
     let index = StringStorage::new(path.to_path_buf(), Threshold::default())
@@ -943,7 +943,7 @@ fn string_search(
 
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(&params, None, &mut scorer)
+        .search(&params, &mut scorer)
         .map_err(|e| format!("Search failed: {e}"))?;
 
     let mut search_result = scorer.into_search_result();

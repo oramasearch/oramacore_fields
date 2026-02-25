@@ -74,10 +74,10 @@
 //! // Search
 //! let tokens = vec!["hello".to_string()];
 //! let mut scorer = BM25Scorer::new();
-//! index.search::<oramacore_fields::string::NoFilter>(&SearchParams {
+//! index.search(&SearchParams {
 //!     tokens: &tokens,
 //!     ..Default::default()
-//! }, None, &mut scorer).unwrap();
+//! }, &mut scorer).unwrap();
 //! let result = scorer.into_search_result();
 //! assert_eq!(result.docs.len(), 1);
 //! ```

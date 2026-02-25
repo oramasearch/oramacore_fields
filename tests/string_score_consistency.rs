@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25Scorer, IndexedValue, NoFilter, SearchParams, StringStorage, TermData, Threshold,
+    BM25Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
 };
 
 fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> IndexedValue {
@@ -26,12 +26,11 @@ fn search_scores(index: &StringStorage, token: &str) -> HashMap<u64, f32> {
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();

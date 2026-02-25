@@ -53,7 +53,7 @@ fn stop_counting(baseline: (usize, usize)) -> (usize, usize) {
 }
 
 use oramacore_fields::string::{
-    BM25Scorer, IndexedValue, NoFilter, SearchParams, StringStorage, TermData, Threshold,
+    BM25Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -93,12 +93,11 @@ fn test_search_alloc_after_compact() {
     let tokens = vec!["apple".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -108,12 +107,11 @@ fn test_search_alloc_after_compact() {
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -140,12 +138,11 @@ fn test_search_alloc_clean_snapshot() {
     let tokens = vec!["apple".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -154,12 +151,11 @@ fn test_search_alloc_clean_snapshot() {
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -192,13 +188,12 @@ fn test_search_alloc_prefix() {
     let tokens = vec!["app".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 tolerance: None,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -207,13 +202,12 @@ fn test_search_alloc_prefix() {
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 tolerance: None,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -250,13 +244,12 @@ fn test_search_alloc_phrase_boost() {
     // Warm up
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 phrase_boost: Some(2.0),
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -265,13 +258,12 @@ fn test_search_alloc_phrase_boost() {
     let baseline = start_counting();
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 phrase_boost: Some(2.0),
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();

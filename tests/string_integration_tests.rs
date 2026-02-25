@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25Scorer, CheckStatus, DocumentFilter, IndexedValue, NoFilter, SearchParams, SearchResult,
+    BM25Scorer, CheckStatus, DocumentFilter, IndexedValue, SearchParams, SearchResult,
     StringStorage, TermData, Threshold,
 };
 
@@ -30,12 +30,11 @@ fn search_doc_ids(index: &StringStorage, token: &str) -> Vec<u64> {
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -50,12 +49,11 @@ fn search_scores(index: &StringStorage, token: &str) -> HashMap<u64, f32> {
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -65,7 +63,7 @@ fn search_scores(index: &StringStorage, token: &str) -> HashMap<u64, f32> {
 /// Search with custom params and return SearchResult.
 fn search_with_params(index: &StringStorage, params: &SearchParams<'_>) -> SearchResult {
     let mut scorer = BM25Scorer::new();
-    index.search::<NoFilter>(params, None, &mut scorer).unwrap();
+    index.search(params, &mut scorer).unwrap();
     scorer.into_search_result()
 }
 
@@ -76,7 +74,7 @@ fn search_with_threshold(
     min_tokens: u32,
 ) -> SearchResult {
     let mut scorer = BM25Scorer::with_threshold(min_tokens);
-    index.search::<NoFilter>(params, None, &mut scorer).unwrap();
+    index.search(params, &mut scorer).unwrap();
     scorer.into_search_result()
 }
 
@@ -89,12 +87,12 @@ fn search_with_filter<F: DocumentFilter>(
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search(
+        .search_with_filter(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            Some(filter),
+            filter,
             &mut scorer,
         )
         .unwrap();
@@ -775,12 +773,11 @@ fn test_scorer_top_k_returns_highest_scores() {
     let tokens = vec!["hello".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -790,12 +787,11 @@ fn test_scorer_top_k_returns_highest_scores() {
     // Now get top-2
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -821,12 +817,11 @@ fn test_scorer_top_k_larger_than_total() {
     let tokens = vec!["hello".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -846,12 +841,11 @@ fn test_scorer_top_k_zero() {
     let tokens = vec!["hello".to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -888,12 +882,11 @@ fn test_scorer_top_k_with_threshold() {
     let tokens = vec!["hello".to_string(), "world".to_string()];
     let mut scorer = BM25Scorer::with_threshold(2);
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -906,12 +899,11 @@ fn test_scorer_top_k_with_threshold() {
     // Verify it's the same as the full result's top-1
     let mut scorer = BM25Scorer::with_threshold(2);
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -937,12 +929,11 @@ fn test_scorer_top_k_ordering_matches_full_sort() {
 
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -951,12 +942,11 @@ fn test_scorer_top_k_ordering_matches_full_sort() {
     for k in [1, 5, 10, 25, 50] {
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();

@@ -11,7 +11,7 @@ use std::thread;
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25Scorer, IndexedValue, NoFilter, SearchParams, StringStorage, TermData, Threshold,
+    BM25Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
 };
 
 // ============================================================================
@@ -30,12 +30,11 @@ fn search_count(index: &StringStorage, token: &str) -> usize {
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -46,12 +45,11 @@ fn search_doc_ids_sorted(index: &StringStorage, token: &str) -> Vec<u64> {
     let tokens = vec![token.to_string()];
     let mut scorer = BM25Scorer::new();
     index
-        .search::<NoFilter>(
+        .search(
             &SearchParams {
                 tokens: &tokens,
                 ..Default::default()
             },
-            None,
             &mut scorer,
         )
         .unwrap();
@@ -291,12 +289,11 @@ fn test_search_result_stability_across_version_swap() {
         let tokens = vec!["term".to_string()];
         let mut scorer = BM25Scorer::new();
         index
-            .search::<NoFilter>(
+            .search(
                 &SearchParams {
                     tokens: &tokens,
                     ..Default::default()
                 },
-                None,
                 &mut scorer,
             )
             .unwrap();
