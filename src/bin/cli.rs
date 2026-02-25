@@ -1125,10 +1125,7 @@ fn string_filter_filter(
 
     match format {
         OutputFormat::Human => {
-            println!(
-                "Found {} result(s) where value = {value:?}",
-                result.count
-            );
+            println!("Found {} result(s) where value = {value:?}", result.count);
             if let Some(limit) = limit {
                 if result.count > limit {
                     println!("(showing first {limit})");
@@ -1452,9 +1449,7 @@ fn main() {
             ),
         },
         TopLevel::StringFilter { command } => match command {
-            StringFilterCommands::Check { path, verbose } => {
-                string_filter_check(&path, verbose)
-            }
+            StringFilterCommands::Check { path, verbose } => string_filter_check(&path, verbose),
             StringFilterCommands::Info { path, format } => string_filter_info(&path, format),
             StringFilterCommands::Filter {
                 path,
