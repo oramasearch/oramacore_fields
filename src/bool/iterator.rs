@@ -165,6 +165,140 @@ impl<'a> IntoIterator for &'a FilterData {
     }
 }
 
+impl IntoIterator for FilterData {
+    type Item = u64;
+    type IntoIter = OwnedFilterIterator;
+
+    fn into_iter(self) -> OwnedFilterIterator {
+        owned_ascending(self.version, self.snapshot, self.value)
+    }
+}
+
+impl FilterData {
+    /// Consume this `FilterData` and return an owned iterator in the specified order.
+    pub fn into_sorted(self, order: SortOrder) -> OwnedSortedIterator {
+        match order {
+            SortOrder::Ascending => {
+                OwnedSortedIterator::Ascending(owned_ascending(self.version, self.snapshot, self.value))
+            }
+            SortOrder::Descending => {
+                OwnedSortedIterator::Descending(owned_descending(self.version, self.snapshot, self.value))
+            }
+        }
+    }
+}
+
+/// Extract raw pointers to the four slices from the Arc-owned data.
+///
+/// # Safety
+///
+/// The returned pointers are only valid as long as the `Arc`s they came from
+/// remain alive. Callers must store those `Arc`s alongside any references
+/// derived from these pointers.
+fn extract_slice_ptrs(
+    version: &CompactedVersion,
+    snapshot: &LiveSnapshot,
+    value: bool,
+) -> (*const [u64], *const [u64], *const [u64], *const [u64]) {
+    let cp: *const [u64] = version.postings_slice(value);
+    let li: *const [u64] = snapshot.inserts(value);
+    let cd: *const [u64] = version.deletes_slice();
+    let ld: *const [u64] = snapshot.deletes.as_slice();
+    (cp, li, cd, ld)
+}
+
+fn owned_ascending(
+    version: Arc<CompactedVersion>,
+    snapshot: Arc<LiveSnapshot>,
+    value: bool,
+) -> OwnedFilterIterator {
+    let (cp, li, cd, ld) = extract_slice_ptrs(&version, &snapshot, value);
+
+    // SAFETY: The pointers reference heap data inside `version` (Mmap) and
+    // `snapshot` (Vec). Both `Arc`s are moved into `OwnedFilterIterator`,
+    // keeping refcounts > 0 for the iterator's entire lifetime. Rust drops
+    // fields in declaration order, so `iter` drops before `_version`/`_snapshot`.
+    let iter = unsafe {
+        FilterIterator::new(&*cp, &*li, &*cd, &*ld)
+    };
+    let iter = unsafe {
+        std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter)
+    };
+
+    OwnedFilterIterator { iter, _version: version, _snapshot: snapshot }
+}
+
+fn owned_descending(
+    version: Arc<CompactedVersion>,
+    snapshot: Arc<LiveSnapshot>,
+    value: bool,
+) -> OwnedDescendingIterator {
+    let (cp, li, cd, ld) = extract_slice_ptrs(&version, &snapshot, value);
+
+    // SAFETY: Same reasoning as `owned_ascending`.
+    let iter = unsafe {
+        DescendingIterator::new(&*cp, &*li, &*cd, &*ld)
+    };
+    let iter = unsafe {
+        std::mem::transmute::<DescendingIterator<'_>, DescendingIterator<'static>>(iter)
+    };
+
+    OwnedDescendingIterator { iter, _version: version, _snapshot: snapshot }
+}
+
+/// Owned ascending iterator that keeps the underlying data alive via `Arc`s.
+///
+/// Created by calling [`FilterData::into_iter()`] or
+/// [`FilterData::into_sorted(SortOrder::Ascending)`].
+pub struct OwnedFilterIterator {
+    // IMPORTANT: `iter` must be declared before the Arc fields so it drops first.
+    iter: FilterIterator<'static>,
+    _version: Arc<CompactedVersion>,
+    _snapshot: Arc<LiveSnapshot>,
+}
+
+impl Iterator for OwnedFilterIterator {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        self.iter.next()
+    }
+}
+
+/// Owned descending iterator that keeps the underlying data alive via `Arc`s.
+///
+/// Created by calling [`FilterData::into_sorted(SortOrder::Descending)`].
+pub struct OwnedDescendingIterator {
+    // IMPORTANT: `iter` must be declared before the Arc fields so it drops first.
+    iter: DescendingIterator<'static>,
+    _version: Arc<CompactedVersion>,
+    _snapshot: Arc<LiveSnapshot>,
+}
+
+impl Iterator for OwnedDescendingIterator {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        self.iter.next()
+    }
+}
+
+/// Owned iterator that yields doc_ids in either ascending or descending order.
+///
+/// Created by calling [`FilterData::into_sorted()`].
+pub enum OwnedSortedIterator {
+    Ascending(OwnedFilterIterator),
+    Descending(OwnedDescendingIterator),
+}
+
+impl Iterator for OwnedSortedIterator {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        match self {
+            OwnedSortedIterator::Ascending(iter) => iter.next(),
+            OwnedSortedIterator::Descending(iter) => iter.next(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +430,154 @@ mod tests {
     fn test_sorted_default_order() {
         // SortOrder::Ascending is the default
         assert_eq!(SortOrder::default(), SortOrder::Ascending);
+    }
+
+    #[test]
+    fn test_owned_into_iter_ascending() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5, 10],
+            false_inserts: vec![2, 6],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_iter().collect();
+
+        assert_eq!(results, vec![1, 5, 10]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_for_loop() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![3, 7],
+            false_inserts: vec![],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+
+        // FilterData consumed by for loop (IntoIterator)
+        let mut results = Vec::new();
+        for doc_id in filter_data {
+            results.push(doc_id);
+        }
+
+        assert_eq!(results, vec![3, 7]);
+    }
+
+    #[test]
+    fn test_owned_into_sorted_ascending() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5, 10],
+            false_inserts: vec![],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_sorted(SortOrder::Ascending).collect();
+
+        assert_eq!(results, vec![1, 5, 10]);
+    }
+
+    #[test]
+    fn test_owned_into_sorted_descending() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5, 10],
+            false_inserts: vec![],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_sorted(SortOrder::Descending).collect();
+
+        assert_eq!(results, vec![10, 5, 1]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_with_deletes() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5, 10, 15],
+            false_inserts: vec![],
+            deletes: vec![5, 15],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_iter().collect();
+
+        assert_eq!(results, vec![1, 10]);
+    }
+
+    #[test]
+    fn test_owned_into_sorted_with_deletes() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5, 10, 15],
+            false_inserts: vec![],
+            deletes: vec![5, 15],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_sorted(SortOrder::Descending).collect();
+
+        assert_eq!(results, vec![10, 1]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_empty() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![],
+            false_inserts: vec![],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+        let results: Vec<u64> = filter_data.into_iter().collect();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_owned_into_sorted_empty() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![],
+            false_inserts: vec![],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, true);
+
+        let asc: Vec<u64> = filter_data.into_sorted(SortOrder::Ascending).collect();
+        assert!(asc.is_empty());
+    }
+
+    #[test]
+    fn test_owned_false_value() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot {
+            true_inserts: vec![1, 5],
+            false_inserts: vec![2, 6, 11],
+            deletes: vec![],
+            ops_len: 0,
+        });
+
+        let filter_data = FilterData::new(version, snapshot, false);
+        let results: Vec<u64> = filter_data.into_iter().collect();
+
+        assert_eq!(results, vec![2, 6, 11]);
     }
 }

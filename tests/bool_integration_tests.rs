@@ -2162,6 +2162,225 @@ fn test_sorted_single_element() {
     assert_eq!(desc, vec![42]);
 }
 
+// ============================================================================
+// OWNED ITERATOR TESTS (IntoIterator / into_sorted)
+// ============================================================================
+
+/// Test owned ascending iterator via into_iter() with live-only data.
+#[test]
+fn test_owned_into_iter_ascending() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 10);
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 100);
+    index.insert(&IndexedValue::Plain(true), 50);
+
+    let results: Vec<u64> = index.filter(true).into_iter().collect();
+    assert_eq!(results, vec![1, 5, 10, 50, 100]);
+}
+
+/// Test owned descending iterator via into_sorted().
+#[test]
+fn test_owned_into_sorted_descending() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 10);
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 100);
+    index.insert(&IndexedValue::Plain(true), 50);
+
+    let results: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    assert_eq!(results, vec![100, 50, 10, 5, 1]);
+}
+
+/// Test owned iterator with compacted + live data.
+#[test]
+fn test_owned_iter_with_compacted_data() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    // Insert and compact first batch
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 10);
+    index.insert(&IndexedValue::Plain(true), 100);
+    index.compact(1).unwrap();
+
+    // Insert second batch (live layer)
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 50);
+
+    // Ascending via into_iter
+    let asc: Vec<u64> = index.filter(true).into_iter().collect();
+    assert_eq!(asc, vec![1, 5, 10, 50, 100]);
+
+    // Descending via into_sorted
+    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    assert_eq!(desc, vec![100, 50, 10, 5, 1]);
+}
+
+/// Test owned iterator with deletes, before and after compaction.
+#[test]
+fn test_owned_iter_with_deletes() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 10);
+    index.insert(&IndexedValue::Plain(true), 15);
+    index.insert(&IndexedValue::Plain(true), 20);
+
+    index.delete(5);
+    index.delete(15);
+
+    let asc: Vec<u64> = index.filter(true).into_iter().collect();
+    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+
+    assert_eq!(asc, vec![1, 10, 20]);
+    assert_eq!(desc, vec![20, 10, 1]);
+
+    // After compaction
+    index.compact(1).unwrap();
+
+    let asc: Vec<u64> = index.filter(true).into_iter().collect();
+    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+
+    assert_eq!(asc, vec![1, 10, 20]);
+    assert_eq!(desc, vec![20, 10, 1]);
+}
+
+/// Test owned iterator on empty results.
+#[test]
+fn test_owned_iter_empty() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    let asc: Vec<u64> = index.filter(true).into_iter().collect();
+    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+
+    assert!(asc.is_empty());
+    assert!(desc.is_empty());
+}
+
+/// Test owned iterator on false values.
+#[test]
+fn test_owned_iter_false_values() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(false), 100);
+    index.insert(&IndexedValue::Plain(false), 10);
+    index.insert(&IndexedValue::Plain(false), 50);
+
+    let asc: Vec<u64> = index.filter(false).into_iter().collect();
+    let desc: Vec<u64> = index.filter(false).into_sorted(SortOrder::Descending).collect();
+
+    assert_eq!(asc, vec![10, 50, 100]);
+    assert_eq!(desc, vec![100, 50, 10]);
+}
+
+/// Test that owned iterator can be returned from a function (the motivating use case).
+#[test]
+fn test_owned_iter_returned_from_function() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 10);
+
+    fn get_docs(index: &BoolStorage, value: bool) -> impl Iterator<Item = u64> {
+        index.filter(value).into_iter()
+    }
+
+    let results: Vec<u64> = get_docs(&index, true).collect();
+    assert_eq!(results, vec![1, 5, 10]);
+}
+
+/// Test that owned sorted iterator can be returned from a function.
+#[test]
+fn test_owned_sorted_iter_returned_from_function() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 5);
+    index.insert(&IndexedValue::Plain(true), 10);
+
+    fn get_docs_sorted(
+        index: &BoolStorage,
+        value: bool,
+        order: SortOrder,
+    ) -> impl Iterator<Item = u64> {
+        index.filter(value).into_sorted(order)
+    }
+
+    let asc: Vec<u64> = get_docs_sorted(&index, true, SortOrder::Ascending).collect();
+    let desc: Vec<u64> = get_docs_sorted(&index, true, SortOrder::Descending).collect();
+
+    assert_eq!(asc, vec![1, 5, 10]);
+    assert_eq!(desc, vec![10, 5, 1]);
+}
+
+/// Test for-loop consumption of FilterData (IntoIterator).
+#[test]
+fn test_owned_iter_for_loop() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(true), 7);
+    index.insert(&IndexedValue::Plain(true), 11);
+
+    let mut results = Vec::new();
+    for doc_id in index.filter(true) {
+        results.push(doc_id);
+    }
+
+    assert_eq!(results, vec![3, 7, 11]);
+}
+
+/// Test owned iterator agrees with borrowed iterator.
+#[test]
+fn test_owned_iter_matches_borrowed() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    for i in 0..50u64 {
+        let value = i % 3 != 0;
+        index.insert(&IndexedValue::Plain(value), i);
+    }
+    index.compact(1).unwrap();
+
+    for i in 50..100u64 {
+        let value = i % 3 != 0;
+        index.insert(&IndexedValue::Plain(value), i);
+    }
+    // Delete some
+    index.delete(10);
+    index.delete(25);
+    index.delete(75);
+
+    // Compare borrowed vs owned for both values and both directions
+    for value in [true, false] {
+        let borrowed_asc: Vec<u64> = index.filter(value).iter().collect();
+        let owned_asc: Vec<u64> = index.filter(value).into_iter().collect();
+        assert_eq!(borrowed_asc, owned_asc, "Mismatch for value={value} ascending");
+
+        let borrowed_desc: Vec<u64> = index.filter(value).sorted(SortOrder::Descending).collect();
+        let owned_desc: Vec<u64> = index
+            .filter(value)
+            .into_sorted(SortOrder::Descending)
+            .collect();
+        assert_eq!(borrowed_desc, owned_desc, "Mismatch for value={value} descending");
+    }
+}
+
 /// Test compaction during heavy concurrent load with verification.
 #[test]
 fn test_compaction_verification_under_load() {

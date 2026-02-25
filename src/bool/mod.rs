@@ -64,5 +64,8 @@ mod indexer;
 
 pub use indexer::{BoolIndexer, IndexedValue};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
-pub use iterator::{DescendingIterator, FilterData, FilterIterator, SortOrder, SortedIterator};
+pub use iterator::{
+    DescendingIterator, FilterData, FilterIterator, OwnedDescendingIterator, OwnedFilterIterator,
+    OwnedSortedIterator, SortOrder, SortedIterator,
+};
 pub use storage::{BoolStorage, DeletionThreshold};
