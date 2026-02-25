@@ -85,6 +85,74 @@ impl<'a, 'k> IntoIterator for &'a FilterData<'k> {
     }
 }
 
+impl IntoIterator for FilterData<'_> {
+    type Item = u64;
+    type IntoIter = OwnedFilterIterator;
+
+    fn into_iter(self) -> OwnedFilterIterator {
+        owned_ascending(self.version, self.snapshot, self.key)
+    }
+}
+
+/// Extract raw pointers to the four slices from the Arc-owned data.
+///
+/// # Safety
+///
+/// The returned pointers are only valid as long as the `Arc`s they came from
+/// remain alive. Callers must store those `Arc`s alongside any references
+/// derived from these pointers.
+fn extract_slice_ptrs(
+    version: &CompactedVersion,
+    snapshot: &LiveSnapshot,
+    key: &str,
+) -> (*const [u64], *const [u64], *const [u64], *const [u64]) {
+    let cp: *const [u64] = version.lookup(key).unwrap_or(&[]);
+    let li: *const [u64] = snapshot.doc_ids_for_key(key);
+    let cd: *const [u64] = version.deletes_slice();
+    let ld: *const [u64] = snapshot.deletes_sorted.as_slice();
+    (cp, li, cd, ld)
+}
+
+fn owned_ascending(
+    version: Arc<CompactedVersion>,
+    snapshot: Arc<LiveSnapshot>,
+    key: &str,
+) -> OwnedFilterIterator {
+    let (cp, li, cd, ld) = extract_slice_ptrs(&version, &snapshot, key);
+
+    // SAFETY: The pointers reference heap data inside `version` (Mmap) and
+    // `snapshot` (Vec). Both `Arc`s are moved into `OwnedFilterIterator`,
+    // keeping refcounts > 0 for the iterator's entire lifetime. Rust drops
+    // fields in declaration order, so `iter` drops before `_version`/`_snapshot`.
+    let iter = unsafe { FilterIterator::new(&*cp, &*li, &*cd, &*ld) };
+    let iter = unsafe {
+        std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter)
+    };
+
+    OwnedFilterIterator {
+        iter,
+        _version: version,
+        _snapshot: snapshot,
+    }
+}
+
+/// Owned ascending iterator that keeps the underlying data alive via `Arc`s.
+///
+/// Created by calling [`FilterData::into_iter()`].
+pub struct OwnedFilterIterator {
+    // IMPORTANT: `iter` must be declared before the Arc fields so it drops first.
+    iter: FilterIterator<'static>,
+    _version: Arc<CompactedVersion>,
+    _snapshot: Arc<LiveSnapshot>,
+}
+
+impl Iterator for OwnedFilterIterator {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        self.iter.next()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

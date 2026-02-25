@@ -76,5 +76,5 @@ pub use config::Threshold;
 pub use error::Error;
 pub use indexer::{IndexedValue, StringIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
-pub use iterator::{FilterData, FilterIterator};
+pub use iterator::{FilterData, FilterIterator, OwnedFilterIterator};
 pub use storage::StringFilterStorage;

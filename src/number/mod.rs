@@ -142,6 +142,9 @@ pub use config::Threshold;
 pub use error::Error;
 pub use indexer::{IndexedValue, NumberIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
-pub use iterator::{FilterHandle, FilterIterator, FilterOp, SortHandle, SortIterator, SortOrder};
+pub use iterator::{
+    FilterHandle, FilterIterator, FilterOp, OwnedFilterIterator, OwnedSortIterator, SortHandle,
+    SortIterator, SortOrder,
+};
 pub use key::IndexableNumber;
 pub use storage::{F64Storage, NumberStorage, U64Storage};

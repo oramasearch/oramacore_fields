@@ -2038,3 +2038,206 @@ fn test_indexer_mixed_plain_and_array_workflow() {
     let results: Vec<u64> = index.filter(FilterOp::Eq(50)).iter().collect();
     assert_eq!(results, vec![1, 2]);
 }
+
+// ============================================================================
+// Owned Iterator Tests (IntoIterator for FilterHandle / SortHandle)
+// ============================================================================
+
+#[test]
+fn test_filter_handle_into_iter_live_only() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+
+    let results: Vec<u64> = index.filter(FilterOp::Gte(20)).into_iter().collect();
+    assert_eq!(results, vec![2, 3]);
+}
+
+#[test]
+fn test_filter_handle_into_iter_compacted_plus_live() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.compact(1).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(40), 4).unwrap();
+
+    let results: Vec<u64> = index.filter(FilterOp::Gte(10)).into_iter().collect();
+    assert_eq!(results, vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn test_filter_handle_into_iter_with_deletes() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.compact(1).unwrap();
+
+    index.delete(2);
+
+    let results: Vec<u64> = index.filter(FilterOp::Gte(10)).into_iter().collect();
+    assert_eq!(results, vec![1, 3]);
+}
+
+#[test]
+fn test_filter_handle_into_iter_empty() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    let results: Vec<u64> = index.filter(FilterOp::Eq(999)).into_iter().collect();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_filter_handle_into_iter_returned_from_function() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+
+    fn get_docs(index: &U64Storage, op: FilterOp<u64>) -> impl Iterator<Item = u64> {
+        index.filter(op).into_iter()
+    }
+
+    let results: Vec<u64> = get_docs(&index, FilterOp::Gte(20)).collect();
+    assert_eq!(results, vec![2, 3]);
+}
+
+#[test]
+fn test_filter_handle_into_iter_matches_borrowed() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.compact(1).unwrap();
+
+    index.insert(&IndexedValue::Plain(40), 4).unwrap();
+    index.delete(2);
+
+    let borrowed: Vec<u64> = index.filter(FilterOp::Gte(10)).iter().collect();
+    let owned: Vec<u64> = index.filter(FilterOp::Gte(10)).into_iter().collect();
+    assert_eq!(borrowed, owned);
+}
+
+#[test]
+fn test_sort_handle_into_iter_ascending() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).into_iter().collect();
+    assert_eq!(results, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_sort_handle_into_iter_descending() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+
+    let results: Vec<u64> = index.sort(SortOrder::Descending).into_iter().collect();
+    assert_eq!(results, vec![3, 2, 1]);
+}
+
+#[test]
+fn test_sort_handle_into_iter_with_deletes() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(40), 4).unwrap();
+    index.compact(1).unwrap();
+
+    index.delete(2);
+
+    let asc: Vec<u64> = index.sort(SortOrder::Ascending).into_iter().collect();
+    assert_eq!(asc, vec![1, 3, 4]);
+
+    let desc: Vec<u64> = index.sort(SortOrder::Descending).into_iter().collect();
+    assert_eq!(desc, vec![4, 3, 1]);
+}
+
+#[test]
+fn test_sort_handle_into_iter_matches_borrowed() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.compact(1).unwrap();
+
+    index.insert(&IndexedValue::Plain(40), 4).unwrap();
+    index.delete(2);
+
+    let borrowed_asc: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    let owned_asc: Vec<u64> = index.sort(SortOrder::Ascending).into_iter().collect();
+    assert_eq!(borrowed_asc, owned_asc);
+
+    let borrowed_desc: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    let owned_desc: Vec<u64> = index.sort(SortOrder::Descending).into_iter().collect();
+    assert_eq!(borrowed_desc, owned_desc);
+}
+
+#[test]
+fn test_sort_handle_into_iter_returned_from_function() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+
+    fn get_sorted(index: &U64Storage, order: SortOrder) -> impl Iterator<Item = u64> {
+        index.sort(order).into_iter()
+    }
+
+    let results: Vec<u64> = get_sorted(&index, SortOrder::Descending).collect();
+    assert_eq!(results, vec![3, 2, 1]);
+}
+
+#[test]
+fn test_filter_handle_into_iter_f64() {
+    let temp = TempDir::new().unwrap();
+    let index: F64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(1.5), 1).unwrap();
+    index.insert(&IndexedValue::Plain(2.5), 2).unwrap();
+    index.insert(&IndexedValue::Plain(3.5), 3).unwrap();
+
+    let results: Vec<u64> = index.filter(FilterOp::Gt(2.0)).into_iter().collect();
+    assert_eq!(results, vec![2, 3]);
+}

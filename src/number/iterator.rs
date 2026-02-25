@@ -110,6 +110,60 @@ impl<'a, T: IndexableNumber> IntoIterator for &'a FilterHandle<T> {
     }
 }
 
+impl<T: IndexableNumber> IntoIterator for FilterHandle<T> {
+    type Item = u64;
+    type IntoIter = OwnedFilterIterator<T>;
+
+    fn into_iter(self) -> OwnedFilterIterator<T> {
+        let FilterHandle {
+            version,
+            snapshot,
+            filter_op,
+        } = self;
+
+        let inner = {
+            let min = filter_op.min_value();
+            let max = filter_op.max_value();
+
+            let version_ref: &CompactedVersion<T> = &version;
+            let snapshot_ref: &LiveSnapshot<T> = &snapshot;
+
+            let live_deletes = Arc::clone(&snapshot_ref.deletes);
+            let compacted_deletes = version_ref.deleted_set();
+            let compacted_filtered =
+                version_ref
+                    .iter_range(min, max)
+                    .filter(move |(_, doc_id)| {
+                        !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                    });
+
+            let live_inserts = snapshot_ref.inserts.iter().copied();
+            let merged = sorted_merge(compacted_filtered, live_inserts);
+
+            let result = merged
+                .filter(move |(value, _)| filter_op.matches(*value))
+                .map(|(_, doc_id)| doc_id);
+
+            let boxed: Box<dyn Iterator<Item = u64> + '_> = Box::new(result);
+            // SAFETY: The boxed iterator borrows from version/snapshot via the Arcs.
+            // Those Arcs are moved into OwnedFilterIterator, keeping data alive.
+            // `inner` is declared before the Arc fields, so it drops first.
+            unsafe {
+                std::mem::transmute::<
+                    Box<dyn Iterator<Item = u64> + '_>,
+                    Box<dyn Iterator<Item = u64> + 'static>,
+                >(boxed)
+            }
+        };
+
+        OwnedFilterIterator {
+            inner,
+            _version: version,
+            _snapshot: snapshot,
+        }
+    }
+}
+
 /// Iterator over matching doc_ids from a filter query.
 pub struct FilterIterator<'a, T: IndexableNumber> {
     inner: Box<dyn Iterator<Item = u64> + 'a>,
@@ -198,6 +252,78 @@ impl<'a, T: IndexableNumber> IntoIterator for &'a SortHandle<T> {
     }
 }
 
+impl<T: IndexableNumber> IntoIterator for SortHandle<T> {
+    type Item = u64;
+    type IntoIter = OwnedSortIterator<T>;
+
+    fn into_iter(self) -> OwnedSortIterator<T> {
+        let SortHandle {
+            version,
+            snapshot,
+            order,
+        } = self;
+
+        let inner = {
+            let version_ref: &CompactedVersion<T> = &version;
+            let snapshot_ref: &LiveSnapshot<T> = &snapshot;
+
+            match order {
+                SortOrder::Ascending => {
+                    let live_deletes = Arc::clone(&snapshot_ref.deletes);
+                    let compacted_deletes = version_ref.deleted_set();
+                    let compacted_filtered =
+                        version_ref.iter().filter(move |(_, doc_id)| {
+                            !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                        });
+
+                    let live_inserts = snapshot_ref.inserts.iter().copied();
+                    let merged = sorted_merge(compacted_filtered, live_inserts);
+                    let result = merged.map(|(_, doc_id)| doc_id);
+
+                    let boxed: Box<dyn Iterator<Item = u64> + '_> = Box::new(result);
+                    // SAFETY: Same as OwnedFilterIterator — Arcs keep data alive.
+                    unsafe {
+                        std::mem::transmute::<
+                            Box<dyn Iterator<Item = u64> + '_>,
+                            Box<dyn Iterator<Item = u64> + 'static>,
+                        >(boxed)
+                    }
+                }
+                SortOrder::Descending => {
+                    let live_deletes = Arc::clone(&snapshot_ref.deletes);
+                    let compacted_deletes = version_ref.deleted_set();
+                    let compacted_filtered =
+                        version_ref
+                            .iter_descending()
+                            .filter(move |(_, doc_id)| {
+                                !live_deletes.contains(doc_id)
+                                    && !compacted_deletes.contains(doc_id)
+                            });
+
+                    let live_inserts = snapshot_ref.inserts.iter().copied().rev();
+                    let merged = sorted_merge_descending(compacted_filtered, live_inserts);
+                    let result = merged.map(|(_, doc_id)| doc_id);
+
+                    let boxed: Box<dyn Iterator<Item = u64> + '_> = Box::new(result);
+                    // SAFETY: Same as OwnedFilterIterator — Arcs keep data alive.
+                    unsafe {
+                        std::mem::transmute::<
+                            Box<dyn Iterator<Item = u64> + '_>,
+                            Box<dyn Iterator<Item = u64> + 'static>,
+                        >(boxed)
+                    }
+                }
+            }
+        };
+
+        OwnedSortIterator {
+            inner,
+            _version: version,
+            _snapshot: snapshot,
+        }
+    }
+}
+
 /// Iterator over doc_ids sorted by their associated values.
 pub struct SortIterator<'a, T: IndexableNumber> {
     inner: Box<dyn Iterator<Item = u64> + 'a>,
@@ -259,6 +385,40 @@ impl<T: IndexableNumber> Iterator for SortIterator<'_, T> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+/// Owned filter iterator that keeps the underlying data alive via `Arc`s.
+///
+/// Created by calling [`FilterHandle::into_iter()`].
+pub struct OwnedFilterIterator<T: IndexableNumber> {
+    // IMPORTANT: `inner` must be declared before the Arc fields so it drops first.
+    inner: Box<dyn Iterator<Item = u64> + 'static>,
+    _version: Arc<CompactedVersion<T>>,
+    _snapshot: Arc<LiveSnapshot<T>>,
+}
+
+impl<T: IndexableNumber> Iterator for OwnedFilterIterator<T> {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        self.inner.next()
+    }
+}
+
+/// Owned sort iterator that keeps the underlying data alive via `Arc`s.
+///
+/// Created by calling [`SortHandle::into_iter()`].
+pub struct OwnedSortIterator<T: IndexableNumber> {
+    // IMPORTANT: `inner` must be declared before the Arc fields so it drops first.
+    inner: Box<dyn Iterator<Item = u64> + 'static>,
+    _version: Arc<CompactedVersion<T>>,
+    _snapshot: Arc<LiveSnapshot<T>>,
+}
+
+impl<T: IndexableNumber> Iterator for OwnedSortIterator<T> {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
         self.inner.next()
     }
 }

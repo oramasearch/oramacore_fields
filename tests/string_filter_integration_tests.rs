@@ -357,3 +357,97 @@ fn test_delete_all_docs_for_key() {
         "Expected empty results after second compaction"
     );
 }
+
+// ============================================================================
+// Owned Iterator Tests (IntoIterator for FilterData)
+// ============================================================================
+
+#[test]
+fn test_into_iter_live_only() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("hello"), 1);
+    index.insert(&p("hello"), 5);
+    index.insert(&p("hello"), 10);
+    index.insert(&p("world"), 2);
+
+    let results: Vec<u64> = index.filter("hello").into_iter().collect();
+    assert_eq!(results, vec![1, 5, 10]);
+}
+
+#[test]
+fn test_into_iter_compacted_plus_live() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("color"), 1);
+    index.insert(&p("color"), 3);
+    index.compact(1).unwrap();
+
+    index.insert(&p("color"), 5);
+    index.insert(&p("color"), 7);
+
+    let results: Vec<u64> = index.filter("color").into_iter().collect();
+    assert_eq!(results, vec![1, 3, 5, 7]);
+}
+
+#[test]
+fn test_into_iter_with_deletes() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("key"), 1);
+    index.insert(&p("key"), 2);
+    index.insert(&p("key"), 3);
+    index.compact(1).unwrap();
+
+    index.delete(2);
+
+    let results: Vec<u64> = index.filter("key").into_iter().collect();
+    assert_eq!(results, vec![1, 3]);
+}
+
+#[test]
+fn test_into_iter_empty() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    let results: Vec<u64> = index.filter("nonexistent").into_iter().collect();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_into_iter_returned_from_function() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("fruit"), 1);
+    index.insert(&p("fruit"), 2);
+    index.insert(&p("fruit"), 3);
+
+    fn get_docs(index: &StringFilterStorage, key: &str) -> impl Iterator<Item = u64> {
+        index.filter(key).into_iter()
+    }
+
+    let results: Vec<u64> = get_docs(&index, "fruit").collect();
+    assert_eq!(results, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_into_iter_matches_borrowed_iter() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("a"), 1);
+    index.insert(&p("a"), 3);
+    index.insert(&p("a"), 5);
+    index.compact(1).unwrap();
+
+    index.insert(&p("a"), 7);
+    index.delete(3);
+
+    let borrowed: Vec<u64> = index.filter("a").iter().collect();
+    let owned: Vec<u64> = index.filter("a").into_iter().collect();
+    assert_eq!(borrowed, owned);
+}
