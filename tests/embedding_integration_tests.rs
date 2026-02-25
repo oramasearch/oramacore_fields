@@ -1323,14 +1323,20 @@ fn test_cleanup_preserves_carried_forward_segment() {
     storage.compact(2).unwrap();
     let m2_ids = manifest_segment_ids(tmp.path(), 2);
     assert_eq!(m2_ids.len(), 1);
-    assert_eq!(m2_ids[0], seg_v1, "segment should be carried forward with same id");
+    assert_eq!(
+        m2_ids[0], seg_v1,
+        "segment should be carried forward with same id"
+    );
 
     // cleanup: seg_v1 must survive, versions/1 removed
     storage.cleanup();
     assert!(!tmp.path().join("versions/1").exists());
     assert!(tmp.path().join("versions/2").exists());
     let on_disk = list_segment_dirs_on_disk(tmp.path());
-    assert!(on_disk.contains(&seg_v1), "carried-forward segment must survive cleanup");
+    assert!(
+        on_disk.contains(&seg_v1),
+        "carried-forward segment must survive cleanup"
+    );
 
     // Search returns 19 results
     let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
@@ -1372,7 +1378,10 @@ fn test_cleanup_multi_segment_mixed_carry_forward_and_rebuild() {
     storage.compact(3).unwrap();
     let m3_ids = manifest_segment_ids(tmp.path(), 3);
     assert_eq!(m3_ids.len(), 2);
-    assert_ne!(m3_ids[0], seg_1, "seg_1 should have been rebuilt with new id");
+    assert_ne!(
+        m3_ids[0], seg_1,
+        "seg_1 should have been rebuilt with new id"
+    );
     let seg_3 = m3_ids[0];
     assert_eq!(m3_ids[1], seg_2, "seg_2 should be carried forward");
 
@@ -1380,7 +1389,10 @@ fn test_cleanup_multi_segment_mixed_carry_forward_and_rebuild() {
     storage.cleanup();
     let on_disk = list_segment_dirs_on_disk(tmp.path());
     assert!(!on_disk.contains(&seg_1), "old seg_1 should be removed");
-    assert!(on_disk.contains(&seg_2), "carried-forward seg_2 must survive");
+    assert!(
+        on_disk.contains(&seg_2),
+        "carried-forward seg_2 must survive"
+    );
     assert!(on_disk.contains(&seg_3), "rebuilt seg_3 must survive");
 
     // Search returns 35 results
@@ -1405,12 +1417,18 @@ fn test_cleanup_after_all_segments_deleted() {
     }
     storage.compact(2).unwrap();
     let m2 = read_manifest(tmp.path(), 2);
-    assert!(m2.is_empty(), "manifest should be empty after deleting all docs");
+    assert!(
+        m2.is_empty(),
+        "manifest should be empty after deleting all docs"
+    );
 
     // cleanup → seg_1 removed
     storage.cleanup();
     let on_disk = list_segment_dirs_on_disk(tmp.path());
-    assert!(!on_disk.contains(&seg_1), "seg_1 should be removed after all docs deleted");
+    assert!(
+        !on_disk.contains(&seg_1),
+        "seg_1 should be removed after all docs deleted"
+    );
 
     // Search returns 0
     let results = storage.search(&[0.0, 0.0, 0.0], 10, None).unwrap();
@@ -1447,7 +1465,10 @@ fn test_cleanup_multiple_compactions_accumulating_old_segments() {
 
     // Before cleanup: multiple segment dirs on disk
     let before = list_segment_dirs_on_disk(tmp.path());
-    assert!(before.len() >= 2, "should have accumulated old segment dirs");
+    assert!(
+        before.len() >= 2,
+        "should have accumulated old segment dirs"
+    );
 
     // Get current manifest segment id
     let current_ids = manifest_segment_ids(tmp.path(), 4);
@@ -1457,12 +1478,14 @@ fn test_cleanup_multiple_compactions_accumulating_old_segments() {
     // cleanup → only current segment survives
     storage.cleanup();
     let after = list_segment_dirs_on_disk(tmp.path());
-    assert_eq!(after, vec![current_seg], "only current segment should survive");
+    assert_eq!(
+        after,
+        vec![current_seg],
+        "only current segment should survive"
+    );
 
     // Search returns all docs
-    let results = storage
-        .search(&[0.0, 0.0, 0.0], 100, Some(200))
-        .unwrap();
+    let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();
     assert_eq!(results.len(), expected_total as usize);
 
     // Integrity check passes
@@ -1498,18 +1521,14 @@ fn test_cleanup_preserves_search_correctness_multi_segment() {
     storage.compact(3).unwrap();
 
     // Record search results before cleanup
-    let results_before = storage
-        .search(&[10.0, 0.0, 0.0], 50, Some(200))
-        .unwrap();
+    let results_before = storage.search(&[10.0, 0.0, 0.0], 50, Some(200)).unwrap();
     assert_eq!(results_before.len(), 33); // 35 - 2 deleted
 
     // Cleanup
     storage.cleanup();
 
     // Search results must be identical after cleanup
-    let results_after = storage
-        .search(&[10.0, 0.0, 0.0], 50, Some(200))
-        .unwrap();
+    let results_after = storage.search(&[10.0, 0.0, 0.0], 50, Some(200)).unwrap();
     assert_eq!(results_after.len(), results_before.len());
     for (a, b) in results_before.iter().zip(results_after.iter()) {
         assert_eq!(a.0, b.0, "doc_id mismatch after cleanup");
@@ -1549,7 +1568,11 @@ fn test_cleanup_carried_forward_across_three_versions() {
 
     storage.delete(2);
     storage.compact(4).unwrap();
-    assert_eq!(manifest_segment_ids(tmp.path(), 4)[0], seg_1, "seg_1 should still be carried forward");
+    assert_eq!(
+        manifest_segment_ids(tmp.path(), 4)[0],
+        seg_1,
+        "seg_1 should still be carried forward"
+    );
 
     // cleanup → seg_1 survives, only versions/4 remains
     storage.cleanup();
@@ -1605,7 +1628,10 @@ fn test_cleanup_incremental_insert_then_carry_forward() {
     storage.cleanup();
     let on_disk = list_segment_dirs_on_disk(tmp.path());
     assert!(!on_disk.contains(&seg_1), "old seg_1 should be removed");
-    assert!(on_disk.contains(&seg_2), "carried-forward seg_2 must survive");
+    assert!(
+        on_disk.contains(&seg_2),
+        "carried-forward seg_2 must survive"
+    );
 
     // Search returns 59 results (60 - 1 deleted)
     let results = storage.search(&[0.0, 0.0, 0.0], 100, Some(200)).unwrap();

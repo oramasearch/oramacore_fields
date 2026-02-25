@@ -153,19 +153,31 @@ impl EmbeddingStorage {
         match self.config.metric {
             DistanceMetric::L2 => {
                 self.search_inner_ctx::<super::distance::L2, F>(
-                    query, k, ef_search, filter, &mut ctx.inner,
+                    query,
+                    k,
+                    ef_search,
+                    filter,
+                    &mut ctx.inner,
                 )?;
             }
             DistanceMetric::DotProduct => {
                 self.search_inner_ctx::<super::distance::DotProduct, F>(
-                    query, k, ef_search, filter, &mut ctx.inner,
+                    query,
+                    k,
+                    ef_search,
+                    filter,
+                    &mut ctx.inner,
                 )?;
             }
             DistanceMetric::Cosine => {
                 let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if norm == 0.0 {
                     self.search_inner_ctx::<super::distance::Cosine, F>(
-                        query, k, ef_search, filter, &mut ctx.inner,
+                        query,
+                        k,
+                        ef_search,
+                        filter,
+                        &mut ctx.inner,
                     )?;
                 } else {
                     ctx.normalized.clear();

@@ -709,7 +709,10 @@ fn test_concurrent_search_during_cleanup() {
     for h in handles {
         total_searches += h.join().unwrap();
     }
-    assert!(total_searches > 0, "readers should have completed some searches");
+    assert!(
+        total_searches > 0,
+        "readers should have completed some searches"
+    );
 
     // Search results correct after cleanup
     let results = storage.search(&[0.0, 0.0, 0.0], 50, Some(200)).unwrap();

@@ -109,8 +109,8 @@ pub mod io;
 mod live;
 mod platform;
 mod quantization;
-pub(crate) mod segment;
 mod search_context;
+pub(crate) mod segment;
 mod simd;
 mod storage;
 

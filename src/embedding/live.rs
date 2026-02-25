@@ -365,7 +365,13 @@ mod tests {
 
         let query = [0.1, 0.0];
         let mut ctx = crate::embedding::SearchContext::new();
-        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&query, 2, &[], None, &mut ctx.inner.live);
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(
+            &query,
+            2,
+            &[],
+            None,
+            &mut ctx.inner.live,
+        );
         assert_eq!(ctx.inner.live.live_results.len(), 2);
         assert_eq!(ctx.inner.live.live_results[0].0, 1); // closest: (0,0) dist=0.01
         assert_eq!(ctx.inner.live.live_results[1].0, 2); // next: (1,0) dist=0.81
@@ -381,7 +387,13 @@ mod tests {
         let snapshot = layer.get_snapshot();
 
         let mut ctx = crate::embedding::SearchContext::new();
-        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&[0.0], 3, &[1], None, &mut ctx.inner.live);
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(
+            &[0.0],
+            3,
+            &[1],
+            None,
+            &mut ctx.inner.live,
+        );
         assert_eq!(ctx.inner.live.live_results.len(), 2);
         // Doc 1 excluded
         assert!(ctx.inner.live.live_results.iter().all(|(id, _)| *id != 1));
@@ -391,7 +403,13 @@ mod tests {
     fn test_search_empty() {
         let snapshot = LiveSnapshot::empty();
         let mut ctx = crate::embedding::SearchContext::new();
-        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(&[1.0], 5, &[], None, &mut ctx.inner.live);
+        snapshot.search_with_context::<L2, crate::embedding::NoFilter>(
+            &[1.0],
+            5,
+            &[],
+            None,
+            &mut ctx.inner.live,
+        );
         assert!(ctx.inner.live.live_results.is_empty());
     }
 }
