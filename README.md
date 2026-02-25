@@ -303,6 +303,7 @@ oramacore_fields bool check|info|show|filter <path>
 oramacore_fields number check|info|filter <args>
 oramacore_fields geopoint check|info|filter <args>
 oramacore_fields string check|info|search <args>
+oramacore_fields string-filter check|info|filter <args>
 oramacore_fields embedding check|info|search <args>
 ```
 

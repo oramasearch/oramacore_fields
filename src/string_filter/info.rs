@@ -1,7 +1,11 @@
+#[cfg(feature = "cli")]
+use serde::Serialize;
+
 use std::path::PathBuf;
 
 /// Metadata and size statistics about a string filter index.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub struct IndexInfo {
     pub format_version: u32,
     pub current_version_number: u64,
@@ -23,6 +27,7 @@ impl IndexInfo {
 
 /// Result of an integrity check operation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub struct IntegrityCheckResult {
     pub passed: bool,
     pub checks: Vec<IntegrityCheck>,
@@ -30,6 +35,7 @@ pub struct IntegrityCheckResult {
 
 /// A single integrity check result.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub struct IntegrityCheck {
     pub name: String,
     pub status: CheckStatus,
@@ -38,6 +44,7 @@ pub struct IntegrityCheck {
 
 /// Status of an integrity check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(Serialize))]
 pub enum CheckStatus {
     Ok,
     Failed,

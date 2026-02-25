@@ -37,6 +37,11 @@ enum TopLevel {
         #[command(subcommand)]
         command: StringCommands,
     },
+    /// Inspect and query string_filter (exact-match) indexes
+    StringFilter {
+        #[command(subcommand)]
+        command: StringFilterCommands,
+    },
     /// Inspect and search embedding (ANN) indexes
     Embedding {
         #[command(subcommand)]
@@ -988,6 +993,162 @@ fn string_search(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  String Filter subcommands
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Subcommand)]
+enum StringFilterCommands {
+    /// Check index integrity and validate files
+    Check {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Show detailed validation information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Display index information and statistics
+    Info {
+        /// Path to the index directory
+        path: PathBuf,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Filter the index for documents matching an exact string value
+    Filter {
+        /// Path to the index directory
+        path: PathBuf,
+        /// The exact string value to search for
+        #[arg(short, long)]
+        value: String,
+        /// Maximum number of results to return
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+}
+
+fn string_filter_check(path: &Path, verbose: bool) -> Result<(), String> {
+    use oramacore_fields::string_filter::{CheckStatus, StringFilterStorage, Threshold};
+
+    let storage = StringFilterStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let result = storage.integrity_check();
+
+    for check in &result.checks {
+        let status_str = match check.status {
+            CheckStatus::Ok => "[OK]",
+            CheckStatus::Failed => "[FAIL]",
+            CheckStatus::Skipped => "[SKIP]",
+        };
+
+        if check.status == CheckStatus::Failed || verbose {
+            if let Some(ref details) = check.details {
+                println!("{status_str} {}: {details}", check.name);
+            } else {
+                println!("{status_str} {}", check.name);
+            }
+        }
+    }
+
+    if result.passed {
+        println!("\nIndex validation PASSED");
+        Ok(())
+    } else {
+        println!("\nIndex validation FAILED");
+        process::exit(1);
+    }
+}
+
+fn string_filter_info(path: &Path, format: OutputFormat) -> Result<(), String> {
+    use oramacore_fields::string_filter::{StringFilterStorage, Threshold};
+
+    let storage = StringFilterStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let info = storage.info();
+
+    match format {
+        OutputFormat::Human => {
+            println!("Index Information");
+            println!("=================");
+            println!("Format version:      {}", info.format_version);
+            println!("Current version:     {}", info.current_version_number);
+            println!("Version dir:         {}", info.version_dir.display());
+            println!();
+            println!("Unique keys:         {}", info.unique_keys_count);
+            println!("Total postings:      {}", info.total_postings_count);
+            println!("Deleted entries:     {}", info.deleted_count);
+            println!();
+            println!("FST size:            {} bytes", info.fst_size_bytes);
+            println!("Postings size:       {} bytes", info.postings_size_bytes);
+            println!("Deleted size:        {} bytes", info.deleted_size_bytes);
+            println!("Total size:          {} bytes", info.total_size_bytes());
+            println!();
+            println!("Pending ops:         {}", info.pending_ops);
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&info).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+fn string_filter_filter(
+    path: &Path,
+    value: &str,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<(), String> {
+    use oramacore_fields::string_filter::{StringFilterStorage, Threshold};
+
+    let storage = StringFilterStorage::new(path.to_path_buf(), Threshold::default())
+        .map_err(|e| format!("Failed to open index: {e}"))?;
+
+    let filter_data = storage.filter(value);
+    let mut doc_ids: Vec<u64> = filter_data.iter().collect();
+
+    let total_count = doc_ids.len();
+    if let Some(limit) = limit {
+        doc_ids.truncate(limit);
+    }
+
+    let result = FilterResult {
+        count: total_count,
+        doc_ids,
+    };
+
+    match format {
+        OutputFormat::Human => {
+            println!(
+                "Found {} result(s) where value = {value:?}",
+                result.count
+            );
+            if let Some(limit) = limit {
+                if result.count > limit {
+                    println!("(showing first {limit})");
+                }
+            }
+            println!();
+            for doc_id in &result.doc_ids {
+                println!("{doc_id}");
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+            println!("{json}");
+        }
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Embedding subcommands
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1289,6 +1450,18 @@ fn main() {
                 limit,
                 format,
             ),
+        },
+        TopLevel::StringFilter { command } => match command {
+            StringFilterCommands::Check { path, verbose } => {
+                string_filter_check(&path, verbose)
+            }
+            StringFilterCommands::Info { path, format } => string_filter_info(&path, format),
+            StringFilterCommands::Filter {
+                path,
+                value,
+                limit,
+                format,
+            } => string_filter_filter(&path, &value, limit, format),
         },
         TopLevel::Embedding { command } => match command {
             EmbeddingCommands::Check {
