@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 /// Per-term positional data for a document.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TermData {
     /// Token positions where the exact (unstemmed) form appears.
     pub(crate) exact_positions: Vec<u32>,
@@ -20,6 +21,7 @@ impl TermData {
 
 /// The value to insert into the string index for a single document.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IndexedValue {
     /// Number of tokens in the document field.
     pub(crate) field_length: u16,

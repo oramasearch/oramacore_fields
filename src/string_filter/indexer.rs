@@ -38,6 +38,7 @@ impl StringIndexer {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue {
     Plain(String),
     Array(Vec<String>),

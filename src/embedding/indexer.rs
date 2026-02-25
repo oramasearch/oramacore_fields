@@ -1,7 +1,9 @@
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Embedding {
     pub(crate) embedding: Vec<f32>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue {
     Single(Embedding),
     Array(Vec<Embedding>),

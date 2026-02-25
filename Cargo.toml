@@ -8,6 +8,7 @@ description = "On-disk field indexes (bool, number, string, string_filter, geopo
 [features]
 default = ["simd"]
 simd = []
+serde = ["dep:serde"]
 cli = ["clap", "serde"]
 alloc-tests = []
 

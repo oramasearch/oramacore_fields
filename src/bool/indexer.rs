@@ -40,6 +40,7 @@ impl BoolIndexer {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue {
     Plain(bool),
     Array(Vec<bool>),

@@ -4,6 +4,7 @@ const LAT_SCALE: f64 = ((1u64 << 31) - 1) as f64 / 180.0;
 const LON_SCALE: f64 = ((1u64 << 31) - 1) as f64 / 360.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeoPoint {
     lat: f64,
     lon: f64,
