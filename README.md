@@ -299,10 +299,11 @@ cargo build --features cli
 Commands:
 
 ```text
-oramacore_fields bool check|info|show <path>
-oramacore_fields number check|info|search <args>
-oramacore_fields geopoint check|info|search <args>
+oramacore_fields bool check|info|show|filter <path>
+oramacore_fields number check|info|filter <args>
+oramacore_fields geopoint check|info|filter <args>
 oramacore_fields string check|info|search <args>
+oramacore_fields embedding check|info|search <args>
 ```
 
 ## Architecture
