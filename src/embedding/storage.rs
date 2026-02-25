@@ -100,7 +100,7 @@ impl EmbeddingStorage {
     ) -> Result<Vec<(u64, f32)>, Error> {
         let mut ctx = super::SearchContext::new();
         self.search_with_filter_and_context::<NoFilter>(query, k, ef_search, None, &mut ctx)?;
-        Ok(std::mem::take(&mut ctx.all_results))
+        Ok(std::mem::take(&mut ctx.inner.all_results))
     }
 
     /// Search for k nearest neighbors, filtering results by document ID.
@@ -116,11 +116,10 @@ impl EmbeddingStorage {
     ) -> Result<Vec<(u64, f32)>, Error> {
         let mut ctx = super::SearchContext::new();
         self.search_with_filter_and_context(query, k, ef_search, Some(filter), &mut ctx)?;
-        Ok(std::mem::take(&mut ctx.all_results))
+        Ok(std::mem::take(&mut ctx.inner.all_results))
     }
 
     /// Search for k nearest neighbors, reusing caller-provided buffers.
-    /// Returns a slice referencing `ctx.all_results`.
     pub fn search_with_context<'a>(
         &self,
         query: &[f32],
@@ -132,7 +131,6 @@ impl EmbeddingStorage {
     }
 
     /// Search for k nearest neighbors with filter, reusing caller-provided buffers.
-    /// Returns a slice referencing `ctx.all_results`.
     pub fn search_with_filter_and_context<'a, F: super::DocumentFilter>(
         &self,
         query: &[f32],
@@ -148,43 +146,42 @@ impl EmbeddingStorage {
             });
         }
         if k == 0 {
-            ctx.all_results.clear();
-            return Ok(&ctx.all_results);
+            ctx.inner.all_results.clear();
+            return Ok(&ctx.inner.all_results);
         }
 
         match self.config.metric {
             DistanceMetric::L2 => {
-                self.search_inner_ctx::<super::distance::L2, F>(query, k, ef_search, filter, ctx)?;
+                self.search_inner_ctx::<super::distance::L2, F>(
+                    query, k, ef_search, filter, &mut ctx.inner,
+                )?;
             }
             DistanceMetric::DotProduct => {
                 self.search_inner_ctx::<super::distance::DotProduct, F>(
-                    query, k, ef_search, filter, ctx,
+                    query, k, ef_search, filter, &mut ctx.inner,
                 )?;
             }
             DistanceMetric::Cosine => {
                 let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if norm == 0.0 {
                     self.search_inner_ctx::<super::distance::Cosine, F>(
-                        query, k, ef_search, filter, ctx,
+                        query, k, ef_search, filter, &mut ctx.inner,
                     )?;
                 } else {
-                    // Take the buffer, fill it, use it, put it back
-                    let mut normalized = std::mem::take(&mut ctx.normalized);
-                    normalized.clear();
-                    normalized.extend(query.iter().map(|x| x / norm));
+                    ctx.normalized.clear();
+                    ctx.normalized.extend(query.iter().map(|x| x / norm));
                     self.search_inner_ctx::<super::distance::CosineNorm, F>(
-                        &normalized,
+                        &ctx.normalized,
                         k,
                         ef_search,
                         filter,
-                        ctx,
+                        &mut ctx.inner,
                     )?;
-                    ctx.normalized = normalized;
                 }
             }
         }
 
-        Ok(&ctx.all_results)
+        Ok(&ctx.inner.all_results)
     }
 
     fn search_inner_ctx<D: Distance, F: super::DocumentFilter>(
@@ -193,24 +190,21 @@ impl EmbeddingStorage {
         k: usize,
         ef_search: Option<usize>,
         filter: Option<&F>,
-        ctx: &mut super::SearchContext,
+        ctx: &mut super::search_context::SearchBuffers,
     ) -> Result<(), Error> {
         let snapshot = self.fresh_snapshot();
         let segment_list = self.segments.load();
         let ef = ef_search.unwrap_or(self.config.ef_search);
 
         ctx.all_results.clear();
-
-        // Take the quantized buffer out to avoid borrow conflict with ctx
-        let mut query_quantized = std::mem::take(&mut ctx.query_quantized);
-        query_quantized.resize(self.config.dimensions, 0);
+        ctx.query_quantized.resize(self.config.dimensions, 0);
 
         for segment in &segment_list.segments {
             // Per-segment quantization: quantize query with THIS segment's params
-            query_quantized.fill(0);
+            ctx.query_quantized.fill(0);
             segment
                 .quantization_params
-                .quantize(query, &mut query_quantized);
+                .quantize(query, &mut ctx.query_quantized);
 
             // Extract live deletes targeting this segment's doc_id range (zero-alloc)
             let start = snapshot
@@ -223,23 +217,20 @@ impl EmbeddingStorage {
 
             segment.search_with_context::<D, F>(
                 query,
-                &query_quantized,
+                &ctx.query_quantized,
                 k,
                 ef,
                 segment.deletes_slice(),
                 targeted_live_deletes,
                 filter,
-                ctx,
+                &mut ctx.segment,
             );
-            ctx.all_results.extend_from_slice(&ctx.scored);
+            ctx.all_results.extend_from_slice(&ctx.segment.scored);
         }
 
-        // Put the buffer back
-        ctx.query_quantized = query_quantized;
-
         // Search live layer (brute force)
-        snapshot.search_with_context::<D, F>(query, k, &snapshot.deletes, filter, ctx);
-        ctx.all_results.extend_from_slice(&ctx.live_results);
+        snapshot.search_with_context::<D, F>(query, k, &snapshot.deletes, filter, &mut ctx.live);
+        ctx.all_results.extend_from_slice(&ctx.live.live_results);
 
         // Merge: sort by distance, deduplicate by doc_id, take top-k
         ctx.all_results

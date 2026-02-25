@@ -205,7 +205,7 @@ impl Segment {
         segment_deletes: &[u64],
         live_deletes: &[u64],
         filter: Option<&F>,
-        ctx: &mut super::search_context::SearchContext,
+        ctx: &mut super::search_context::SegmentSearchBuffers,
     ) {
         if self.config.num_nodes == 0 {
             ctx.scored.clear();
