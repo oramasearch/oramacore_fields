@@ -130,12 +130,9 @@ impl<T: IndexableNumber> IntoIterator for FilterHandle<T> {
 
             let live_deletes = Arc::clone(&snapshot_ref.deletes);
             let compacted_deletes = version_ref.deleted_set();
-            let compacted_filtered =
-                version_ref
-                    .iter_range(min, max)
-                    .filter(move |(_, doc_id)| {
-                        !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
-                    });
+            let compacted_filtered = version_ref.iter_range(min, max).filter(move |(_, doc_id)| {
+                !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+            });
 
             let live_inserts = snapshot_ref.inserts.iter().copied();
             let merged = sorted_merge(compacted_filtered, live_inserts);
@@ -271,10 +268,9 @@ impl<T: IndexableNumber> IntoIterator for SortHandle<T> {
                 SortOrder::Ascending => {
                     let live_deletes = Arc::clone(&snapshot_ref.deletes);
                     let compacted_deletes = version_ref.deleted_set();
-                    let compacted_filtered =
-                        version_ref.iter().filter(move |(_, doc_id)| {
-                            !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
-                        });
+                    let compacted_filtered = version_ref.iter().filter(move |(_, doc_id)| {
+                        !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                    });
 
                     let live_inserts = snapshot_ref.inserts.iter().copied();
                     let merged = sorted_merge(compacted_filtered, live_inserts);
@@ -293,12 +289,9 @@ impl<T: IndexableNumber> IntoIterator for SortHandle<T> {
                     let live_deletes = Arc::clone(&snapshot_ref.deletes);
                     let compacted_deletes = version_ref.deleted_set();
                     let compacted_filtered =
-                        version_ref
-                            .iter_descending()
-                            .filter(move |(_, doc_id)| {
-                                !live_deletes.contains(doc_id)
-                                    && !compacted_deletes.contains(doc_id)
-                            });
+                        version_ref.iter_descending().filter(move |(_, doc_id)| {
+                            !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                        });
 
                     let live_inserts = snapshot_ref.inserts.iter().copied().rev();
                     let merged = sorted_merge_descending(compacted_filtered, live_inserts);

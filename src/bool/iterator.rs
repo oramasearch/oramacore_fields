@@ -178,12 +178,16 @@ impl FilterData {
     /// Consume this `FilterData` and return an owned iterator in the specified order.
     pub fn into_sorted(self, order: SortOrder) -> OwnedSortedIterator {
         match order {
-            SortOrder::Ascending => {
-                OwnedSortedIterator::Ascending(owned_ascending(self.version, self.snapshot, self.value))
-            }
-            SortOrder::Descending => {
-                OwnedSortedIterator::Descending(owned_descending(self.version, self.snapshot, self.value))
-            }
+            SortOrder::Ascending => OwnedSortedIterator::Ascending(owned_ascending(
+                self.version,
+                self.snapshot,
+                self.value,
+            )),
+            SortOrder::Descending => OwnedSortedIterator::Descending(owned_descending(
+                self.version,
+                self.snapshot,
+                self.value,
+            )),
         }
     }
 }
@@ -218,14 +222,14 @@ fn owned_ascending(
     // `snapshot` (Vec). Both `Arc`s are moved into `OwnedFilterIterator`,
     // keeping refcounts > 0 for the iterator's entire lifetime. Rust drops
     // fields in declaration order, so `iter` drops before `_version`/`_snapshot`.
-    let iter = unsafe {
-        FilterIterator::new(&*cp, &*li, &*cd, &*ld)
-    };
-    let iter = unsafe {
-        std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter)
-    };
+    let iter = unsafe { FilterIterator::new(&*cp, &*li, &*cd, &*ld) };
+    let iter = unsafe { std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter) };
 
-    OwnedFilterIterator { iter, _version: version, _snapshot: snapshot }
+    OwnedFilterIterator {
+        iter,
+        _version: version,
+        _snapshot: snapshot,
+    }
 }
 
 fn owned_descending(
@@ -236,14 +240,15 @@ fn owned_descending(
     let (cp, li, cd, ld) = extract_slice_ptrs(&version, &snapshot, value);
 
     // SAFETY: Same reasoning as `owned_ascending`.
-    let iter = unsafe {
-        DescendingIterator::new(&*cp, &*li, &*cd, &*ld)
-    };
-    let iter = unsafe {
-        std::mem::transmute::<DescendingIterator<'_>, DescendingIterator<'static>>(iter)
-    };
+    let iter = unsafe { DescendingIterator::new(&*cp, &*li, &*cd, &*ld) };
+    let iter =
+        unsafe { std::mem::transmute::<DescendingIterator<'_>, DescendingIterator<'static>>(iter) };
 
-    OwnedDescendingIterator { iter, _version: version, _snapshot: snapshot }
+    OwnedDescendingIterator {
+        iter,
+        _version: version,
+        _snapshot: snapshot,
+    }
 }
 
 /// Owned ascending iterator that keeps the underlying data alive via `Arc`s.

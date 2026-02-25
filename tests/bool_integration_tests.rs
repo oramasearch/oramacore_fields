@@ -2194,7 +2194,10 @@ fn test_owned_into_sorted_descending() {
     index.insert(&IndexedValue::Plain(true), 100);
     index.insert(&IndexedValue::Plain(true), 50);
 
-    let results: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    let results: Vec<u64> = index
+        .filter(true)
+        .into_sorted(SortOrder::Descending)
+        .collect();
     assert_eq!(results, vec![100, 50, 10, 5, 1]);
 }
 
@@ -2219,7 +2222,10 @@ fn test_owned_iter_with_compacted_data() {
     assert_eq!(asc, vec![1, 5, 10, 50, 100]);
 
     // Descending via into_sorted
-    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    let desc: Vec<u64> = index
+        .filter(true)
+        .into_sorted(SortOrder::Descending)
+        .collect();
     assert_eq!(desc, vec![100, 50, 10, 5, 1]);
 }
 
@@ -2239,7 +2245,10 @@ fn test_owned_iter_with_deletes() {
     index.delete(15);
 
     let asc: Vec<u64> = index.filter(true).into_iter().collect();
-    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    let desc: Vec<u64> = index
+        .filter(true)
+        .into_sorted(SortOrder::Descending)
+        .collect();
 
     assert_eq!(asc, vec![1, 10, 20]);
     assert_eq!(desc, vec![20, 10, 1]);
@@ -2248,7 +2257,10 @@ fn test_owned_iter_with_deletes() {
     index.compact(1).unwrap();
 
     let asc: Vec<u64> = index.filter(true).into_iter().collect();
-    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    let desc: Vec<u64> = index
+        .filter(true)
+        .into_sorted(SortOrder::Descending)
+        .collect();
 
     assert_eq!(asc, vec![1, 10, 20]);
     assert_eq!(desc, vec![20, 10, 1]);
@@ -2261,7 +2273,10 @@ fn test_owned_iter_empty() {
     let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
 
     let asc: Vec<u64> = index.filter(true).into_iter().collect();
-    let desc: Vec<u64> = index.filter(true).into_sorted(SortOrder::Descending).collect();
+    let desc: Vec<u64> = index
+        .filter(true)
+        .into_sorted(SortOrder::Descending)
+        .collect();
 
     assert!(asc.is_empty());
     assert!(desc.is_empty());
@@ -2278,7 +2293,10 @@ fn test_owned_iter_false_values() {
     index.insert(&IndexedValue::Plain(false), 50);
 
     let asc: Vec<u64> = index.filter(false).into_iter().collect();
-    let desc: Vec<u64> = index.filter(false).into_sorted(SortOrder::Descending).collect();
+    let desc: Vec<u64> = index
+        .filter(false)
+        .into_sorted(SortOrder::Descending)
+        .collect();
 
     assert_eq!(asc, vec![10, 50, 100]);
     assert_eq!(desc, vec![100, 50, 10]);
@@ -2370,14 +2388,20 @@ fn test_owned_iter_matches_borrowed() {
     for value in [true, false] {
         let borrowed_asc: Vec<u64> = index.filter(value).iter().collect();
         let owned_asc: Vec<u64> = index.filter(value).into_iter().collect();
-        assert_eq!(borrowed_asc, owned_asc, "Mismatch for value={value} ascending");
+        assert_eq!(
+            borrowed_asc, owned_asc,
+            "Mismatch for value={value} ascending"
+        );
 
         let borrowed_desc: Vec<u64> = index.filter(value).sorted(SortOrder::Descending).collect();
         let owned_desc: Vec<u64> = index
             .filter(value)
             .into_sorted(SortOrder::Descending)
             .collect();
-        assert_eq!(borrowed_desc, owned_desc, "Mismatch for value={value} descending");
+        assert_eq!(
+            borrowed_desc, owned_desc,
+            "Mismatch for value={value} descending"
+        );
     }
 }
 

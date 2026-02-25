@@ -125,9 +125,7 @@ fn owned_ascending(
     // keeping refcounts > 0 for the iterator's entire lifetime. Rust drops
     // fields in declaration order, so `iter` drops before `_version`/`_snapshot`.
     let iter = unsafe { FilterIterator::new(&*cp, &*li, &*cd, &*ld) };
-    let iter = unsafe {
-        std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter)
-    };
+    let iter = unsafe { std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter) };
 
     OwnedFilterIterator {
         iter,
