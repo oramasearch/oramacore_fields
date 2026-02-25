@@ -1018,6 +1018,252 @@ fn test_search_k_larger_than_total() {
     assert_eq!(results.len(), 2);
 }
 
+// ──────────────────────────────────────────────────
+// DocumentFilter tests
+// ──────────────────────────────────────────────────
+
+struct AllowSet(std::collections::HashSet<u64>);
+impl oramacore_fields::embedding::DocumentFilter for AllowSet {
+    fn contains(&self, doc_id: u64) -> bool {
+        self.0.contains(&doc_id)
+    }
+}
+
+struct RejectAll;
+impl oramacore_fields::embedding::DocumentFilter for RejectAll {
+    fn contains(&self, _doc_id: u64) -> bool {
+        false
+    }
+}
+
+struct AllowAll;
+impl oramacore_fields::embedding::DocumentFilter for AllowAll {
+    fn contains(&self, _doc_id: u64) -> bool {
+        true
+    }
+}
+
+#[test]
+fn test_filter_live_only() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
+
+    let allowed: AllowSet = AllowSet([1, 3].into_iter().collect());
+    let results = storage
+        .search_with_filter(&[0.0, 0.0], 10, None, &allowed)
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let ids: Vec<u64> = results.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&1));
+    assert!(ids.contains(&3));
+    assert!(!ids.contains(&2));
+}
+
+#[test]
+fn test_filter_after_compact() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
+    storage.compact(1).unwrap();
+
+    let allowed: AllowSet = AllowSet([1, 3].into_iter().collect());
+    let results = storage
+        .search_with_filter(&[0.0, 0.0], 10, None, &allowed)
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let ids: Vec<u64> = results.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&1));
+    assert!(ids.contains(&3));
+    assert!(!ids.contains(&2));
+}
+
+#[test]
+fn test_filter_excludes_all() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.compact(1).unwrap();
+
+    let results = storage
+        .search_with_filter(&[0.0, 0.0], 10, None, &RejectAll)
+        .unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_filter_with_deletes() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
+    storage.insert(4, iv(2, &[3.0, 0.0]));
+    storage.compact(1).unwrap();
+
+    // Delete doc 1, filter out doc 3 => only 2 and 4 remain
+    storage.delete(1);
+    let allowed: AllowSet = AllowSet([1, 2, 4].into_iter().collect());
+    let results = storage
+        .search_with_filter(&[0.0, 0.0], 10, None, &allowed)
+        .unwrap();
+    let ids: Vec<u64> = results.iter().map(|(id, _)| *id).collect();
+    assert!(!ids.contains(&1), "deleted doc should not appear");
+    assert!(!ids.contains(&3), "filtered doc should not appear");
+    assert!(ids.contains(&2));
+    assert!(ids.contains(&4));
+}
+
+#[test]
+fn test_filter_does_not_break_graph_traversal() {
+    // Insert many docs forming an HNSW graph, filter out intermediate nodes,
+    // verify that docs reachable only *through* filtered nodes are still found.
+    let (_tmp, storage) = make_storage(3, DistanceMetric::L2);
+
+    // Insert 50 docs with spread-out embeddings
+    for i in 1..=50u64 {
+        let v = vec![i as f32, 0.0, 0.0];
+        storage.insert(i, iv(3, &v));
+    }
+    storage.compact(1).unwrap();
+
+    // Filter out all "middle" docs (10..=40), only allow 1..=9 and 41..=50
+    let allowed: AllowSet = AllowSet((1..=9).chain(41..=50).collect());
+    let results = storage
+        .search_with_filter(&[50.0, 0.0, 0.0], 5, Some(200), &allowed)
+        .unwrap();
+
+    // Should find docs near 50 even though middle nodes are filtered
+    assert!(!results.is_empty());
+    // All returned docs should be in the allowed set
+    for (id, _) in &results {
+        assert!(
+            allowed.0.contains(id),
+            "returned doc {id} should be in allowed set"
+        );
+    }
+    // Doc 50 should be the closest
+    assert_eq!(results[0].0, 50);
+}
+
+#[test]
+fn test_filter_with_multi_segment() {
+    let seg_cfg = SegmentConfig {
+        max_nodes_per_segment: 10,
+        ..SegmentConfig::default()
+    };
+    let (_tmp, storage) = make_storage_with_segment_config(2, DistanceMetric::L2, seg_cfg);
+
+    // First batch → segment 1
+    for i in 1..=10u64 {
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
+    }
+    storage.compact(1).unwrap();
+
+    // Second batch → segment 2
+    for i in 11..=20u64 {
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
+    }
+    storage.compact(2).unwrap();
+
+    // Filter to allow only docs from second segment
+    let allowed: AllowSet = AllowSet((11..=20).collect());
+    let results = storage
+        .search_with_filter(&[15.0, 0.0], 5, Some(200), &allowed)
+        .unwrap();
+
+    assert!(!results.is_empty());
+    for (id, _) in &results {
+        assert!(
+            *id >= 11 && *id <= 20,
+            "returned doc {id} should be from segment 2"
+        );
+    }
+}
+
+#[test]
+fn test_nofilter_returns_same_as_none() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
+    storage.compact(1).unwrap();
+
+    let results_none = storage
+        .search(&[0.0, 0.0], 3, None)
+        .unwrap();
+    let no_filter = oramacore_fields::embedding::NoFilter;
+    let results_nofilter = storage
+        .search_with_filter(&[0.0, 0.0], 3, None, &no_filter)
+        .unwrap();
+
+    assert_eq!(results_none.len(), results_nofilter.len());
+    for (a, b) in results_none.iter().zip(results_nofilter.iter()) {
+        assert_eq!(a.0, b.0);
+        assert!((a.1 - b.1).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn test_filter_allow_all() {
+    let (_tmp, storage) = make_storage(2, DistanceMetric::L2);
+    storage.insert(1, iv(2, &[0.0, 0.0]));
+    storage.insert(2, iv(2, &[1.0, 0.0]));
+    storage.insert(3, iv(2, &[2.0, 0.0]));
+    storage.compact(1).unwrap();
+
+    let results_none = storage
+        .search(&[0.0, 0.0], 3, None)
+        .unwrap();
+    let results_allow_all = storage
+        .search_with_filter(&[0.0, 0.0], 3, None, &AllowAll)
+        .unwrap();
+
+    assert_eq!(results_none.len(), results_allow_all.len());
+    for (a, b) in results_none.iter().zip(results_allow_all.iter()) {
+        assert_eq!(a.0, b.0);
+    }
+}
+
+#[test]
+fn test_filter_after_incremental_insert() {
+    let seg_cfg = SegmentConfig {
+        max_nodes_per_segment: 100,
+        insertion_rebuild_threshold: 10.0, // high threshold to force incremental inserts
+        ..SegmentConfig::default()
+    };
+    let (_tmp, storage) = make_storage_with_segment_config(2, DistanceMetric::L2, seg_cfg);
+
+    // Initial batch
+    for i in 1..=5u64 {
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
+    }
+    storage.compact(1).unwrap();
+
+    // Incremental insert (absorbed into existing segment)
+    for i in 6..=10u64 {
+        storage.insert(i, iv(2, &[i as f32, 0.0]));
+    }
+    storage.compact(2).unwrap();
+
+    // Filter: only allow docs 1,2,8,9,10
+    let allowed: AllowSet = AllowSet([1, 2, 8, 9, 10].into_iter().collect());
+    let results = storage
+        .search_with_filter(&[9.0, 0.0], 5, Some(200), &allowed)
+        .unwrap();
+
+    assert!(!results.is_empty());
+    for (id, _) in &results {
+        assert!(
+            allowed.0.contains(id),
+            "returned doc {id} should be in allowed set"
+        );
+    }
+    // Doc 9 should be closest
+    assert_eq!(results[0].0, 9);
+}
+
 // Helper to read manifest from disk
 fn read_manifest(base_path: &std::path::Path, version_number: u64) -> Vec<serde_json::Value> {
     let path = base_path

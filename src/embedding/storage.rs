@@ -1,4 +1,4 @@
-use crate::embedding::IndexedValue;
+use crate::embedding::{IndexedValue, NoFilter};
 
 use super::config::DistanceMetric;
 use super::config::{EmbeddingConfig, SegmentConfig};
@@ -98,6 +98,30 @@ impl EmbeddingStorage {
         k: usize,
         ef_search: Option<usize>,
     ) -> Result<Vec<(u64, f32)>, Error> {
+        self.search_filtered::<NoFilter>(query, k, ef_search, None)
+    }
+
+    /// Search for k nearest neighbors, filtering results by document ID.
+    ///
+    /// The filter is applied only to final results — HNSW graph traversal
+    /// still visits filtered-out nodes to preserve graph connectivity.
+    pub fn search_with_filter<F: super::DocumentFilter>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: Option<usize>,
+        filter: &F,
+    ) -> Result<Vec<(u64, f32)>, Error> {
+        self.search_filtered(query, k, ef_search, Some(filter))
+    }
+
+    fn search_filtered<F: super::DocumentFilter>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: Option<usize>,
+        filter: Option<&F>,
+    ) -> Result<Vec<(u64, f32)>, Error> {
         if query.len() != self.config.dimensions {
             return Err(Error::DimensionMismatch {
                 expected: self.config.dimensions,
@@ -109,27 +133,35 @@ impl EmbeddingStorage {
         }
 
         match self.config.metric {
-            DistanceMetric::L2 => self.search_inner::<super::distance::L2>(query, k, ef_search),
+            DistanceMetric::L2 => {
+                self.search_inner::<super::distance::L2, F>(query, k, ef_search, filter)
+            }
             DistanceMetric::DotProduct => {
-                self.search_inner::<super::distance::DotProduct>(query, k, ef_search)
+                self.search_inner::<super::distance::DotProduct, F>(query, k, ef_search, filter)
             }
             DistanceMetric::Cosine => {
                 let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if norm == 0.0 {
-                    self.search_inner::<super::distance::Cosine>(query, k, ef_search)
+                    self.search_inner::<super::distance::Cosine, F>(query, k, ef_search, filter)
                 } else {
                     let normalized: Vec<f32> = query.iter().map(|x| x / norm).collect();
-                    self.search_inner::<super::distance::CosineNorm>(&normalized, k, ef_search)
+                    self.search_inner::<super::distance::CosineNorm, F>(
+                        &normalized,
+                        k,
+                        ef_search,
+                        filter,
+                    )
                 }
             }
         }
     }
 
-    fn search_inner<D: Distance>(
+    fn search_inner<D: Distance, F: super::DocumentFilter>(
         &self,
         query: &[f32],
         k: usize,
         ef_search: Option<usize>,
+        filter: Option<&F>,
     ) -> Result<Vec<(u64, f32)>, Error> {
         let snapshot = self.fresh_snapshot();
         let segment_list = self.segments.load();
@@ -155,19 +187,20 @@ impl EmbeddingStorage {
                 .partition_point(|&d| d <= segment.max_doc_id);
             let targeted_live_deletes = &snapshot.deletes[start..end];
 
-            let segment_results = segment.search::<D>(
+            let segment_results = segment.search::<D, F>(
                 query,
                 &query_quantized,
                 k,
                 ef,
                 segment.deletes_slice(),
                 targeted_live_deletes,
+                filter,
             );
             all_results.extend(segment_results);
         }
 
         // Search live layer (brute force)
-        let live_results = snapshot.search::<D>(query, k, &snapshot.deletes);
+        let live_results = snapshot.search::<D, F>(query, k, &snapshot.deletes, filter);
         all_results.extend(live_results);
 
         // Merge: sort by distance, deduplicate by doc_id, take top-k

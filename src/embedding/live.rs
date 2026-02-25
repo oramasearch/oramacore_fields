@@ -1,4 +1,5 @@
 use super::distance::Distance;
+use super::DocumentFilter;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -219,11 +220,12 @@ impl LiveSnapshot {
 
     /// Brute-force search over live entries.
     /// Returns (doc_id, distance) pairs sorted by distance ascending.
-    pub fn search<D: Distance>(
+    pub fn search<D: Distance, F: DocumentFilter>(
         &self,
         query: &[f32],
         k: usize,
         excluded: &[u64],
+        filter: Option<&F>,
     ) -> Vec<(u64, f32)> {
         if self.entries.is_empty() || k == 0 {
             return Vec::new();
@@ -235,6 +237,11 @@ impl LiveSnapshot {
         for (doc_id, vector) in &self.entries {
             if excluded.binary_search(doc_id).is_ok() {
                 continue;
+            }
+            if let Some(f) = filter {
+                if !f.contains(*doc_id) {
+                    continue;
+                }
             }
 
             let dist = D::distance(query, vector);
@@ -355,7 +362,7 @@ mod tests {
         let snapshot = layer.get_snapshot();
 
         let query = [0.1, 0.0];
-        let results = snapshot.search::<L2>(&query, 2, &[]);
+        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&query, 2, &[], None);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, 1); // closest: (0,0) dist=0.01
         assert_eq!(results[1].0, 2); // next: (1,0) dist=0.81
@@ -370,7 +377,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let results = snapshot.search::<L2>(&[0.0], 3, &[1]);
+        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&[0.0], 3, &[1], None);
         assert_eq!(results.len(), 2);
         // Doc 1 excluded
         assert!(results.iter().all(|(id, _)| *id != 1));
@@ -379,7 +386,7 @@ mod tests {
     #[test]
     fn test_search_empty() {
         let snapshot = LiveSnapshot::empty();
-        let results = snapshot.search::<L2>(&[1.0], 5, &[]);
+        let results = snapshot.search::<L2, crate::embedding::NoFilter>(&[1.0], 5, &[], None);
         assert!(results.is_empty());
     }
 }

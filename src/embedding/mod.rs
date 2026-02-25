@@ -118,3 +118,15 @@ pub use error::Error;
 pub use indexer::{Embedding, EmbeddingIndexer, IndexedValue};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use storage::EmbeddingStorage;
+
+pub trait DocumentFilter {
+    fn contains(&self, doc_id: u64) -> bool;
+}
+
+pub struct NoFilter;
+impl DocumentFilter for NoFilter {
+    #[inline]
+    fn contains(&self, _doc_id: u64) -> bool {
+        true
+    }
+}

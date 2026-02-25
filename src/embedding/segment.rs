@@ -5,6 +5,7 @@ use super::hnsw::{VisitedBitset, GRAPH_HEADER_SIZE, SENTINEL};
 use super::io::{load_delete_file, read_manifest, segment_data_dir, version_dir, ManifestEntry};
 use super::platform::{advise_random, advise_sequential};
 use super::quantization::QuantizationParams;
+use super::DocumentFilter;
 use memmap2::Mmap;
 use std::collections::BinaryHeap;
 use std::fs::File;
@@ -196,7 +197,7 @@ impl Segment {
     /// Two-phase HNSW search on this segment.
     /// Phase 1: Quantized distance for beam search.
     /// Phase 2: Rescore top candidates with raw f32 distance.
-    pub fn search<D: Distance>(
+    pub fn search<D: Distance, F: DocumentFilter>(
         &self,
         query_raw: &[f32],
         query_quantized: &[i8],
@@ -204,6 +205,7 @@ impl Segment {
         ef: usize,
         segment_deletes: &[u64],
         live_deletes: &[u64],
+        filter: Option<&F>,
     ) -> Vec<(u64, f32)> {
         if self.config.num_nodes == 0 {
             return Vec::new();
@@ -305,6 +307,11 @@ impl Segment {
                     || live_deletes.binary_search(&doc_id).is_ok()
                 {
                     return None;
+                }
+                if let Some(f) = filter {
+                    if !f.contains(doc_id) {
+                        return None;
+                    }
                 }
                 let raw_vec = self.raw_vector(item.index, dimensions);
                 let dist = D::distance(query_raw, raw_vec);
