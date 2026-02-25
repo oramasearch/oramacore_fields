@@ -142,11 +142,17 @@ fn flush_batch(
         &mut ntf_out,
         batch.len,
     );
-    for i in 0..batch.len {
-        let value = ntf_out[i] * boost * batch.exact_boosts[i];
+
+    for ((nft_out, exact_boost), doc_id) in ntf_out
+        .iter()
+        .zip(batch.exact_boosts.iter())
+        .zip(batch.doc_ids)
+        .take(batch.len)
+    {
+        let value = nft_out * boost * exact_boost;
         match per_doc_ntf {
-            PerDocNtf::SingleTerm(v) => v.push((batch.doc_ids[i], value)),
-            PerDocNtf::MultiTerm(m) => *m.entry(batch.doc_ids[i]).or_insert(0.0) += value,
+            PerDocNtf::SingleTerm(v) => v.push((doc_id, value)),
+            PerDocNtf::MultiTerm(m) => *m.entry(doc_id).or_insert(0.0) += value,
         }
     }
 }
@@ -224,20 +230,16 @@ impl SearchHandle {
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
 
-        let mut live_del_cursor = SortedDeleteCursor::new(
-            if deletes.is_empty() {
-                None
-            } else {
-                Some(deletes.as_slice())
-            },
-        );
-        let mut compacted_del_cursor = SortedDeleteCursor::new(
-            if compacted_deletes.is_empty() {
-                None
-            } else {
-                Some(compacted_deletes)
-            },
-        );
+        let mut live_del_cursor = SortedDeleteCursor::new(if deletes.is_empty() {
+            None
+        } else {
+            Some(deletes.as_slice())
+        });
+        let mut compacted_del_cursor = SortedDeleteCursor::new(if compacted_deletes.is_empty() {
+            None
+        } else {
+            Some(compacted_deletes)
+        });
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
@@ -403,9 +405,9 @@ impl SearchHandle {
                         i += BATCH_SIZE;
                     }
                     // Scalar tail
-                    for idx in i..v.len() {
-                        let score = bm25f_score(v[idx].1, params.bm25_params.k, idf);
-                        scorer.add(v[idx].0, score, token_bit);
+                    for (doc_id, score) in v.iter().skip(i) {
+                        let score = bm25f_score(*score, params.bm25_params.k, idf);
+                        scorer.add(*doc_id, score, token_bit);
                     }
                 }
                 PerDocNtf::MultiTerm(m) => {
@@ -457,20 +459,16 @@ impl SearchHandle {
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
 
-        let mut live_del_cursor = SortedDeleteCursor::new(
-            if deletes.is_empty() {
-                None
-            } else {
-                Some(deletes.as_slice())
-            },
-        );
-        let mut compacted_del_cursor = SortedDeleteCursor::new(
-            if compacted_deletes.is_empty() {
-                None
-            } else {
-                Some(compacted_deletes)
-            },
-        );
+        let mut live_del_cursor = SortedDeleteCursor::new(if deletes.is_empty() {
+            None
+        } else {
+            Some(deletes.as_slice())
+        });
+        let mut compacted_del_cursor = SortedDeleteCursor::new(if compacted_deletes.is_empty() {
+            None
+        } else {
+            Some(compacted_deletes)
+        });
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
 
@@ -672,9 +670,9 @@ impl SearchHandle {
                         }
                         i += BATCH_SIZE;
                     }
-                    for idx in i..v.len() {
-                        let score = bm25f_score(v[idx].1, params.bm25_params.k, idf);
-                        scorer.add(v[idx].0, score, token_bit);
+                    for (doc_id, score) in v.iter().skip(i) {
+                        let score = bm25f_score(*score, params.bm25_params.k, idf);
+                        scorer.add(*doc_id, score, token_bit);
                     }
                     if token_idx == 0 {
                         consecutive_counts.reserve(v.len());

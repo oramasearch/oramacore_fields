@@ -78,11 +78,7 @@ impl StringStorage {
     /// Both the compacted (mmap) and live (in-memory) layers are searched and merged, so
     /// results reflect all inserts/deletes without requiring a compaction first.
     /// Search the index without document filtering.
-    pub fn search(
-        &self,
-        params: &SearchParams<'_>,
-        scorer: &mut BM25Scorer,
-    ) -> Result<()> {
+    pub fn search(&self, params: &SearchParams<'_>, scorer: &mut BM25Scorer) -> Result<()> {
         self.search_filtered::<NoFilter>(params, None, scorer)
     }
 

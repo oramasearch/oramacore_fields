@@ -197,6 +197,7 @@ impl Segment {
     /// Two-phase HNSW search on this segment.
     /// Phase 1: Quantized distance for beam search.
     /// Phase 2: Rescore top candidates with raw f32 distance.
+    #[allow(clippy::too_many_arguments)]
     pub fn search<D: Distance, F: DocumentFilter>(
         &self,
         query_raw: &[f32],

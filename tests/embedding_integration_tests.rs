@@ -1190,9 +1190,7 @@ fn test_nofilter_returns_same_as_none() {
     storage.insert(3, iv(2, &[2.0, 0.0]));
     storage.compact(1).unwrap();
 
-    let results_none = storage
-        .search(&[0.0, 0.0], 3, None)
-        .unwrap();
+    let results_none = storage.search(&[0.0, 0.0], 3, None).unwrap();
     let no_filter = oramacore_fields::embedding::NoFilter;
     let results_nofilter = storage
         .search_with_filter(&[0.0, 0.0], 3, None, &no_filter)
@@ -1213,9 +1211,7 @@ fn test_filter_allow_all() {
     storage.insert(3, iv(2, &[2.0, 0.0]));
     storage.compact(1).unwrap();
 
-    let results_none = storage
-        .search(&[0.0, 0.0], 3, None)
-        .unwrap();
+    let results_none = storage.search(&[0.0, 0.0], 3, None).unwrap();
     let results_allow_all = storage
         .search_with_filter(&[0.0, 0.0], 3, None, &AllowAll)
         .unwrap();

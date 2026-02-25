@@ -38,9 +38,7 @@ pub fn batch_normalized_tf(
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if x86_has_avx2_fma() {
-        return unsafe {
-            avx2::batch_normalized_tf(tfs, field_lengths, inv_avg_fl, b, out, len)
-        };
+        return unsafe { avx2::batch_normalized_tf(tfs, field_lengths, inv_avg_fl, b, out, len) };
     }
 
     scalar::batch_normalized_tf(tfs, field_lengths, inv_avg_fl, b, out, len)
@@ -225,13 +223,7 @@ pub mod avx2 {
 
     #[inline]
     #[target_feature(enable = "avx2,fma")]
-    pub unsafe fn batch_bm25f_score(
-        ntfs: &[f32],
-        k: f32,
-        idf: f32,
-        out: &mut [f32],
-        len: usize,
-    ) {
+    pub unsafe fn batch_bm25f_score(ntfs: &[f32], k: f32, idf: f32, out: &mut [f32], len: usize) {
         let idf_k1 = idf * (k + 1.0);
         let v_idf_k1 = _mm256_set1_ps(idf_k1);
         let v_k = _mm256_set1_ps(k);
