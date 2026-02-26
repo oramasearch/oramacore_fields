@@ -47,6 +47,7 @@ pub struct CompactedQueryIterator<'a> {
     leaf_data: &'a [u8],
     deleted_set: &'a HashSet<u64>,
     kind: QueryKind,
+    negate: bool,
     stack: Vec<StackFrame>,
     leaf_scan: Option<LeafScan>,
 }
@@ -67,6 +68,7 @@ impl<'a> CompactedQueryIterator<'a> {
         global_min_lon: i32,
         global_max_lon: i32,
         deleted_set: &'a HashSet<u64>,
+        negate: bool,
     ) -> Self {
         let mut stack = Vec::with_capacity(32);
         stack.push(StackFrame::Traverse {
@@ -89,6 +91,7 @@ impl<'a> CompactedQueryIterator<'a> {
                 query_min_lon,
                 query_max_lon,
             },
+            negate,
             stack,
             leaf_scan: None,
         }
@@ -108,6 +111,7 @@ impl<'a> CompactedQueryIterator<'a> {
         global_min_lon: i32,
         global_max_lon: i32,
         deleted_set: &'a HashSet<u64>,
+        negate: bool,
     ) -> Self {
         let (bb_min_lat, bb_max_lat, bb_min_lon, bb_max_lon) =
             bounding_box_for_radius(center_lat_f64, center_lon_f64, radius_meters);
@@ -141,6 +145,7 @@ impl<'a> CompactedQueryIterator<'a> {
                 bbox_min_lon,
                 bbox_max_lon,
             },
+            negate,
             stack,
             leaf_scan: None,
         }
@@ -210,20 +215,17 @@ impl<'a> CompactedQueryIterator<'a> {
                     .unwrap(),
             );
 
-            match &self.kind {
+            let inside = match &self.kind {
                 QueryKind::BBox {
                     query_min_lat,
                     query_max_lat,
                     query_min_lon,
                     query_max_lon,
                 } => {
-                    if lat >= *query_min_lat
+                    lat >= *query_min_lat
                         && lat <= *query_max_lat
                         && lon >= *query_min_lon
                         && lon <= *query_max_lon
-                    {
-                        return Some(doc_id);
-                    }
                 }
                 QueryKind::Radius {
                     center_lat_f64,
@@ -234,10 +236,11 @@ impl<'a> CompactedQueryIterator<'a> {
                     let pt_lat = super::super::point::decode_lat(lat);
                     let pt_lon = super::super::point::decode_lon(lon);
                     let dist = haversine_distance(*center_lat_f64, *center_lon_f64, pt_lat, pt_lon);
-                    if dist <= *radius_meters {
-                        return Some(doc_id);
-                    }
+                    dist <= *radius_meters
                 }
+            };
+            if inside != self.negate {
+                return Some(doc_id);
             }
         }
 
@@ -302,38 +305,79 @@ impl Iterator for CompactedQueryIterator<'_> {
                         q_max_lon,
                     );
 
-                    match relation {
-                        Relation::Outside => continue,
-                        Relation::Inside => {
-                            match &self.kind {
-                                QueryKind::BBox { .. } => {
-                                    self.stack.push(StackFrame::CollectAll { node_id });
-                                    continue;
+                    if self.negate {
+                        match relation {
+                            Relation::Outside => {
+                                // Cell fully outside query → all points match "outside"
+                                self.stack.push(StackFrame::CollectAll { node_id });
+                                continue;
+                            }
+                            Relation::Inside => {
+                                match &self.kind {
+                                    QueryKind::BBox { .. } => {
+                                        // Cell fully inside bbox → no points match "outside bbox"
+                                        continue;
+                                    }
+                                    QueryKind::Radius {
+                                        center_lat_f64,
+                                        center_lon_f64,
+                                        radius_meters,
+                                        ..
+                                    } => {
+                                        if cell_fully_inside_radius(
+                                            cell_min_lat,
+                                            cell_max_lat,
+                                            cell_min_lon,
+                                            cell_max_lon,
+                                            *center_lat_f64,
+                                            *center_lon_f64,
+                                            *radius_meters,
+                                        ) {
+                                            // Cell fully inside radius → skip
+                                            continue;
+                                        }
+                                        // Cell inside bbox but not fully inside radius → check points
+                                    }
                                 }
-                                QueryKind::Radius {
-                                    center_lat_f64,
-                                    center_lon_f64,
-                                    radius_meters,
-                                    ..
-                                } => {
-                                    if cell_fully_inside_radius(
-                                        cell_min_lat,
-                                        cell_max_lat,
-                                        cell_min_lon,
-                                        cell_max_lon,
-                                        *center_lat_f64,
-                                        *center_lon_f64,
-                                        *radius_meters,
-                                    ) {
+                            }
+                            Relation::Crosses => {
+                                // Fall through to Crosses handling below
+                            }
+                        }
+                    } else {
+                        match relation {
+                            Relation::Outside => continue,
+                            Relation::Inside => {
+                                match &self.kind {
+                                    QueryKind::BBox { .. } => {
                                         self.stack.push(StackFrame::CollectAll { node_id });
                                         continue;
                                     }
-                                    // Fall through to Crosses handling
+                                    QueryKind::Radius {
+                                        center_lat_f64,
+                                        center_lon_f64,
+                                        radius_meters,
+                                        ..
+                                    } => {
+                                        if cell_fully_inside_radius(
+                                            cell_min_lat,
+                                            cell_max_lat,
+                                            cell_min_lon,
+                                            cell_max_lon,
+                                            *center_lat_f64,
+                                            *center_lon_f64,
+                                            *radius_meters,
+                                        ) {
+                                            self.stack.push(StackFrame::CollectAll { node_id });
+                                            continue;
+                                        }
+                                        // Fall through to Crosses handling
+                                    }
                                 }
                             }
-                        }
-                        Relation::Crosses => {
-                            // Fall through to Crosses handling below
+                            Relation::Crosses => {
+                                // Fall through to Crosses handling below
+                            }
                         }
                     }
 

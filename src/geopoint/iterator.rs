@@ -17,6 +17,16 @@ pub enum GeoFilterOp {
         center: GeoPoint,
         radius_meters: f64,
     },
+    OutsideBoundingBox {
+        min_lat: f64,
+        max_lat: f64,
+        min_lon: f64,
+        max_lon: f64,
+    },
+    OutsideRadius {
+        center: GeoPoint,
+        radius_meters: f64,
+    },
 }
 
 impl GeoFilterOp {
@@ -44,6 +54,29 @@ impl GeoFilterOp {
                     point.lon(),
                 );
                 dist <= *radius_meters
+            }
+            GeoFilterOp::OutsideBoundingBox {
+                min_lat,
+                max_lat,
+                min_lon,
+                max_lon,
+            } => {
+                !(point.lat() >= *min_lat
+                    && point.lat() <= *max_lat
+                    && point.lon() >= *min_lon
+                    && point.lon() <= *max_lon)
+            }
+            GeoFilterOp::OutsideRadius {
+                center,
+                radius_meters,
+            } => {
+                let dist = super::compacted::query::haversine_distance(
+                    center.lat(),
+                    center.lon(),
+                    point.lat(),
+                    point.lon(),
+                );
+                dist > *radius_meters
             }
         }
     }
@@ -157,6 +190,39 @@ mod tests {
 
         assert!(op.matches(&near));
         assert!(!op.matches(&far));
+    }
+
+    #[test]
+    fn test_outside_bbox_matches() {
+        let op = GeoFilterOp::OutsideBoundingBox {
+            min_lat: 0.0,
+            max_lat: 50.0,
+            min_lon: 0.0,
+            max_lon: 50.0,
+        };
+
+        let inside = GeoPoint::new(25.0, 25.0).unwrap();
+        let outside = GeoPoint::new(60.0, 60.0).unwrap();
+        let edge = GeoPoint::new(0.0, 0.0).unwrap();
+
+        assert!(!op.matches(&inside));
+        assert!(op.matches(&outside));
+        assert!(!op.matches(&edge)); // edge is considered inside
+    }
+
+    #[test]
+    fn test_outside_radius_matches() {
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let op = GeoFilterOp::OutsideRadius {
+            center,
+            radius_meters: 200_000.0,
+        };
+
+        let near = GeoPoint::new(0.5, 0.5).unwrap();
+        let far = GeoPoint::new(45.0, 45.0).unwrap();
+
+        assert!(!op.matches(&near));
+        assert!(op.matches(&far));
     }
 
     #[test]

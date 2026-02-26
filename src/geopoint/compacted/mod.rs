@@ -299,7 +299,14 @@ impl Segment {
                 max_lat,
                 min_lon,
                 max_lon,
+            }
+            | GeoFilterOp::OutsideBoundingBox {
+                min_lat,
+                max_lat,
+                min_lon,
+                max_lon,
             } => {
+                let negate = matches!(op, GeoFilterOp::OutsideBoundingBox { .. });
                 let enc_min_lat = encode_lat(*min_lat);
                 let enc_max_lat = encode_lat(*max_lat);
                 let enc_min_lon = encode_lon(*min_lon);
@@ -319,25 +326,34 @@ impl Segment {
                     self.global_min_lon,
                     self.global_max_lon,
                     deleted_set,
+                    negate,
                 ))
             }
             GeoFilterOp::Radius {
                 center,
                 radius_meters,
-            } => Some(query::CompactedQueryIterator::new_radius(
-                inner_nodes,
-                self.num_leaves,
-                leaf_offsets,
-                leaf_data,
-                center.lat(),
-                center.lon(),
-                *radius_meters,
-                self.global_min_lat,
-                self.global_max_lat,
-                self.global_min_lon,
-                self.global_max_lon,
-                deleted_set,
-            )),
+            }
+            | GeoFilterOp::OutsideRadius {
+                center,
+                radius_meters,
+            } => {
+                let negate = matches!(op, GeoFilterOp::OutsideRadius { .. });
+                Some(query::CompactedQueryIterator::new_radius(
+                    inner_nodes,
+                    self.num_leaves,
+                    leaf_offsets,
+                    leaf_data,
+                    center.lat(),
+                    center.lon(),
+                    *radius_meters,
+                    self.global_min_lat,
+                    self.global_max_lat,
+                    self.global_min_lon,
+                    self.global_max_lon,
+                    deleted_set,
+                    negate,
+                ))
+            }
         }
     }
 

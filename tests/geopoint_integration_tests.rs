@@ -692,3 +692,226 @@ fn test_whole_globe_bbox() {
     results.sort_unstable();
     assert_eq!(results, vec![1, 2, 3]);
 }
+
+// --- Outside filters ---
+
+#[test]
+fn test_outside_bbox_live_only() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    let op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: 5.0,
+        max_lat: 25.0,
+        min_lon: 5.0,
+        max_lon: 25.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![3]);
+}
+
+#[test]
+fn test_outside_bbox_after_compaction() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: 5.0,
+        max_lat: 25.0,
+        min_lon: 5.0,
+        max_lon: 25.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![3]);
+}
+
+#[test]
+fn test_outside_radius_live_only() {
+    let (_tmp, index) = make_index();
+
+    let rome = GeoPoint::new(41.9028, 12.4964).unwrap();
+    let paris = GeoPoint::new(48.8566, 2.3522).unwrap();
+    let tokyo = GeoPoint::new(35.6762, 139.6503).unwrap();
+
+    index.insert(IndexedValue::Plain(rome), 1);
+    index.insert(IndexedValue::Plain(paris), 2);
+    index.insert(IndexedValue::Plain(tokyo), 3);
+
+    // 500 km from Rome — only Paris and Tokyo are outside
+    let op = GeoFilterOp::OutsideRadius {
+        center: rome,
+        radius_meters: 500_000.0,
+    };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![2, 3]);
+}
+
+#[test]
+fn test_outside_radius_after_compaction() {
+    let (_tmp, index) = make_index();
+
+    let rome = GeoPoint::new(41.9028, 12.4964).unwrap();
+    let paris = GeoPoint::new(48.8566, 2.3522).unwrap();
+    let tokyo = GeoPoint::new(35.6762, 139.6503).unwrap();
+
+    index.insert(IndexedValue::Plain(rome), 1);
+    index.insert(IndexedValue::Plain(paris), 2);
+    index.insert(IndexedValue::Plain(tokyo), 3);
+
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::OutsideRadius {
+        center: rome,
+        radius_meters: 500_000.0,
+    };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![2, 3]);
+}
+
+#[test]
+fn test_outside_bbox_complement() {
+    let (_tmp, index) = make_index();
+
+    for i in 0..100u64 {
+        let lat = -80.0 + (i as f64) * 1.5;
+        let lon = -170.0 + (i as f64) * 3.3;
+        index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
+    }
+
+    index.compact(1).unwrap();
+
+    let bbox = (10.0, 40.0, 10.0, 40.0);
+
+    let inside_op = GeoFilterOp::BoundingBox {
+        min_lat: bbox.0,
+        max_lat: bbox.1,
+        min_lon: bbox.2,
+        max_lon: bbox.3,
+    };
+    let outside_op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: bbox.0,
+        max_lat: bbox.1,
+        min_lon: bbox.2,
+        max_lon: bbox.3,
+    };
+
+    let mut inside: Vec<u64> = index.filter(inside_op).iter().collect();
+    let mut outside: Vec<u64> = index.filter(outside_op).iter().collect();
+    inside.sort_unstable();
+    outside.sort_unstable();
+
+    // No overlap
+    for id in &inside {
+        assert!(!outside.contains(id), "doc {id} in both inside and outside");
+    }
+
+    // Full coverage
+    let mut all: Vec<u64> = inside.iter().chain(outside.iter()).copied().collect();
+    all.sort_unstable();
+    assert_eq!(all, (0..100u64).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_outside_radius_complement() {
+    let (_tmp, index) = make_index();
+
+    let center = GeoPoint::new(0.0, 0.0).unwrap();
+    let radius = 2_000_000.0;
+
+    for i in 0..100u64 {
+        let lat = -80.0 + (i as f64) * 1.5;
+        let lon = -170.0 + (i as f64) * 3.3;
+        index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
+    }
+
+    index.compact(1).unwrap();
+
+    let inside_op = GeoFilterOp::Radius {
+        center,
+        radius_meters: radius,
+    };
+    let outside_op = GeoFilterOp::OutsideRadius {
+        center,
+        radius_meters: radius,
+    };
+
+    let mut inside: Vec<u64> = index.filter(inside_op).iter().collect();
+    let mut outside: Vec<u64> = index.filter(outside_op).iter().collect();
+    inside.sort_unstable();
+    outside.sort_unstable();
+
+    // No overlap
+    for id in &inside {
+        assert!(!outside.contains(id), "doc {id} in both inside and outside");
+    }
+
+    // Full coverage
+    let mut all: Vec<u64> = inside.iter().chain(outside.iter()).copied().collect();
+    all.sort_unstable();
+    assert_eq!(all, (0..100u64).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_outside_with_deletes() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+    index.insert(IndexedValue::Plain(GeoPoint::new(60.0, 60.0).unwrap()), 4);
+
+    index.delete(3);
+
+    let op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: 5.0,
+        max_lat: 25.0,
+        min_lon: 5.0,
+        max_lon: 25.0,
+    };
+    // doc 3 is deleted, only doc 4 is outside
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![4]);
+
+    // Also test after compaction
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: 5.0,
+        max_lat: 25.0,
+        min_lon: 5.0,
+        max_lon: 25.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![4]);
+}
+
+#[test]
+fn test_outside_empty_index() {
+    let (_tmp, index) = make_index();
+
+    let op = GeoFilterOp::OutsideBoundingBox {
+        min_lat: -90.0,
+        max_lat: 90.0,
+        min_lon: -180.0,
+        max_lon: 180.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert!(results.is_empty());
+
+    let op = GeoFilterOp::OutsideRadius {
+        center: GeoPoint::new(0.0, 0.0).unwrap(),
+        radius_meters: 1_000_000.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert!(results.is_empty());
+}
