@@ -2915,3 +2915,188 @@ fn test_insert_delete_reinsert_ordering() {
         "false set should still contain doc 1 after compaction"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sort tests
+// ---------------------------------------------------------------------------
+
+/// Basic ascending sort: false docs first, then true docs.
+#[test]
+fn test_sort_ascending_basic() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false (2, 4) then true (1, 3)
+    assert_eq!(results, vec![2, 4, 1, 3]);
+}
+
+/// Basic descending sort: true docs (descending) first, then false docs (descending).
+#[test]
+fn test_sort_descending_basic() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    let results: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    // true desc (3, 1) then false desc (4, 2)
+    assert_eq!(results, vec![3, 1, 4, 2]);
+}
+
+/// Sort on empty index returns nothing.
+#[test]
+fn test_sort_empty_index() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    let asc: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    let desc: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+
+    assert!(asc.is_empty());
+    assert!(desc.is_empty());
+}
+
+/// Sort with deletions: deleted docs are excluded from both groups.
+#[test]
+fn test_sort_with_deletes() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 2);
+    index.insert(&IndexedValue::Plain(false), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    index.delete(2);
+    index.delete(3);
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false: 4 only (3 deleted), true: 1 only (2 deleted)
+    assert_eq!(results, vec![4, 1]);
+
+    let results_desc: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    assert_eq!(results_desc, vec![1, 4]);
+}
+
+/// Sort across live + compacted layers.
+#[test]
+fn test_sort_live_plus_compacted() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    // Insert and compact
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+    index.compact(1).unwrap();
+
+    // Insert more into live layer
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false (2, 4) then true (1, 3)
+    assert_eq!(results, vec![2, 4, 1, 3]);
+}
+
+/// Array values: a doc in both TRUE and FALSE sets appears once per group.
+#[test]
+fn test_sort_array_values() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    // Doc 1 appears in both sets
+    index.insert(&IndexedValue::Array(vec![true, false]), 1);
+    index.insert(&IndexedValue::Plain(true), 2);
+    index.insert(&IndexedValue::Plain(false), 3);
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false (1, 3) then true (1, 2)
+    assert_eq!(results, vec![1, 3, 1, 2]);
+}
+
+/// Owned sort iterator matches borrowed sort iterator.
+#[test]
+fn test_sort_owned_matches_borrowed() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    let borrowed: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    let owned: Vec<u64> = index.sort(SortOrder::Ascending).into_iter().collect();
+    assert_eq!(borrowed, owned);
+
+    let borrowed_desc: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    let owned_desc: Vec<u64> = index.sort(SortOrder::Descending).into_iter().collect();
+    assert_eq!(borrowed_desc, owned_desc);
+}
+
+/// Sort after compaction with deletes applied.
+#[test]
+fn test_sort_after_compaction_with_deletes() {
+    let tmp = TempDir::new().unwrap();
+    let threshold = DeletionThreshold::try_from(0.0).unwrap(); // always apply deletes
+    let index = BoolStorage::new(tmp.path().to_path_buf(), threshold).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 2);
+    index.insert(&IndexedValue::Plain(false), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+    index.insert(&IndexedValue::Plain(false), 5);
+
+    index.delete(2);
+    index.delete(4);
+    index.compact(1).unwrap();
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false: 3, 5 (4 deleted); true: 1 (2 deleted)
+    assert_eq!(results, vec![3, 5, 1]);
+
+    // Add more after compaction
+    index.insert(&IndexedValue::Plain(true), 6);
+    index.insert(&IndexedValue::Plain(false), 7);
+
+    let results: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    // true desc (6, 1) then false desc (7, 5, 3)
+    assert_eq!(results, vec![6, 1, 7, 5, 3]);
+}
+
+/// Sort with only true values.
+#[test]
+fn test_sort_only_true() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(true), 2);
+
+    let results: Vec<u64> = index.sort(SortOrder::Ascending).iter().collect();
+    // false group empty, true group: 1, 2
+    assert_eq!(results, vec![1, 2]);
+}
+
+/// Sort with only false values.
+#[test]
+fn test_sort_only_false() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(false), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+
+    let results: Vec<u64> = index.sort(SortOrder::Descending).iter().collect();
+    // true group empty, false desc: 2, 1
+    assert_eq!(results, vec![2, 1]);
+}

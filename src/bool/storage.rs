@@ -10,7 +10,7 @@ use super::io::{
     remove_version_dir, sync_dir, version_dir, write_current_atomic, write_postings,
     write_postings_from_iter, FORMAT_VERSION,
 };
-use super::iterator::FilterData;
+use super::iterator::{FilterData, SortData, SortOrder};
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::{sorted_merge, sorted_subtract};
 use super::version::CompactedVersion;
@@ -207,6 +207,31 @@ impl BoolStorage {
             }
         };
         FilterData::new(Arc::clone(&version), snapshot, value)
+    }
+
+    /// Return all doc_ids sorted by their boolean value.
+    ///
+    /// - **Ascending** (false < true): false-group doc_ids first, then true-group.
+    /// - **Descending** (true > false): true-group doc_ids first, then false-group.
+    ///
+    /// Within each group, doc_ids are ordered by their natural (ascending or
+    /// descending) doc_id order. A doc_id present in both TRUE and FALSE sets
+    /// (via [`IndexedValue::Array`]) will appear once per group.
+    pub fn sort(&self, order: SortOrder) -> SortData {
+        let (snapshot, version) = {
+            let live = self.live.read().unwrap();
+            if !live.is_snapshot_dirty() {
+                (live.get_snapshot(), self.version.load())
+            } else {
+                drop(live);
+                let mut live = self.live.write().unwrap();
+                if live.is_snapshot_dirty() {
+                    live.refresh_snapshot();
+                }
+                (live.get_snapshot(), self.version.load())
+            }
+        };
+        SortData::new(Arc::clone(&version), snapshot, order)
     }
 
     /// Compact the index at the given version number.
