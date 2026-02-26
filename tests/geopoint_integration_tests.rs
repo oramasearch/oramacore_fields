@@ -1,4 +1,6 @@
-use oramacore_fields::geopoint::{GeoFilterOp, GeoPoint, GeoPointStorage, IndexedValue, Threshold};
+use oramacore_fields::geopoint::{
+    GeoFilterOp, GeoPoint, GeoPointStorage, GeoPolygon, IndexedValue, Threshold,
+};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -911,6 +913,205 @@ fn test_outside_empty_index() {
     let op = GeoFilterOp::OutsideRadius {
         center: GeoPoint::new(0.0, 0.0).unwrap(),
         radius_meters: 1_000_000.0,
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert!(results.is_empty());
+}
+
+// --- Polygon filters ---
+
+fn square_polygon() -> GeoPolygon {
+    GeoPolygon::new(vec![
+        GeoPoint::new(0.0, 0.0).unwrap(),
+        GeoPoint::new(0.0, 30.0).unwrap(),
+        GeoPoint::new(30.0, 30.0).unwrap(),
+        GeoPoint::new(30.0, 0.0).unwrap(),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn test_polygon_live_only() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    let op = GeoFilterOp::Polygon {
+        polygon: square_polygon(),
+    };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 2]);
+}
+
+#[test]
+fn test_polygon_after_compaction() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::Polygon {
+        polygon: square_polygon(),
+    };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 2]);
+}
+
+#[test]
+fn test_outside_polygon_live_only() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    let op = GeoFilterOp::OutsidePolygon {
+        polygon: square_polygon(),
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![3]);
+}
+
+#[test]
+fn test_outside_polygon_after_compaction() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::OutsidePolygon {
+        polygon: square_polygon(),
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![3]);
+}
+
+#[test]
+fn test_polygon_complement() {
+    let (_tmp, index) = make_index();
+
+    for i in 0..100u64 {
+        let lat = -80.0 + (i as f64) * 1.5;
+        let lon = -170.0 + (i as f64) * 3.3;
+        index.insert(IndexedValue::Plain(GeoPoint::new(lat, lon).unwrap()), i);
+    }
+
+    index.compact(1).unwrap();
+
+    let polygon = square_polygon();
+
+    let inside_op = GeoFilterOp::Polygon {
+        polygon: polygon.clone(),
+    };
+    let outside_op = GeoFilterOp::OutsidePolygon { polygon };
+
+    let mut inside: Vec<u64> = index.filter(inside_op).iter().collect();
+    let mut outside: Vec<u64> = index.filter(outside_op).iter().collect();
+    inside.sort_unstable();
+    outside.sort_unstable();
+
+    // No overlap
+    for id in &inside {
+        assert!(
+            !outside.contains(id),
+            "doc {id} in both inside and outside polygon"
+        );
+    }
+
+    // Full coverage
+    let mut all: Vec<u64> = inside.iter().chain(outside.iter()).copied().collect();
+    all.sort_unstable();
+    assert_eq!(all, (0..100u64).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_polygon_with_deletes() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 10.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(20.0, 20.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 3);
+
+    index.delete(1);
+
+    let op = GeoFilterOp::Polygon {
+        polygon: square_polygon(),
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![2]);
+
+    // Also after compaction
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::Polygon {
+        polygon: square_polygon(),
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert_eq!(results, vec![2]);
+}
+
+#[test]
+fn test_polygon_concave() {
+    let (_tmp, index) = make_index();
+
+    // L-shaped polygon: covers (lat 0-10, lon 0-10) and (lat 0-5, lon 10-20)
+    let polygon = GeoPolygon::new(vec![
+        GeoPoint::new(0.0, 0.0).unwrap(),
+        GeoPoint::new(0.0, 20.0).unwrap(),
+        GeoPoint::new(5.0, 20.0).unwrap(),
+        GeoPoint::new(5.0, 10.0).unwrap(),
+        GeoPoint::new(10.0, 10.0).unwrap(),
+        GeoPoint::new(10.0, 0.0).unwrap(),
+    ])
+    .unwrap();
+
+    // Inside the lower-left part of L
+    index.insert(IndexedValue::Plain(GeoPoint::new(8.0, 5.0).unwrap()), 1);
+    // Inside the upper-right part of L
+    index.insert(IndexedValue::Plain(GeoPoint::new(2.0, 15.0).unwrap()), 2);
+    // Outside (in the concave notch)
+    index.insert(IndexedValue::Plain(GeoPoint::new(8.0, 15.0).unwrap()), 3);
+    // Completely outside
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 50.0).unwrap()), 4);
+
+    let op = GeoFilterOp::Polygon {
+        polygon: polygon.clone(),
+    };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 2]);
+
+    // After compaction
+    index.compact(1).unwrap();
+
+    let op = GeoFilterOp::Polygon { polygon };
+    let mut results: Vec<u64> = index.filter(op).iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 2]);
+}
+
+#[test]
+fn test_polygon_empty_index() {
+    let (_tmp, index) = make_index();
+
+    let op = GeoFilterOp::Polygon {
+        polygon: square_polygon(),
+    };
+    let results: Vec<u64> = index.filter(op).iter().collect();
+    assert!(results.is_empty());
+
+    let op = GeoFilterOp::OutsidePolygon {
+        polygon: square_polygon(),
     };
     let results: Vec<u64> = index.filter(op).iter().collect();
     assert!(results.is_empty());

@@ -354,6 +354,32 @@ impl Segment {
                     negate,
                 ))
             }
+            GeoFilterOp::Polygon { polygon } | GeoFilterOp::OutsidePolygon { polygon } => {
+                let negate = matches!(op, GeoFilterOp::OutsidePolygon { .. });
+                let (min_lat, max_lat, min_lon, max_lon) = polygon.bounding_box();
+                let vertices: Vec<(f64, f64)> = polygon
+                    .vertices()
+                    .iter()
+                    .map(|v| (v.lat(), v.lon()))
+                    .collect();
+                Some(query::CompactedQueryIterator::new_polygon(
+                    inner_nodes,
+                    self.num_leaves,
+                    leaf_offsets,
+                    leaf_data,
+                    vertices,
+                    encode_lat(min_lat),
+                    encode_lat(max_lat),
+                    encode_lon(min_lon),
+                    encode_lon(max_lon),
+                    self.global_min_lat,
+                    self.global_max_lat,
+                    self.global_min_lon,
+                    self.global_max_lon,
+                    deleted_set,
+                    negate,
+                ))
+            }
         }
     }
 

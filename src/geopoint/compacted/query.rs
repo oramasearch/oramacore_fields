@@ -18,6 +18,13 @@ enum QueryKind {
         bbox_min_lon: i32,
         bbox_max_lon: i32,
     },
+    Polygon {
+        vertices: Vec<(f64, f64)>,
+        bbox_min_lat: i32,
+        bbox_max_lat: i32,
+        bbox_min_lon: i32,
+        bbox_max_lon: i32,
+    },
 }
 
 enum StackFrame {
@@ -151,6 +158,52 @@ impl<'a> CompactedQueryIterator<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_polygon(
+        inner_nodes: InnerNodesView<'a>,
+        num_leaves: usize,
+        leaf_offsets: LeafOffsetsView<'a>,
+        leaf_data: &'a [u8],
+        vertices: Vec<(f64, f64)>,
+        bbox_min_lat: i32,
+        bbox_max_lat: i32,
+        bbox_min_lon: i32,
+        bbox_max_lon: i32,
+        global_min_lat: i32,
+        global_max_lat: i32,
+        global_min_lon: i32,
+        global_max_lon: i32,
+        deleted_set: &'a HashSet<u64>,
+        negate: bool,
+    ) -> Self {
+        let mut stack = Vec::with_capacity(32);
+        stack.push(StackFrame::Traverse {
+            node_id: 1,
+            cell_min_lat: global_min_lat,
+            cell_max_lat: global_max_lat,
+            cell_min_lon: global_min_lon,
+            cell_max_lon: global_max_lon,
+        });
+
+        Self {
+            inner_nodes,
+            num_leaves,
+            leaf_offsets,
+            leaf_data,
+            deleted_set,
+            kind: QueryKind::Polygon {
+                vertices,
+                bbox_min_lat,
+                bbox_max_lat,
+                bbox_min_lon,
+                bbox_max_lon,
+            },
+            negate,
+            stack,
+            leaf_scan: None,
+        }
+    }
+
     fn start_leaf_scan(&mut self, leaf_index: usize, check_bounds: bool) -> bool {
         if leaf_index >= self.leaf_offsets.len() {
             return false;
@@ -238,6 +291,11 @@ impl<'a> CompactedQueryIterator<'a> {
                     let dist = haversine_distance(*center_lat_f64, *center_lon_f64, pt_lat, pt_lon);
                     dist <= *radius_meters
                 }
+                QueryKind::Polygon { vertices, .. } => {
+                    let pt_lat = super::super::point::decode_lat(lat);
+                    let pt_lon = super::super::point::decode_lon(lon);
+                    ray_casting_contains(vertices, pt_lat, pt_lon)
+                }
             };
             if inside != self.negate {
                 return Some(doc_id);
@@ -292,6 +350,13 @@ impl Iterator for CompactedQueryIterator<'_> {
                             bbox_max_lon,
                             ..
                         } => (*bbox_min_lat, *bbox_max_lat, *bbox_min_lon, *bbox_max_lon),
+                        QueryKind::Polygon {
+                            bbox_min_lat,
+                            bbox_max_lat,
+                            bbox_min_lon,
+                            bbox_max_lon,
+                            ..
+                        } => (*bbox_min_lat, *bbox_max_lat, *bbox_min_lon, *bbox_max_lon),
                     };
 
                     let relation = classify_bbox(
@@ -338,6 +403,9 @@ impl Iterator for CompactedQueryIterator<'_> {
                                         }
                                         // Cell inside bbox but not fully inside radius → check points
                                     }
+                                    QueryKind::Polygon { .. } => {
+                                        // Cell inside polygon bbox → per-point check (polygon can be concave)
+                                    }
                                 }
                             }
                             Relation::Crosses => {
@@ -372,6 +440,9 @@ impl Iterator for CompactedQueryIterator<'_> {
                                             continue;
                                         }
                                         // Fall through to Crosses handling
+                                    }
+                                    QueryKind::Polygon { .. } => {
+                                        // Cell inside polygon bbox → per-point check (polygon can be concave)
                                     }
                                 }
                             }
@@ -481,6 +552,23 @@ fn classify_bbox(
         return Relation::Inside;
     }
     Relation::Crosses
+}
+
+// --- Polygon query support ---
+
+fn ray_casting_contains(vertices: &[(f64, f64)], lat: f64, lon: f64) -> bool {
+    let n = vertices.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (yi, xi) = vertices[i];
+        let (yj, xj) = vertices[j];
+        if ((yi > lat) != (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 // --- Radius query support ---

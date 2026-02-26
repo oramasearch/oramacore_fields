@@ -128,5 +128,5 @@ pub use error::Error;
 pub use indexer::{GeoPointIndexer, IndexedValue};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use iterator::{FilterData, FilterIterator, GeoFilterOp};
-pub use point::GeoPoint;
+pub use point::{GeoPoint, GeoPolygon};
 pub use storage::GeoPointStorage;

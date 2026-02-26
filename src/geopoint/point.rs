@@ -39,6 +39,77 @@ impl GeoPoint {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct GeoPolygon {
+    vertices: Vec<GeoPoint>,
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+}
+
+impl GeoPolygon {
+    pub fn new(vertices: Vec<GeoPoint>) -> Result<Self, Error> {
+        if vertices.len() < 3 {
+            return Err(Error::TooFewVertices(vertices.len()));
+        }
+
+        let mut min_lat = f64::INFINITY;
+        let mut max_lat = f64::NEG_INFINITY;
+        let mut min_lon = f64::INFINITY;
+        let mut max_lon = f64::NEG_INFINITY;
+
+        for v in &vertices {
+            min_lat = min_lat.min(v.lat());
+            max_lat = max_lat.max(v.lat());
+            min_lon = min_lon.min(v.lon());
+            max_lon = max_lon.max(v.lon());
+        }
+
+        Ok(Self {
+            vertices,
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+        })
+    }
+
+    pub fn vertices(&self) -> &[GeoPoint] {
+        &self.vertices
+    }
+
+    pub fn bounding_box(&self) -> (f64, f64, f64, f64) {
+        (self.min_lat, self.max_lat, self.min_lon, self.max_lon)
+    }
+
+    /// Ray-casting point-in-polygon test.
+    /// Casts a ray from the point in the +lon direction and counts edge crossings.
+    pub fn contains(&self, point: &GeoPoint) -> bool {
+        let px = point.lon();
+        let py = point.lat();
+        let n = self.vertices.len();
+        let mut inside = false;
+
+        let mut j = n - 1;
+        for i in 0..n {
+            let vi = &self.vertices[i];
+            let vj = &self.vertices[j];
+            let yi = vi.lat();
+            let xi = vi.lon();
+            let yj = vj.lat();
+            let xj = vj.lon();
+
+            if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                inside = !inside;
+            }
+            j = i;
+        }
+
+        inside
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodedPoint {
@@ -158,6 +229,81 @@ mod tests {
         let p = GeoPoint::new(10.0, 20.0).unwrap().encode();
         assert_eq!(p.dim(0), p.lat);
         assert_eq!(p.dim(1), p.lon);
+    }
+
+    #[test]
+    fn test_geo_polygon_new_valid() {
+        let vertices = vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+            GeoPoint::new(10.0, 10.0).unwrap(),
+        ];
+        let poly = GeoPolygon::new(vertices).unwrap();
+        let (min_lat, max_lat, min_lon, max_lon) = poly.bounding_box();
+        assert!((min_lat - 0.0).abs() < 1e-10);
+        assert!((max_lat - 10.0).abs() < 1e-10);
+        assert!((min_lon - 0.0).abs() < 1e-10);
+        assert!((max_lon - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_geo_polygon_new_too_few() {
+        let v0: Vec<GeoPoint> = vec![];
+        assert!(GeoPolygon::new(v0).is_err());
+
+        let v1 = vec![GeoPoint::new(0.0, 0.0).unwrap()];
+        assert!(GeoPolygon::new(v1).is_err());
+
+        let v2 = vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+        ];
+        assert!(GeoPolygon::new(v2).is_err());
+    }
+
+    #[test]
+    fn test_geo_polygon_contains() {
+        // Square polygon: (0,0) -> (0,10) -> (10,10) -> (10,0)
+        let poly = GeoPolygon::new(vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+
+        // Inside
+        assert!(poly.contains(&GeoPoint::new(5.0, 5.0).unwrap()));
+        // Outside
+        assert!(!poly.contains(&GeoPoint::new(20.0, 20.0).unwrap()));
+        assert!(!poly.contains(&GeoPoint::new(-5.0, 5.0).unwrap()));
+        assert!(!poly.contains(&GeoPoint::new(5.0, -5.0).unwrap()));
+    }
+
+    #[test]
+    fn test_geo_polygon_concave_contains() {
+        // L-shaped polygon (concave):
+        //   (0,0) -> (0,10) -> (5,10) -> (5,5) -> (10,5) -> (10,0)
+        let poly = GeoPolygon::new(vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 10.0).unwrap(),
+            GeoPoint::new(5.0, 10.0).unwrap(),
+            GeoPoint::new(5.0, 5.0).unwrap(),
+            GeoPoint::new(10.0, 5.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+
+        // Inside the L (lower-left area)
+        assert!(poly.contains(&GeoPoint::new(2.0, 2.0).unwrap()));
+        // Inside the L (upper-left area)
+        assert!(poly.contains(&GeoPoint::new(2.0, 8.0).unwrap()));
+        // Inside the L (lower-right area)
+        assert!(poly.contains(&GeoPoint::new(8.0, 2.0).unwrap()));
+        // Outside the L (upper-right concavity)
+        assert!(!poly.contains(&GeoPoint::new(8.0, 8.0).unwrap()));
+        // Completely outside
+        assert!(!poly.contains(&GeoPoint::new(20.0, 20.0).unwrap()));
     }
 
     #[test]

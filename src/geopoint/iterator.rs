@@ -1,7 +1,7 @@
 use super::compacted::query::MultiSegmentQueryIterator;
 use super::compacted::CompactedVersion;
 use super::live::LiveSnapshot;
-use super::point::GeoPoint;
+use super::point::{GeoPoint, GeoPolygon};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -26,6 +26,12 @@ pub enum GeoFilterOp {
     OutsideRadius {
         center: GeoPoint,
         radius_meters: f64,
+    },
+    Polygon {
+        polygon: GeoPolygon,
+    },
+    OutsidePolygon {
+        polygon: GeoPolygon,
     },
 }
 
@@ -78,6 +84,8 @@ impl GeoFilterOp {
                 );
                 dist > *radius_meters
             }
+            GeoFilterOp::Polygon { polygon } => polygon.contains(point),
+            GeoFilterOp::OutsidePolygon { polygon } => !polygon.contains(point),
         }
     }
 }
@@ -223,6 +231,36 @@ mod tests {
 
         assert!(!op.matches(&near));
         assert!(op.matches(&far));
+    }
+
+    #[test]
+    fn test_polygon_matches() {
+        let polygon = GeoPolygon::new(vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let op = GeoFilterOp::Polygon { polygon };
+
+        assert!(op.matches(&GeoPoint::new(5.0, 5.0).unwrap()));
+        assert!(!op.matches(&GeoPoint::new(20.0, 20.0).unwrap()));
+    }
+
+    #[test]
+    fn test_outside_polygon_matches() {
+        let polygon = GeoPolygon::new(vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let op = GeoFilterOp::OutsidePolygon { polygon };
+
+        assert!(!op.matches(&GeoPoint::new(5.0, 5.0).unwrap()));
+        assert!(op.matches(&GeoPoint::new(20.0, 20.0).unwrap()));
     }
 
     #[test]
