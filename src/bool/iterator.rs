@@ -410,6 +410,7 @@ impl Iterator for SortIterator<'_> {
 /// The returned pointers are only valid as long as the `Arc`s they came from
 /// remain alive. Callers must store those `Arc`s alongside any references
 /// derived from these pointers.
+#[allow(clippy::type_complexity)]
 fn extract_sort_slice_ptrs(
     version: &CompactedVersion,
     snapshot: &LiveSnapshot,
