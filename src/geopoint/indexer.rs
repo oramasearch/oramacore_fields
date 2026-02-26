@@ -47,6 +47,7 @@ fn parse_geopoint(value: &Value) -> Option<GeoPoint> {
     }
 }
 
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue {
     Plain(GeoPoint),

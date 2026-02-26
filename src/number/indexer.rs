@@ -71,6 +71,7 @@ impl<T: IndexableNumber> NumberIndexer<T> {
 ///   it creates one index entry.
 /// - `Array(Vec<T>)`: Multiple values. Creates one entry per element, so the document
 ///   is found when querying for any of them.
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue<T: IndexableNumber> {
     Plain(T),

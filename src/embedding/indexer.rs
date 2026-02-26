@@ -1,8 +1,10 @@
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Embedding {
     pub(crate) embedding: Vec<f32>,
 }
 
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IndexedValue {
     Single(Embedding),
