@@ -1,7 +1,7 @@
-//! A number index supporting range queries over u64 and f64 values.
+//! A number index supporting range queries over u64, i64, and f64 values.
 //!
 //! This module provides a persistent, thread-safe number index with:
-//! - Support for both u64 and f64 value types
+//! - Support for u64, i64, and f64 value types
 //! - Range queries (eq, gt, gte, lt, lte, between)
 //! - JSON indexing via [`NumberIndexer`] (plain values and arrays)
 //! - On-disk persistence with compaction
@@ -147,4 +147,4 @@ pub use iterator::{
     SortIterator, SortOrder,
 };
 pub use key::IndexableNumber;
-pub use storage::{F64Storage, NumberStorage, U64Storage};
+pub use storage::{F64Storage, I64Storage, NumberStorage, U64Storage};

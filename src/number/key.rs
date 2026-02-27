@@ -61,6 +61,38 @@ impl IndexableNumber for u64 {
     }
 }
 
+impl IndexableNumber for i64 {
+    #[inline]
+    fn to_bytes(self) -> [u8; 8] {
+        self.to_ne_bytes()
+    }
+
+    #[inline]
+    fn from_bytes(bytes: [u8; 8]) -> Self {
+        i64::from_ne_bytes(bytes)
+    }
+
+    fn type_name() -> &'static str {
+        "i64"
+    }
+
+    #[inline]
+    fn compare(a: Self, b: Self) -> Ordering {
+        a.cmp(&b)
+    }
+
+    #[inline]
+    fn validate(self) -> Result<(), Error> {
+        // All i64 values are valid
+        Ok(())
+    }
+
+    #[inline]
+    fn from_json_number(value: &Value) -> Option<Self> {
+        value.as_i64()
+    }
+}
+
 impl IndexableNumber for f64 {
     #[inline]
     fn to_bytes(self) -> [u8; 8] {
@@ -124,6 +156,32 @@ mod tests {
     }
 
     #[test]
+    fn test_i64_roundtrip() {
+        let values = [0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, i64::MAX / 2];
+        for v in values {
+            let bytes = v.to_bytes();
+            let decoded = i64::from_bytes(bytes);
+            assert_eq!(v, decoded);
+        }
+    }
+
+    #[test]
+    fn test_i64_ordering() {
+        assert_eq!(i64::compare(0, 1), Ordering::Less);
+        assert_eq!(i64::compare(1, 1), Ordering::Equal);
+        assert_eq!(i64::compare(2, 1), Ordering::Greater);
+        assert_eq!(i64::compare(-1, 0), Ordering::Less);
+        assert_eq!(i64::compare(-2, -1), Ordering::Less);
+    }
+
+    #[test]
+    fn test_i64_validate() {
+        assert!(0i64.validate().is_ok());
+        assert!(i64::MAX.validate().is_ok());
+        assert!(i64::MIN.validate().is_ok());
+    }
+
+    #[test]
     fn test_f64_roundtrip() {
         let values = [
             0.0f64,
@@ -182,6 +240,7 @@ mod tests {
     #[test]
     fn test_type_names() {
         assert_eq!(u64::type_name(), "u64");
+        assert_eq!(i64::type_name(), "i64");
         assert_eq!(f64::type_name(), "f64");
     }
 }

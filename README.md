@@ -187,7 +187,7 @@ use oramacore_fields::string_filter::{StringIndexer, StringFilterStorage, Thresh
 use serde_json::json;
 # let dir = tempdir()?;
 
-let indexer = StringIndexer::new(false);
+let indexer = StringIndexer::new(false, |_| true);
 let storage = StringFilterStorage::new(dir.path().to_path_buf(), Threshold::default()).unwrap();
 
 // Index JSON strings
@@ -216,7 +216,7 @@ Array fields are supported:
 # use serde_json::json;
 # let dir = tempdir()?;
 # let storage = StringFilterStorage::new(dir.path().to_path_buf(), Threshold::default()).unwrap();
-let array_indexer = StringIndexer::new(true);
+let array_indexer = StringIndexer::new(true, |_| true);
 let value = array_indexer.index_json(&json!(["rust", "search", "index"])).unwrap();
 storage.insert(&value, 4);
 # Ok(())

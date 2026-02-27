@@ -30,6 +30,9 @@ const DEFAULT_DIRTY_HEADER_THRESHOLD: f64 = 0.1;
 /// Type alias for a NumberStorage over u64 values.
 pub type U64Storage = NumberStorage<u64>;
 
+/// Type alias for a NumberStorage over i64 values.
+pub type I64Storage = NumberStorage<i64>;
+
 /// Type alias for a NumberStorage over f64 values.
 pub type F64Storage = NumberStorage<f64>;
 
