@@ -1116,3 +1116,49 @@ fn test_polygon_empty_index() {
     let results: Vec<u64> = index.filter(op).iter().collect();
     assert!(results.is_empty());
 }
+
+// --- Owned IntoIterator ---
+
+#[test]
+fn test_filter_into_iter() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 20.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(30.0, 40.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 60.0).unwrap()), 3);
+
+    let op = GeoFilterOp::BoundingBox {
+        min_lat: 0.0,
+        max_lat: 35.0,
+        min_lon: 0.0,
+        max_lon: 45.0,
+    };
+    let mut results: Vec<u64> = index.filter(op).into_iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 2]);
+}
+
+#[test]
+fn test_filter_into_iter_after_compact() {
+    let (_tmp, index) = make_index();
+
+    index.insert(IndexedValue::Plain(GeoPoint::new(10.0, 20.0).unwrap()), 1);
+    index.insert(IndexedValue::Plain(GeoPoint::new(30.0, 40.0).unwrap()), 2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(50.0, 60.0).unwrap()), 3);
+
+    index.compact(1).unwrap();
+
+    // Delete doc 2 after compaction, add doc 4
+    index.delete(2);
+    index.insert(IndexedValue::Plain(GeoPoint::new(15.0, 25.0).unwrap()), 4);
+
+    let op = GeoFilterOp::BoundingBox {
+        min_lat: -90.0,
+        max_lat: 90.0,
+        min_lon: -180.0,
+        max_lon: 180.0,
+    };
+    let mut results: Vec<u64> = index.filter(op).into_iter().collect();
+    results.sort_unstable();
+    assert_eq!(results, vec![1, 3, 4]);
+}

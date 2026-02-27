@@ -130,6 +130,60 @@ impl<'a> IntoIterator for &'a FilterData {
     }
 }
 
+impl IntoIterator for FilterData {
+    type Item = u64;
+    type IntoIter = OwnedFilterIterator;
+
+    fn into_iter(self) -> OwnedFilterIterator {
+        let FilterData {
+            version,
+            snapshot,
+            op,
+        } = self;
+        let op = Box::new(op);
+
+        let op_ref: &GeoFilterOp = &op;
+        let compacted_iter = version.query_iter(op_ref);
+
+        let iter = FilterIterator {
+            live_inserts: &snapshot.inserts,
+            live_cursor: 0,
+            op: op_ref,
+            compacted_iter,
+            live_deleted: &snapshot.deletes,
+        };
+
+        // SAFETY: The iterator borrows from `version` (Arc), `snapshot` (Arc),
+        // and `op` (Box). All three are moved into OwnedFilterIterator, keeping
+        // the heap data alive. Rust drops fields in declaration order, so `iter`
+        // drops before `_version`, `_snapshot`, and `_op`.
+        let iter =
+            unsafe { std::mem::transmute::<FilterIterator<'_>, FilterIterator<'static>>(iter) };
+
+        OwnedFilterIterator {
+            iter,
+            _version: version,
+            _snapshot: snapshot,
+            _op: op,
+        }
+    }
+}
+
+pub struct OwnedFilterIterator {
+    // IMPORTANT: `iter` must be declared before the Arc/Box fields so it drops first.
+    iter: FilterIterator<'static>,
+    _version: Arc<CompactedVersion>,
+    _snapshot: Arc<LiveSnapshot>,
+    _op: Box<GeoFilterOp>,
+}
+
+impl Iterator for OwnedFilterIterator {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        self.iter.next()
+    }
+}
+
 pub struct FilterIterator<'a> {
     live_inserts: &'a [(GeoPoint, u64)],
     live_cursor: usize,
@@ -358,5 +412,149 @@ mod tests {
             results.push(doc_id);
         }
         assert_eq!(results, vec![42]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_empty() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot::empty());
+        let op = GeoFilterOp::BoundingBox {
+            min_lat: -90.0,
+            max_lat: 90.0,
+            min_lon: -180.0,
+            max_lon: 180.0,
+        };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let results: Vec<u64> = filter.into_iter().collect();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_owned_into_iter_live_only() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let p1 = GeoPoint::new(10.0, 20.0).unwrap();
+        let p2 = GeoPoint::new(50.0, 60.0).unwrap();
+
+        let snapshot = Arc::new(LiveSnapshot {
+            inserts: vec![(p1, 1), (p2, 2)],
+            deletes: std::collections::HashSet::new(),
+            ops_len: 0,
+        });
+
+        let op = GeoFilterOp::BoundingBox {
+            min_lat: 0.0,
+            max_lat: 30.0,
+            min_lon: 0.0,
+            max_lon: 30.0,
+        };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let results: Vec<u64> = filter.into_iter().collect();
+        assert_eq!(results, vec![1]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_with_deletes() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let p2 = GeoPoint::new(15.0, 25.0).unwrap();
+
+        let mut deletes = std::collections::HashSet::new();
+        deletes.insert(1u64);
+
+        let snapshot = Arc::new(LiveSnapshot {
+            inserts: vec![(p2, 2)],
+            deletes,
+            ops_len: 0,
+        });
+
+        let op = GeoFilterOp::BoundingBox {
+            min_lat: 0.0,
+            max_lat: 30.0,
+            min_lon: 0.0,
+            max_lon: 30.0,
+        };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let results: Vec<u64> = filter.into_iter().collect();
+        assert_eq!(results, vec![2]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_for_loop() {
+        let version = Arc::new(CompactedVersion::empty());
+        let p1 = GeoPoint::new(10.0, 20.0).unwrap();
+        let snapshot = Arc::new(LiveSnapshot {
+            inserts: vec![(p1, 42)],
+            deletes: std::collections::HashSet::new(),
+            ops_len: 0,
+        });
+
+        let op = GeoFilterOp::BoundingBox {
+            min_lat: -90.0,
+            max_lat: 90.0,
+            min_lon: -180.0,
+            max_lon: 180.0,
+        };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let mut results = Vec::new();
+        for doc_id in filter {
+            results.push(doc_id);
+        }
+        assert_eq!(results, vec![42]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_radius() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let p1 = GeoPoint::new(0.5, 0.5).unwrap();
+        let p2 = GeoPoint::new(45.0, 45.0).unwrap();
+
+        let snapshot = Arc::new(LiveSnapshot {
+            inserts: vec![(p1, 1), (p2, 2)],
+            deletes: std::collections::HashSet::new(),
+            ops_len: 0,
+        });
+
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let op = GeoFilterOp::Radius {
+            center,
+            radius_meters: 200_000.0,
+        };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let results: Vec<u64> = filter.into_iter().collect();
+        assert_eq!(results, vec![1]);
+    }
+
+    #[test]
+    fn test_owned_into_iter_polygon() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let p1 = GeoPoint::new(5.0, 5.0).unwrap();
+        let p2 = GeoPoint::new(20.0, 20.0).unwrap();
+
+        let snapshot = Arc::new(LiveSnapshot {
+            inserts: vec![(p1, 1), (p2, 2)],
+            deletes: std::collections::HashSet::new(),
+            ops_len: 0,
+        });
+
+        let polygon = GeoPolygon::new(vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 10.0).unwrap(),
+            GeoPoint::new(10.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let op = GeoFilterOp::Polygon { polygon };
+
+        let filter = FilterData::new(version, snapshot, op);
+        let results: Vec<u64> = filter.into_iter().collect();
+        assert_eq!(results, vec![1]);
     }
 }
