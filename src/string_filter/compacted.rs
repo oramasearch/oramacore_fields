@@ -162,6 +162,20 @@ impl CompactedVersion {
         self.fst_map.as_ref().map_or(0, |m| m.len())
     }
 
+    /// Collect all keys from the FST map into a sorted `Vec<String>`.
+    pub fn collect_keys(&self) -> Vec<String> {
+        let Some(fst_map) = self.fst_map.as_ref() else {
+            return Vec::new();
+        };
+        let mut keys = Vec::with_capacity(fst_map.len());
+        let mut stream = fst_map.stream();
+        use fst::Streamer;
+        while let Some((key_bytes, _)) = stream.next() {
+            keys.push(String::from_utf8_lossy(key_bytes).into_owned());
+        }
+        keys
+    }
+
     /// Return the total number of doc_id entries across all posting lists.
     pub fn total_postings(&self) -> usize {
         let postings_bytes = self.postings_mmap.as_ref().map_or(0, |m| m.len());
@@ -407,6 +421,35 @@ mod tests {
         assert_eq!(version.version_number, 0);
         assert!(version.lookup("anything").is_none());
         assert!(version.deletes_slice().is_empty());
+    }
+
+    #[test]
+    fn test_collect_keys_empty() {
+        let version = CompactedVersion::empty();
+        assert!(version.collect_keys().is_empty());
+    }
+
+    #[test]
+    fn test_collect_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base_path = tmp.path();
+        let version_path = ensure_version_dir(base_path, 1).unwrap();
+
+        build_from_entries(
+            &[
+                ("apple", &[1u64, 3]),
+                ("banana", &[2u64]),
+                ("cherry", &[4u64, 5, 6]),
+            ],
+            &[],
+            &version_path,
+        );
+
+        let version = CompactedVersion::load(base_path, 1).unwrap();
+        assert_eq!(
+            version.collect_keys(),
+            vec!["apple".to_string(), "banana".to_string(), "cherry".to_string()]
+        );
     }
 
     #[test]

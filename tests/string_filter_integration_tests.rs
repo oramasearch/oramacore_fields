@@ -359,6 +359,85 @@ fn test_delete_all_docs_for_key() {
 }
 
 // ============================================================================
+// keys() Tests
+// ============================================================================
+
+#[test]
+fn test_keys_live_only() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("cherry"), 1);
+    index.insert(&p("apple"), 2);
+    index.insert(&p("banana"), 3);
+
+    let keys = index.keys();
+    assert_eq!(keys, vec!["apple", "banana", "cherry"]);
+}
+
+#[test]
+fn test_keys_compacted_only() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("red"), 1);
+    index.insert(&p("green"), 2);
+    index.insert(&p("blue"), 3);
+    index.compact(1).unwrap();
+
+    let keys = index.keys();
+    assert_eq!(keys, vec!["blue", "green", "red"]);
+}
+
+#[test]
+fn test_keys_merged_with_dedup() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("apple"), 1);
+    index.insert(&p("cherry"), 2);
+    index.compact(1).unwrap();
+
+    // Add overlapping + new key in live layer
+    index.insert(&p("cherry"), 3);
+    index.insert(&p("banana"), 4);
+
+    let keys = index.keys();
+    assert_eq!(keys, vec!["apple", "banana", "cherry"]);
+}
+
+#[test]
+fn test_keys_empty_index() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    let keys = index.keys();
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn test_keys_phantom_after_deletion() {
+    let tmp = TempDir::new().unwrap();
+    let index = StringFilterStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&p("visible"), 1);
+    index.insert(&p("phantom"), 2);
+    index.compact(1).unwrap();
+
+    // Delete all docs for "phantom" — key stays in FST until next apply-deletes compaction
+    index.delete(2);
+
+    let keys = index.keys();
+    // "phantom" is still reported (approximate semantics)
+    assert!(keys.contains(&"phantom".to_string()));
+    assert!(keys.contains(&"visible".to_string()));
+
+    // But filtering returns no docs for the phantom key
+    let phantom_docs: Vec<u64> = index.filter("phantom").iter().collect();
+    assert!(phantom_docs.is_empty());
+}
+
+// ============================================================================
 // Owned Iterator Tests (IntoIterator for FilterData)
 // ============================================================================
 

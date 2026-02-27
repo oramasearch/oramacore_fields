@@ -96,6 +96,68 @@ impl StringFilterStorage {
         FilterData::new(Arc::clone(&version), snapshot, value)
     }
 
+    /// Return all distinct string keys present in the index, in sorted order.
+    ///
+    /// Merges keys from both the compacted (on-disk) and live (in-memory) layers,
+    /// deduplicated. Approximate: may include "phantom" keys whose doc_ids have all
+    /// been deleted but whose key entry hasn't been cleaned up yet.
+    pub fn keys(&self) -> Vec<String> {
+        let (snapshot, version) = {
+            let live = self.live.read().unwrap();
+            if !live.is_snapshot_dirty() {
+                (live.get_snapshot(), self.version.load())
+            } else {
+                drop(live);
+                let mut live = self.live.write().unwrap();
+                if live.is_snapshot_dirty() {
+                    live.refresh_snapshot();
+                }
+                (live.get_snapshot(), self.version.load())
+            }
+        };
+
+        let compacted_keys = version.collect_keys();
+        let live_keys = snapshot.keys();
+
+        if compacted_keys.is_empty() {
+            return live_keys.to_vec();
+        }
+        if live_keys.is_empty() {
+            return compacted_keys;
+        }
+
+        // Merge-join two sorted lists with dedup
+        let mut result = Vec::with_capacity(compacted_keys.len() + live_keys.len());
+        let mut ci = 0;
+        let mut li = 0;
+        while ci < compacted_keys.len() && li < live_keys.len() {
+            match compacted_keys[ci].as_str().cmp(live_keys[li].as_str()) {
+                std::cmp::Ordering::Less => {
+                    result.push(compacted_keys[ci].clone());
+                    ci += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    result.push(live_keys[li].clone());
+                    li += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    result.push(compacted_keys[ci].clone());
+                    ci += 1;
+                    li += 1;
+                }
+            }
+        }
+        while ci < compacted_keys.len() {
+            result.push(compacted_keys[ci].clone());
+            ci += 1;
+        }
+        while li < live_keys.len() {
+            result.push(live_keys[li].clone());
+            li += 1;
+        }
+        result
+    }
+
     /// Persist pending changes to disk at the given version number.
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let _compaction_guard = self.compaction_lock.lock().unwrap();

@@ -156,6 +156,11 @@ impl LiveSnapshot {
         self.doc_ids.len()
     }
 
+    /// Return all unique keys in sorted order.
+    pub fn keys(&self) -> &[String] {
+        &self.keys
+    }
+
     /// Iterate over all entries as `(key, doc_ids)` pairs.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &[u64])> {
         self.keys.iter().enumerate().map(move |(i, key)| {
@@ -402,6 +407,27 @@ mod tests {
         // But delete removes the doc from inserts entirely, so count the inserts
         let expected_inserts: usize = (0..100u64).filter(|i| i % 3 != 0).count();
         assert_eq!(snapshot.total_doc_ids(), expected_inserts);
+    }
+
+    #[test]
+    fn test_snapshot_keys_accessor() {
+        let mut layer = LiveLayer::new();
+
+        layer.insert("cherry", 5);
+        layer.insert("apple", 3);
+        layer.insert("banana", 1);
+
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        assert_eq!(snapshot.keys(), &["apple", "banana", "cherry"]);
+    }
+
+    #[test]
+    fn test_snapshot_keys_empty() {
+        let layer = LiveLayer::new();
+        let snapshot = layer.get_snapshot();
+        assert!(snapshot.keys().is_empty());
     }
 
     #[test]
