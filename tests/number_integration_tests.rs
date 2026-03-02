@@ -2257,10 +2257,7 @@ fn test_sort_grouped_ascending_basic() {
     index.insert(&IndexedValue::Plain(20), 2).unwrap();
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![1]), (20, vec![2]), (30, vec![3])]
-    );
+    assert_eq!(groups, vec![(10, vec![1]), (20, vec![2]), (30, vec![3])]);
 }
 
 #[test]
@@ -2273,12 +2270,8 @@ fn test_sort_grouped_descending_basic() {
     index.insert(&IndexedValue::Plain(10), 1).unwrap();
     index.insert(&IndexedValue::Plain(20), 2).unwrap();
 
-    let groups: Vec<(u64, Vec<u64>)> =
-        index.sort_grouped(SortOrder::Descending).collect();
-    assert_eq!(
-        groups,
-        vec![(30, vec![3]), (20, vec![2]), (10, vec![1])]
-    );
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Descending).collect();
+    assert_eq!(groups, vec![(30, vec![3]), (20, vec![2]), (10, vec![1])]);
 }
 
 #[test]
@@ -2304,10 +2297,7 @@ fn test_sort_grouped_same_value_multiple_docs() {
     index.insert(&IndexedValue::Plain(200), 5).unwrap();
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(100, vec![1, 2, 3]), (200, vec![4, 5])]
-    );
+    assert_eq!(groups, vec![(100, vec![1, 2, 3]), (200, vec![4, 5])]);
 }
 
 #[test]
@@ -2327,10 +2317,7 @@ fn test_sort_grouped_with_deletes() {
     index.delete(5);
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![2]), (20, vec![3, 4])]
-    );
+    assert_eq!(groups, vec![(10, vec![2]), (20, vec![3, 4])]);
 }
 
 #[test]
@@ -2347,10 +2334,7 @@ fn test_sort_grouped_deletes_entire_group() {
     index.delete(2);
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![1]), (30, vec![3])]
-    );
+    assert_eq!(groups, vec![(10, vec![1]), (30, vec![3])]);
 }
 
 #[test]
@@ -2369,10 +2353,7 @@ fn test_sort_grouped_merges_live_and_compacted() {
     index.insert(&IndexedValue::Plain(20), 5).unwrap();
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![1, 4]), (20, vec![5]), (30, vec![3])]
-    );
+    assert_eq!(groups, vec![(10, vec![1, 4]), (20, vec![5]), (30, vec![3])]);
 }
 
 #[test]
@@ -2391,10 +2372,7 @@ fn test_sort_grouped_after_compaction_with_deletes() {
     index.insert(&IndexedValue::Plain(20), 4).unwrap();
 
     let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![1]), (20, vec![3, 4])]
-    );
+    assert_eq!(groups, vec![(10, vec![1]), (20, vec![3, 4])]);
 }
 
 #[test]
@@ -2444,18 +2422,12 @@ fn test_sort_grouped_returned_from_function() {
     index.insert(&IndexedValue::Plain(10), 1).unwrap();
     index.insert(&IndexedValue::Plain(10), 2).unwrap();
 
-    fn get_grouped(
-        index: &U64Storage,
-        order: SortOrder,
-    ) -> impl Iterator<Item = (u64, Vec<u64>)> {
+    fn get_grouped(index: &U64Storage, order: SortOrder) -> impl Iterator<Item = (u64, Vec<u64>)> {
         index.sort_grouped(order)
     }
 
     let groups: Vec<(u64, Vec<u64>)> = get_grouped(&index, SortOrder::Ascending).collect();
-    assert_eq!(
-        groups,
-        vec![(10, vec![1, 2]), (30, vec![3])]
-    );
+    assert_eq!(groups, vec![(10, vec![1, 2]), (30, vec![3])]);
 }
 
 #[test]
@@ -2472,14 +2444,10 @@ fn test_sort_grouped_iterator_combinators() {
     // .take() works
     let first_two: Vec<(u64, Vec<u64>)> =
         index.sort_grouped(SortOrder::Ascending).take(2).collect();
-    assert_eq!(
-        first_two,
-        vec![(0, vec![1, 2]), (10, vec![3, 4])]
-    );
+    assert_eq!(first_two, vec![(0, vec![1, 2]), (10, vec![3, 4])]);
 
     // .skip() works
-    let last: Vec<(u64, Vec<u64>)> =
-        index.sort_grouped(SortOrder::Ascending).skip(2).collect();
+    let last: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).skip(2).collect();
     assert_eq!(last, vec![(20, vec![5, 6])]);
 
     // .map() works
@@ -2515,10 +2483,7 @@ fn test_sort_grouped_for_loop() {
     for (value, doc_ids) in index.sort_grouped(SortOrder::Ascending) {
         collected.push((value, doc_ids));
     }
-    assert_eq!(
-        collected,
-        vec![(10, vec![1, 2]), (20, vec![3])]
-    );
+    assert_eq!(collected, vec![(10, vec![1, 2]), (20, vec![3])]);
 }
 
 #[test]

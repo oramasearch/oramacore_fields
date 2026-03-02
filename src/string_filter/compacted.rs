@@ -448,7 +448,11 @@ mod tests {
         let version = CompactedVersion::load(base_path, 1).unwrap();
         assert_eq!(
             version.collect_keys(),
-            vec!["apple".to_string(), "banana".to_string(), "cherry".to_string()]
+            vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "cherry".to_string()
+            ]
         );
     }
 
