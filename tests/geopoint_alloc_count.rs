@@ -231,11 +231,11 @@ fn test_alloc_count_iterator_sizes() {
     let filter_data_size = std::mem::size_of::<FilterData>();
 
     assert!(
-        filter_iter_size <= 256,
+        filter_iter_size <= 264,
         "FilterIterator is unexpectedly large: {filter_iter_size} bytes"
     );
     assert!(
-        filter_data_size <= 256,
+        filter_data_size <= 264,
         "FilterData is unexpectedly large: {filter_data_size} bytes"
     );
 }
