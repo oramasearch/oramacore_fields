@@ -4,6 +4,7 @@ use super::compacted::CompactedVersion;
 use super::key::IndexableNumber;
 use super::live::LiveSnapshot;
 use super::merge::{sorted_merge, sorted_merge_descending};
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// Sort direction for ordered iteration.
@@ -413,6 +414,100 @@ impl<T: IndexableNumber> Iterator for OwnedSortIterator<T> {
     type Item = u64;
     fn next(&mut self) -> Option<u64> {
         self.inner.next()
+    }
+}
+
+/// Iterator that yields `(T, Vec<u64>)` — each unique value with all its doc_ids.
+///
+/// Created by [`NumberStorage::sort_grouped`](super::NumberStorage::sort_grouped).
+pub struct SortGroupedIterator<T: IndexableNumber> {
+    // IMPORTANT: `inner` must be declared before the Arc fields so it drops first.
+    inner: Box<dyn Iterator<Item = (T, u64)> + 'static>,
+    peeked: Option<(T, u64)>,
+    _version: Arc<CompactedVersion<T>>,
+    _snapshot: Arc<LiveSnapshot<T>>,
+}
+
+impl<T: IndexableNumber> SortGroupedIterator<T> {
+    pub(super) fn new(
+        version: Arc<CompactedVersion<T>>,
+        snapshot: Arc<LiveSnapshot<T>>,
+        order: SortOrder,
+    ) -> Self {
+        let inner = {
+            let version_ref: &CompactedVersion<T> = &version;
+            let snapshot_ref: &LiveSnapshot<T> = &snapshot;
+
+            match order {
+                SortOrder::Ascending => {
+                    let live_deletes = Arc::clone(&snapshot_ref.deletes);
+                    let compacted_deletes = version_ref.deleted_set();
+                    let compacted_filtered = version_ref.iter().filter(move |(_, doc_id)| {
+                        !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                    });
+
+                    let live_inserts = snapshot_ref.inserts.iter().copied();
+                    let merged = sorted_merge(compacted_filtered, live_inserts);
+
+                    let boxed: Box<dyn Iterator<Item = (T, u64)> + '_> = Box::new(merged);
+                    // SAFETY: The boxed iterator borrows from version/snapshot via the Arcs.
+                    // Those Arcs are moved into SortGroupedIterator, keeping data alive.
+                    // `inner` is declared before the Arc fields, so it drops first.
+                    unsafe {
+                        std::mem::transmute::<
+                            Box<dyn Iterator<Item = (T, u64)> + '_>,
+                            Box<dyn Iterator<Item = (T, u64)> + 'static>,
+                        >(boxed)
+                    }
+                }
+                SortOrder::Descending => {
+                    let live_deletes = Arc::clone(&snapshot_ref.deletes);
+                    let compacted_deletes = version_ref.deleted_set();
+                    let compacted_filtered =
+                        version_ref.iter_descending().filter(move |(_, doc_id)| {
+                            !live_deletes.contains(doc_id) && !compacted_deletes.contains(doc_id)
+                        });
+
+                    let live_inserts = snapshot_ref.inserts.iter().copied().rev();
+                    let merged = sorted_merge_descending(compacted_filtered, live_inserts);
+
+                    let boxed: Box<dyn Iterator<Item = (T, u64)> + '_> = Box::new(merged);
+                    // SAFETY: Same as ascending — Arcs keep data alive.
+                    unsafe {
+                        std::mem::transmute::<
+                            Box<dyn Iterator<Item = (T, u64)> + '_>,
+                            Box<dyn Iterator<Item = (T, u64)> + 'static>,
+                        >(boxed)
+                    }
+                }
+            }
+        };
+
+        Self {
+            inner,
+            peeked: None,
+            _version: version,
+            _snapshot: snapshot,
+        }
+    }
+}
+
+impl<T: IndexableNumber> Iterator for SortGroupedIterator<T> {
+    type Item = (T, Vec<u64>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (key, first) = self.peeked.take().or_else(|| self.inner.next())?;
+        let mut doc_ids = vec![first];
+        loop {
+            match self.inner.next() {
+                Some((k, d)) if T::compare(k, key) == Ordering::Equal => doc_ids.push(d),
+                other => {
+                    self.peeked = other;
+                    break;
+                }
+            }
+        }
+        Some((key, doc_ids))
     }
 }
 

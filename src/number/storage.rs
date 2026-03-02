@@ -14,7 +14,7 @@ use super::io::{
     ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir,
     write_current_atomic,
 };
-use super::iterator::{FilterHandle, FilterOp, SortHandle, SortOrder};
+use super::iterator::{FilterHandle, FilterOp, SortGroupedIterator, SortHandle, SortOrder};
 use super::key::IndexableNumber;
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::{sorted_merge, sorted_merge_doc_ids};
@@ -269,6 +269,59 @@ impl<T: IndexableNumber> NumberStorage<T> {
         let snapshot = live.get_snapshot();
         let version = self.version.load();
         SortHandle::new(Arc::clone(&version), snapshot, order)
+    }
+
+    /// Return an iterator that yields `(value, Vec<doc_ids>)` pairs.
+    ///
+    /// Each unique value is returned once, paired with all matching doc_ids.
+    /// Standard iterator combinators (`.collect()`, `.take()`, etc.) work directly.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use oramacore_fields::number::{NumberIndexer, NumberStorage, SortOrder, Threshold};
+    /// use serde_json::json;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let index: NumberStorage<u64> = NumberStorage::new(
+    ///     dir.path().to_path_buf(),
+    ///     Threshold::default(),
+    /// )?;
+    /// let indexer = NumberIndexer::<u64>::new(false);
+    ///
+    /// for (value, doc_id) in [(10, 1), (20, 2), (10, 3)] {
+    ///     let val = indexer.index_json(&json!(value)).unwrap();
+    ///     index.insert(&val, doc_id)?;
+    /// }
+    ///
+    /// let groups: Vec<(u64, Vec<u64>)> = index
+    ///     .sort_grouped(SortOrder::Ascending)
+    ///     .collect();
+    /// assert_eq!(groups, vec![(10, vec![1, 3]), (20, vec![2])]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn sort_grouped(&self, order: SortOrder) -> SortGroupedIterator<T> {
+        // Fast path: try with read lock
+        {
+            let live = self.live.read().unwrap();
+            if !live.is_snapshot_dirty() {
+                let snapshot = live.get_snapshot();
+                let version = self.version.load();
+                return SortGroupedIterator::new(Arc::clone(&version), snapshot, order);
+            }
+        }
+
+        // Slow path: need write lock to refresh snapshot
+        let mut live = self.live.write().unwrap();
+
+        // Double-check: another thread may have refreshed while we waited
+        if live.is_snapshot_dirty() {
+            live.refresh_snapshot();
+        }
+
+        let snapshot = live.get_snapshot();
+        let version = self.version.load();
+        SortGroupedIterator::new(Arc::clone(&version), snapshot, order)
     }
 
     /// Get the current version offset.
@@ -1307,5 +1360,178 @@ mod tests {
 
         let current_check = result.checks.iter().find(|c| c.name == "CURRENT").unwrap();
         assert_eq!(current_check.status, CheckStatus::Failed);
+    }
+
+    #[test]
+    fn test_sort_grouped_ascending() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(10), 1).unwrap();
+        index.insert(&IndexedValue::Plain(20), 2).unwrap();
+        index.insert(&IndexedValue::Plain(30), 3).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 10);
+        assert_eq!(ids, &[1]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 20);
+        assert_eq!(ids, &[2]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 30);
+        assert_eq!(ids, &[3]);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_descending() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(10), 1).unwrap();
+        index.insert(&IndexedValue::Plain(20), 2).unwrap();
+        index.insert(&IndexedValue::Plain(30), 3).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Descending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 30);
+        assert_eq!(ids, &[3]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 20);
+        assert_eq!(ids, &[2]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 10);
+        assert_eq!(ids, &[1]);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_multiple_docs_per_key() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(10), 1).unwrap();
+        index.insert(&IndexedValue::Plain(20), 2).unwrap();
+        index.insert(&IndexedValue::Plain(10), 3).unwrap();
+        index.insert(&IndexedValue::Plain(20), 4).unwrap();
+        index.insert(&IndexedValue::Plain(10), 5).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 10);
+        assert_eq!(ids, &[1, 3, 5]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 20);
+        assert_eq!(ids, &[2, 4]);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_empty() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_with_deletes() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(10), 1).unwrap();
+        index.insert(&IndexedValue::Plain(10), 2).unwrap();
+        index.insert(&IndexedValue::Plain(20), 3).unwrap();
+        index.insert(&IndexedValue::Plain(20), 4).unwrap();
+
+        // Delete one doc from each group
+        index.delete(2);
+        index.delete(3);
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 10);
+        assert_eq!(ids, &[1]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 20);
+        assert_eq!(ids, &[4]);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_after_compact() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<u64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(10), 1).unwrap();
+        index.insert(&IndexedValue::Plain(20), 2).unwrap();
+        index.insert(&IndexedValue::Plain(10), 3).unwrap();
+
+        index.compact(1).unwrap();
+
+        // Add more after compaction
+        index.insert(&IndexedValue::Plain(20), 4).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 10);
+        assert_eq!(ids, &[1, 3]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 20);
+        assert_eq!(ids, &[2, 4]);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sort_grouped_f64() {
+        let temp = TempDir::new().unwrap();
+        let index: NumberStorage<f64> =
+            NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        index.insert(&IndexedValue::Plain(-1.5), 1).unwrap();
+        index.insert(&IndexedValue::Plain(0.0), 2).unwrap();
+        index.insert(&IndexedValue::Plain(2.5), 3).unwrap();
+        index.insert(&IndexedValue::Plain(-1.5), 4).unwrap();
+
+        let mut iter = index.sort_grouped(SortOrder::Ascending);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, -1.5);
+        assert_eq!(ids, &[1, 4]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 0.0);
+        assert_eq!(ids, &[2]);
+
+        let (val, ids) = iter.next().unwrap();
+        assert_eq!(val, 2.5);
+        assert_eq!(ids, &[3]);
+
+        assert!(iter.next().is_none());
     }
 }

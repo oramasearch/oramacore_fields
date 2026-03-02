@@ -143,8 +143,8 @@ pub use error::Error;
 pub use indexer::{IndexedValue, NumberIndexer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use iterator::{
-    FilterHandle, FilterIterator, FilterOp, OwnedFilterIterator, OwnedSortIterator, SortHandle,
-    SortIterator, SortOrder,
+    FilterHandle, FilterIterator, FilterOp, OwnedFilterIterator, OwnedSortIterator,
+    SortGroupedIterator, SortHandle, SortIterator, SortOrder,
 };
 pub use key::IndexableNumber;
 pub use storage::{F64Storage, I64Storage, NumberStorage, U64Storage};

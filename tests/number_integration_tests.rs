@@ -2241,3 +2241,317 @@ fn test_filter_handle_into_iter_f64() {
     let results: Vec<u64> = index.filter(FilterOp::Gt(2.0)).into_iter().collect();
     assert_eq!(results, vec![2, 3]);
 }
+
+// ============================================================================
+// Sort Grouped
+// ============================================================================
+
+#[test]
+fn test_sort_grouped_ascending_basic() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![1]), (20, vec![2]), (30, vec![3])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_descending_basic() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> =
+        index.sort_grouped(SortOrder::Descending).collect();
+    assert_eq!(
+        groups,
+        vec![(30, vec![3]), (20, vec![2]), (10, vec![1])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_empty_index() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert!(groups.is_empty());
+}
+
+#[test]
+fn test_sort_grouped_same_value_multiple_docs() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(100), 1).unwrap();
+    index.insert(&IndexedValue::Plain(100), 2).unwrap();
+    index.insert(&IndexedValue::Plain(100), 3).unwrap();
+    index.insert(&IndexedValue::Plain(200), 4).unwrap();
+    index.insert(&IndexedValue::Plain(200), 5).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(100, vec![1, 2, 3]), (200, vec![4, 5])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_with_deletes() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(10), 2).unwrap();
+    index.insert(&IndexedValue::Plain(20), 3).unwrap();
+    index.insert(&IndexedValue::Plain(20), 4).unwrap();
+    index.insert(&IndexedValue::Plain(30), 5).unwrap();
+
+    // Delete one doc from the first group and the entire last group
+    index.delete(1);
+    index.delete(5);
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![2]), (20, vec![3, 4])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_deletes_entire_group() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(20), 2).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+
+    // Delete the middle value entirely
+    index.delete(2);
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![1]), (30, vec![3])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_merges_live_and_compacted() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // Insert and compact
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.compact(1).unwrap();
+
+    // Insert more to live layer with same and new values
+    index.insert(&IndexedValue::Plain(10), 4).unwrap();
+    index.insert(&IndexedValue::Plain(20), 5).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![1, 4]), (20, vec![5]), (30, vec![3])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_after_compaction_with_deletes() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(10), 2).unwrap();
+    index.insert(&IndexedValue::Plain(20), 3).unwrap();
+    index.compact(1).unwrap();
+
+    // Delete from compacted layer, add to live
+    index.delete(2);
+    index.insert(&IndexedValue::Plain(20), 4).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![1]), (20, vec![3, 4])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_f64_with_negatives() {
+    let temp = TempDir::new().unwrap();
+    let index: F64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(-10.5), 1).unwrap();
+    index.insert(&IndexedValue::Plain(0.0), 2).unwrap();
+    index.insert(&IndexedValue::Plain(5.5), 3).unwrap();
+    index.insert(&IndexedValue::Plain(-10.5), 4).unwrap();
+    index.insert(&IndexedValue::Plain(5.5), 5).unwrap();
+
+    let asc: Vec<(f64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(
+        asc,
+        vec![(-10.5, vec![1, 4]), (0.0, vec![2]), (5.5, vec![3, 5])]
+    );
+
+    let desc: Vec<(f64, Vec<u64>)> = index.sort_grouped(SortOrder::Descending).collect();
+    assert_eq!(
+        desc,
+        vec![(5.5, vec![5, 3]), (0.0, vec![2]), (-10.5, vec![4, 1])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_single_value() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(42), 1).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+    assert_eq!(groups, vec![(42, vec![1])]);
+}
+
+#[test]
+fn test_sort_grouped_returned_from_function() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(30), 3).unwrap();
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(10), 2).unwrap();
+
+    fn get_grouped(
+        index: &U64Storage,
+        order: SortOrder,
+    ) -> impl Iterator<Item = (u64, Vec<u64>)> {
+        index.sort_grouped(order)
+    }
+
+    let groups: Vec<(u64, Vec<u64>)> = get_grouped(&index, SortOrder::Ascending).collect();
+    assert_eq!(
+        groups,
+        vec![(10, vec![1, 2]), (30, vec![3])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_iterator_combinators() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    for doc_id in 1..=6u64 {
+        let value = (doc_id - 1) / 2 * 10; // 0,0,10,10,20,20
+        index.insert(&IndexedValue::Plain(value), doc_id).unwrap();
+    }
+
+    // .take() works
+    let first_two: Vec<(u64, Vec<u64>)> =
+        index.sort_grouped(SortOrder::Ascending).take(2).collect();
+    assert_eq!(
+        first_two,
+        vec![(0, vec![1, 2]), (10, vec![3, 4])]
+    );
+
+    // .skip() works
+    let last: Vec<(u64, Vec<u64>)> =
+        index.sort_grouped(SortOrder::Ascending).skip(2).collect();
+    assert_eq!(last, vec![(20, vec![5, 6])]);
+
+    // .map() works
+    let keys: Vec<u64> = index
+        .sort_grouped(SortOrder::Ascending)
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, vec![0, 10, 20]);
+
+    // .filter() works
+    let big_groups: Vec<(u64, Vec<u64>)> = index
+        .sort_grouped(SortOrder::Ascending)
+        .filter(|(_, ids)| ids.len() > 1)
+        .collect();
+    assert_eq!(big_groups.len(), 3); // all groups have 2 docs
+
+    // .count() works
+    let count = index.sort_grouped(SortOrder::Ascending).count();
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn test_sort_grouped_for_loop() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(10), 1).unwrap();
+    index.insert(&IndexedValue::Plain(10), 2).unwrap();
+    index.insert(&IndexedValue::Plain(20), 3).unwrap();
+
+    let mut collected = Vec::new();
+    for (value, doc_ids) in index.sort_grouped(SortOrder::Ascending) {
+        collected.push((value, doc_ids));
+    }
+    assert_eq!(
+        collected,
+        vec![(10, vec![1, 2]), (20, vec![3])]
+    );
+}
+
+#[test]
+fn test_sort_grouped_large_dataset() {
+    let temp = TempDir::new().unwrap();
+    let index: U64Storage =
+        NumberStorage::new(temp.path().to_path_buf(), Threshold::default()).unwrap();
+
+    // 1000 docs across 100 distinct values (10 docs per value)
+    for doc_id in 0..1000u64 {
+        let value = doc_id / 10 * 100;
+        index.insert(&IndexedValue::Plain(value), doc_id).unwrap();
+    }
+    index.compact(1).unwrap();
+
+    let groups: Vec<(u64, Vec<u64>)> = index.sort_grouped(SortOrder::Ascending).collect();
+
+    assert_eq!(groups.len(), 100);
+
+    // Each group should have exactly 10 doc_ids
+    for (_, doc_ids) in &groups {
+        assert_eq!(doc_ids.len(), 10);
+    }
+
+    // Values should be strictly ascending
+    for window in groups.windows(2) {
+        assert!(window[0].0 < window[1].0);
+    }
+
+    // Doc_ids within each group should be sorted ascending
+    for (_, doc_ids) in &groups {
+        for pair in doc_ids.windows(2) {
+            assert!(pair[0] < pair[1]);
+        }
+    }
+}
