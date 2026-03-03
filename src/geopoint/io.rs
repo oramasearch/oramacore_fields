@@ -116,24 +116,27 @@ pub fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn list_version_dirs(base_path: &Path) -> Result<impl Iterator<Item = u64> + '_> {
+pub fn list_version_dirs(base_path: &Path) -> Result<Box<dyn Iterator<Item = u64>>> {
     let versions_dir = base_path.join("versions");
+
+    // Return empty iterator if versions directory doesn't exist yet
+    // (no compaction has been performed)
+    if !versions_dir.exists() {
+        return Ok(Box::new(std::iter::empty()));
+    }
 
     let entries = fs::read_dir(&versions_dir)
         .with_context(|| format!("Failed to read versions directory: {versions_dir:?}"))?;
 
-    let iter = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_dir() {
-                return None;
-            }
-            Some(entry.file_name())
-        })
-        .filter_map(|name| name.to_str()?.parse::<u64>().ok());
+    let versions = entries.filter_map(|entry| entry.ok()).filter_map(|entry| {
+        let file_type = entry.file_type().ok()?;
+        if !file_type.is_dir() {
+            return None;
+        }
+        entry.file_name().to_str()?.parse::<u64>().ok()
+    });
 
-    Ok(iter)
+    Ok(Box::new(versions))
 }
 
 pub fn remove_version_dir(base_path: &Path, version_id: u64) -> Result<()> {

@@ -91,23 +91,26 @@ pub fn sync_dir(path: &Path) -> Result<(), Error> {
 /// List all version directories under the base path.
 ///
 /// Returns an iterator of version numbers (parsed from directory names).
-pub fn list_version_dirs(base_path: &Path) -> Result<impl Iterator<Item = u64> + '_, Error> {
+pub fn list_version_dirs(base_path: &Path) -> Result<Box<dyn Iterator<Item = u64>>, Error> {
     let versions_dir = base_path.join("versions");
+
+    // Return empty iterator if versions directory doesn't exist yet
+    // (no compaction has been performed)
+    if !versions_dir.exists() {
+        return Ok(Box::new(std::iter::empty()));
+    }
 
     let entries = fs::read_dir(&versions_dir)?;
 
-    let iter = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_dir() {
-                return None;
-            }
-            Some(entry.file_name())
-        })
-        .filter_map(|name| name.to_str()?.parse::<u64>().ok());
+    let versions = entries.filter_map(|entry| entry.ok()).filter_map(|entry| {
+        let file_type = entry.file_type().ok()?;
+        if !file_type.is_dir() {
+            return None;
+        }
+        entry.file_name().to_str()?.parse::<u64>().ok()
+    });
 
-    Ok(iter)
+    Ok(Box::new(versions))
 }
 
 /// Remove a version directory and all its contents.

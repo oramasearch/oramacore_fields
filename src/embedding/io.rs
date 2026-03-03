@@ -75,24 +75,20 @@ pub fn sync_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn list_version_dirs(base_path: &Path) -> Result<Vec<u64>, Error> {
+pub fn list_version_dirs(base_path: &Path) -> Result<Box<dyn Iterator<Item = u64>>, Error> {
     let versions_dir = base_path.join("versions");
     if !versions_dir.exists() {
-        return Ok(Vec::new());
+        return Ok(Box::new(std::iter::empty()));
     }
     let entries = fs::read_dir(&versions_dir)?;
-    let mut versions: Vec<u64> = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_dir() {
-                return None;
-            }
-            entry.file_name().to_str()?.parse::<u64>().ok()
-        })
-        .collect();
-    versions.sort_unstable();
-    Ok(versions)
+    let versions = entries.filter_map(|entry| entry.ok()).filter_map(|entry| {
+        let file_type = entry.file_type().ok()?;
+        if !file_type.is_dir() {
+            return None;
+        }
+        entry.file_name().to_str()?.parse::<u64>().ok()
+    });
+    Ok(Box::new(versions))
 }
 
 pub fn remove_version_dir(base_path: &Path, version_number: u64) -> Result<(), Error> {
@@ -296,7 +292,8 @@ mod tests {
         ensure_version_dir(tmp.path(), 3).unwrap();
         ensure_version_dir(tmp.path(), 1).unwrap();
         ensure_version_dir(tmp.path(), 2).unwrap();
-        let versions = list_version_dirs(tmp.path()).unwrap();
+        let mut versions: Vec<u64> = list_version_dirs(tmp.path()).unwrap().collect();
+        versions.sort_unstable();
         assert_eq!(versions, vec![1, 2, 3]);
     }
 }
