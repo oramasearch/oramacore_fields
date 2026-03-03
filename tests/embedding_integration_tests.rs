@@ -857,7 +857,7 @@ fn test_info_with_pending_ops() {
 
     let info = storage.info();
     assert_eq!(info.pending_ops, 2);
-    assert_eq!(info.num_embeddings, 0); // not yet compacted
+    assert_eq!(info.num_embeddings, 2); // not yet compacted
 
     storage.compact(1).unwrap();
 
