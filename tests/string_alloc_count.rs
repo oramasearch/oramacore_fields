@@ -53,7 +53,7 @@ fn stop_counting(baseline: (usize, usize)) -> (usize, usize) {
 }
 
 use oramacore_fields::string::{
-    BM25Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
+    BM25u64Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
 };
 use std::collections::HashMap;
 use std::path::Path;

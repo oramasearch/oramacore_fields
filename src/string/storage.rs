@@ -6,10 +6,10 @@ use super::io::{
     ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir, version_dir,
     write_current_atomic, FORMAT_VERSION,
 };
-use super::iterator::{SearchHandle, SearchParams};
+use super::iterator::{ContributionsResult, SearchHandle, SearchParams};
 use super::live::{LiveLayer, LiveSnapshot};
 use super::merge::sorted_merge;
-use super::scorer::BM25Scorer;
+use super::BM25u64Scorer;
 use super::{DocumentFilter, NoFilter};
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
@@ -78,7 +78,7 @@ impl StringStorage {
     /// Both the compacted (mmap) and live (in-memory) layers are searched and merged, so
     /// results reflect all inserts/deletes without requiring a compaction first.
     /// Search the index without document filtering.
-    pub fn search(&self, params: &SearchParams<'_>, scorer: &mut BM25Scorer) -> Result<()> {
+    pub fn search(&self, params: &SearchParams<'_>, scorer: &mut BM25u64Scorer) -> Result<()> {
         self.search_filtered::<NoFilter>(params, None, scorer)
     }
 
@@ -87,7 +87,7 @@ impl StringStorage {
         &self,
         params: &SearchParams<'_>,
         filter: &F,
-        scorer: &mut BM25Scorer,
+        scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
         self.search_filtered(params, Some(filter), scorer)
     }
@@ -96,12 +96,42 @@ impl StringStorage {
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
-        scorer: &mut BM25Scorer,
+        scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
         let snapshot = self.get_fresh_snapshot();
         let version = self.version.load();
         let handle = SearchHandle::new(Arc::clone(&version), snapshot);
         handle.execute(params, filter, scorer)
+    }
+
+    /// Collect raw per-token contributions (normalized TF + document frequency)
+    /// without computing IDF or BM25F saturation. Used by callers implementing
+    /// cross-field BM25F scoring.
+    pub fn collect_contributions(
+        &self,
+        params: &SearchParams<'_>,
+    ) -> Result<ContributionsResult> {
+        self.collect_contributions_filtered::<NoFilter>(params, None)
+    }
+
+    /// Collect raw per-token contributions, filtering results by document ID.
+    pub fn collect_contributions_with_filter<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: &F,
+    ) -> Result<ContributionsResult> {
+        self.collect_contributions_filtered(params, Some(filter))
+    }
+
+    fn collect_contributions_filtered<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+    ) -> Result<ContributionsResult> {
+        let snapshot = self.get_fresh_snapshot();
+        let version = self.version.load();
+        let handle = SearchHandle::new(Arc::clone(&version), snapshot);
+        handle.execute_collect(params, filter)
     }
 
     /// Get a fresh snapshot, refreshing if dirty (double-check locking pattern).
@@ -512,7 +542,7 @@ mod tests {
 
     fn search_default(index: &StringStorage, tokens: &[&str]) -> SearchResult {
         let owned: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -845,7 +875,7 @@ mod tests {
         let reader = thread::spawn(move || {
             for _ in 0..20 {
                 let tokens = vec!["term".to_string()];
-                let mut scorer = BM25Scorer::new();
+                let mut scorer = BM25u64Scorer::new();
                 index_clone
                     .search(
                         &SearchParams {
@@ -993,7 +1023,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["app".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1023,7 +1053,7 @@ mod tests {
 
         // Fuzzy search before any compaction
         let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1053,7 +1083,7 @@ mod tests {
 
         // Search before compaction
         let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1070,7 +1100,7 @@ mod tests {
         index.compact(1).unwrap();
 
         // Search after compaction
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1101,7 +1131,7 @@ mod tests {
 
         // Levenshtein distance 1 from "apple"
         let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1148,7 +1178,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string(), "world".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1190,7 +1220,7 @@ mod tests {
 
         let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
         // threshold=1.0 with 3 tokens => need all 3
-        let mut scorer = BM25Scorer::with_threshold(3);
+        let mut scorer = BM25u64Scorer::with_threshold(3);
         index
             .search(
                 &SearchParams {
@@ -1233,7 +1263,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1276,7 +1306,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1316,7 +1346,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1356,7 +1386,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["hello".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1393,7 +1423,7 @@ mod tests {
 
         // exact_match=false → tf=3 (stemmed only)
         let tokens = vec!["run".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1415,7 +1445,7 @@ mod tests {
         assert_approx_eq!(score1, 0.558_441_7, 1e-6);
 
         // exact_match=true → tf=0, no results
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {
@@ -1457,7 +1487,7 @@ mod tests {
         index.compact(1).unwrap();
 
         let tokens = vec!["word".to_string()];
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         index
             .search(
                 &SearchParams {

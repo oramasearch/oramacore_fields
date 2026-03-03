@@ -146,7 +146,7 @@ assert!(results.contains(&4));
 ```rust,no_run
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # use tempfile::tempdir;
-use oramacore_fields::string::{StringStorage, Threshold, IndexedValue, TermData, SearchParams, BM25Scorer};
+use oramacore_fields::string::{StringStorage, Threshold, IndexedValue, TermData, SearchParams, BM25u64Scorer};
 use std::collections::HashMap;
 # let dir = tempdir()?;
 
@@ -163,7 +163,7 @@ storage.insert(1, IndexedValue::new(2, terms));
 
 // Search for documents matching a token
 let tokens = vec!["hello".to_string()];
-let mut scorer = BM25Scorer::new();
+let mut scorer = BM25u64Scorer::new();
 storage.search(&SearchParams {
     tokens: &tokens,
     ..Default::default()

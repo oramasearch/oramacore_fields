@@ -57,7 +57,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::string::{StringStorage, Threshold, Bm25Params, IndexedValue, TermData, SearchParams, BM25Scorer};
+//! use oramacore_fields::string::{StringStorage, Threshold, Bm25Params, IndexedValue, TermData, SearchParams, BM25u64Scorer};
 //! use std::collections::HashMap;
 //! use std::path::PathBuf;
 //!
@@ -73,7 +73,7 @@
 //!
 //! // Search
 //! let tokens = vec!["hello".to_string()];
-//! let mut scorer = BM25Scorer::new();
+//! let mut scorer = BM25u64Scorer::new();
 //! index.search(&SearchParams {
 //!     tokens: &tokens,
 //!     ..Default::default()
@@ -93,18 +93,22 @@ mod iterator;
 mod live;
 mod merge;
 mod platform;
-mod scorer;
 mod scoring;
 mod simd;
 mod storage;
+mod bm25;
 
 pub use config::{Bm25Params, Threshold};
 pub use error::Error;
 pub use indexer::{IndexedValue, StringIndexer, TermData, Tokenizer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
-pub use iterator::{ScoredDoc, SearchParams, SearchResult};
-pub use scorer::BM25Scorer;
+pub use iterator::{ContributionsResult, ScoredDoc, SearchParams, SearchResult, TokenContribution};
+pub use scoring::{bm25f_score, calculate_idf};
 pub use storage::StringStorage;
+pub use bm25::{BM25FFieldParams};
+
+pub type BM25u64Scorer = bm25::BM25Scorer<u64>;
+
 
 pub trait DocumentFilter {
     fn contains(&self, doc_id: u64) -> bool;

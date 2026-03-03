@@ -6,7 +6,7 @@ use anyhow::Result;
 use super::compacted::{CompactedVersion, SortedDeleteCursor};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
-use super::scorer::BM25Scorer;
+use super::BM25u64Scorer;
 use super::scoring::{bm25f_score, calculate_idf};
 use super::simd;
 use super::DocumentFilter;
@@ -69,6 +69,34 @@ impl SearchResult {
     }
 }
 
+/// Per-token field contribution data (no BM25 score computed yet).
+/// Used by callers implementing cross-field BM25F scoring.
+#[derive(Debug, Clone)]
+pub struct TokenContribution {
+    /// (doc_id, weighted_normalized_tf) pairs.
+    /// The NTF includes field length normalization, exact match boost,
+    /// and the `boost` parameter from SearchParams.
+    pub per_doc_ntf: Vec<(u64, f32)>,
+    /// Number of unique documents matching this token in this field
+    /// (after deletion and filter exclusion).
+    pub df: u64,
+}
+
+/// Result of collecting raw BM25 contributions from a field.
+#[derive(Debug, Clone)]
+pub struct ContributionsResult {
+    /// Total non-deleted documents in this field.
+    pub total_documents: u64,
+    /// Per-token contribution data, one entry per token in SearchParams.tokens.
+    pub token_contributions: Vec<TokenContribution>,
+}
+
+/// Shared corpus statistics computed once per search.
+struct CorpusStats {
+    total_documents: u64,
+    inv_avg_fl: f32,
+}
+
 /// Accumulator for per-document normalized TF values.
 /// Uses a Vec when only one term matches (tolerance=0) to avoid HashMap overhead,
 /// and a HashMap when multiple terms can match (fuzzy/prefix) to aggregate scores.
@@ -77,6 +105,30 @@ enum PerDocNtf {
     SingleTerm(Vec<(u64, f32)>),
     /// Multiple term matches: aggregate NTF in a HashMap.
     MultiTerm(HashMap<u64, f32>),
+}
+
+impl PerDocNtf {
+    fn new(tolerance: Option<u8>) -> Self {
+        if tolerance == Some(0) {
+            PerDocNtf::SingleTerm(Vec::new())
+        } else {
+            PerDocNtf::MultiTerm(HashMap::new())
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            PerDocNtf::SingleTerm(v) => v.clear(),
+            PerDocNtf::MultiTerm(m) => m.clear(),
+        }
+    }
+
+    fn into_vec(self) -> Vec<(u64, f32)> {
+        match self {
+            PerDocNtf::SingleTerm(v) => v,
+            PerDocNtf::MultiTerm(m) => m.into_iter().collect(),
+        }
+    }
 }
 
 const BATCH_SIZE: usize = 8;
@@ -172,7 +224,7 @@ impl SearchHandle {
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
-        scorer: &mut BM25Scorer,
+        scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
         let collect_positions =
             params.phrase_boost.is_some_and(|b| b > 0.0) && params.tokens.len() >= 2;
@@ -184,28 +236,37 @@ impl SearchHandle {
         }
     }
 
-    /// Fast path: no phrase boost needed.
-    ///
-    /// Algorithm (per token):
-    /// 1. Scan compacted + live layers for matching terms (exact, prefix, or fuzzy
-    ///    depending on `tolerance`).
-    /// 2. For each matching (term, doc) pair, compute the BM25F normalized TF:
-    ///    `ntf = tf / (1 - b + b * field_len / avg_field_len)`, weighted by field
-    ///    boost and exact-match boost. Multiple term matches for the same doc are
-    ///    summed (BM25F multi-field aggregation with a single field).
-    /// 3. Compute Lucene-style IDF: `ln(1 + (N - df + 0.5) / (df + 0.5))`.
-    /// 4. Final per-token score: `idf * (k+1) * ntf / (k + ntf)` — the standard
-    ///    BM25 saturation formula that caps the TF contribution.
-    /// 5. Scores are fed into `BM25Scorer` which sums across tokens and optionally
-    ///    enforces a minimum-token-match threshold.
-    ///
-    /// A single `per_doc_ntf` HashMap is reused across tokens to avoid allocations.
-    fn execute_simple<F: DocumentFilter>(
+    /// Collect raw per-token contributions (normalized TF + document frequency)
+    /// without computing IDF or applying BM25F saturation. Used by callers
+    /// implementing cross-field BM25F scoring.
+    pub fn execute_collect<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
-        scorer: &mut BM25Scorer,
-    ) -> Result<()> {
+    ) -> Result<ContributionsResult> {
+        let stats = self.corpus_stats();
+        let mut batch = ScoringBatch::new();
+        let mut token_contributions = Vec::with_capacity(params.tokens.len());
+
+        for token in params.tokens.iter() {
+            let mut per_doc_ntf = PerDocNtf::new(params.tolerance);
+            let corpus_df =
+                self.accumulate_token(token, params, filter, &stats, &mut per_doc_ntf, &mut batch)?;
+
+            token_contributions.push(TokenContribution {
+                per_doc_ntf: per_doc_ntf.into_vec(),
+                df: corpus_df,
+            });
+        }
+
+        Ok(ContributionsResult {
+            total_documents: stats.total_documents,
+            token_contributions,
+        })
+    }
+
+    /// Compute corpus-level statistics shared across all tokens in a search.
+    fn corpus_stats(&self) -> CorpusStats {
         let total_documents = (self.version.total_documents + self.snapshot.total_documents)
             .saturating_sub(self.snapshot.compacted_deletes_count);
         // NOTE: total_document_length (and thus avg_field_length) is not corrected for
@@ -227,6 +288,23 @@ impl SearchHandle {
             0.0
         };
 
+        CorpusStats {
+            total_documents,
+            inv_avg_fl,
+        }
+    }
+
+    /// Search both layers for a single token, accumulating per-doc normalized TF.
+    /// Returns the document frequency (number of matching documents).
+    fn accumulate_token<F: DocumentFilter>(
+        &self,
+        token: &str,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        stats: &CorpusStats,
+        per_doc_ntf: &mut PerDocNtf,
+        batch: &mut ScoringBatch,
+    ) -> Result<u64> {
         let deletes = &self.snapshot.deletes;
         let compacted_deletes = self.version.deletes_slice();
 
@@ -242,147 +320,168 @@ impl SearchHandle {
         });
 
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
+        let mut corpus_df: u64 = 0;
 
-        let mut per_doc_ntf = if params.tolerance == Some(0) {
-            PerDocNtf::SingleTerm(Vec::new())
-        } else {
-            PerDocNtf::MultiTerm(HashMap::new())
-        };
+        // Search compacted layer (zero-copy)
+        let version = &self.version;
+        version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+            live_del_cursor.reset();
+            compacted_del_cursor.reset();
+
+            let exact_boost = if is_exact {
+                exact_match_boost_multiplier
+            } else {
+                1.0
+            };
+
+            let mut fl_cursor: usize = 0;
+            while let Some(entry) = reader.next_ref() {
+                if !live_del_cursor.should_keep(entry.doc_id)
+                    || !compacted_del_cursor.should_keep(entry.doc_id)
+                {
+                    continue;
+                }
+                if let Some(filter) = filter {
+                    if !filter.contains(entry.doc_id) {
+                        continue;
+                    }
+                }
+                corpus_df += 1;
+
+                let tf = if params.exact_match {
+                    entry.exact_positions.len()
+                } else {
+                    entry.exact_positions.len() + entry.stemmed_positions.len()
+                };
+                if tf == 0 {
+                    continue;
+                }
+
+                let field_length = version
+                    .field_length_galloping(entry.doc_id, &mut fl_cursor)
+                    .unwrap_or(0) as f32;
+
+                batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
+                if batch.is_full() {
+                    flush_batch(
+                        batch,
+                        stats.inv_avg_fl,
+                        params.bm25_params.b,
+                        params.boost,
+                        per_doc_ntf,
+                    );
+                    batch.clear();
+                }
+            }
+            // Flush remaining entries from this term match
+            flush_batch(
+                batch,
+                stats.inv_avg_fl,
+                params.bm25_params.b,
+                params.boost,
+                per_doc_ntf,
+            );
+            batch.clear();
+        })?;
+
+        // Search live layer
+        let snapshot = &self.snapshot;
+        snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
+            live_del_cursor.reset();
+            compacted_del_cursor.reset();
+
+            let exact_boost = if is_exact {
+                exact_match_boost_multiplier
+            } else {
+                1.0
+            };
+
+            for (doc_id, exact, stemmed) in postings {
+                if !live_del_cursor.should_keep(*doc_id)
+                    || !compacted_del_cursor.should_keep(*doc_id)
+                {
+                    continue;
+                }
+                if let Some(filter) = filter {
+                    if !filter.contains(*doc_id) {
+                        continue;
+                    }
+                }
+                corpus_df += 1;
+
+                let tf = if params.exact_match {
+                    exact.len()
+                } else {
+                    exact.len() + stemmed.len()
+                };
+                if tf == 0 {
+                    continue;
+                }
+
+                let field_length =
+                    snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
+
+                batch.push(*doc_id, tf as f32, field_length, exact_boost);
+                if batch.is_full() {
+                    flush_batch(
+                        batch,
+                        stats.inv_avg_fl,
+                        params.bm25_params.b,
+                        params.boost,
+                        per_doc_ntf,
+                    );
+                    batch.clear();
+                }
+            }
+            // Flush remaining entries from this term match
+            flush_batch(
+                batch,
+                stats.inv_avg_fl,
+                params.bm25_params.b,
+                params.boost,
+                per_doc_ntf,
+            );
+            batch.clear();
+        });
+
+        Ok(corpus_df)
+    }
+
+    /// Fast path: no phrase boost needed.
+    ///
+    /// Algorithm (per token):
+    /// 1. Scan compacted + live layers for matching terms (exact, prefix, or fuzzy
+    ///    depending on `tolerance`).
+    /// 2. For each matching (term, doc) pair, compute the BM25F normalized TF:
+    ///    `ntf = tf / (1 - b + b * field_len / avg_field_len)`, weighted by field
+    ///    boost and exact-match boost. Multiple term matches for the same doc are
+    ///    summed (BM25F multi-field aggregation with a single field).
+    /// 3. Compute Lucene-style IDF: `ln(1 + (N - df + 0.5) / (df + 0.5))`.
+    /// 4. Final per-token score: `idf * (k+1) * ntf / (k + ntf)` — the standard
+    ///    BM25 saturation formula that caps the TF contribution.
+    /// 5. Scores are fed into `BM25Scorer` which sums across tokens and optionally
+    ///    enforces a minimum-token-match threshold.
+    ///
+    /// A single `per_doc_ntf` accumulator is reused across tokens to avoid allocations.
+    fn execute_simple<F: DocumentFilter>(
+        &self,
+        params: &SearchParams<'_>,
+        filter: Option<&F>,
+        scorer: &mut BM25u64Scorer,
+    ) -> Result<()> {
+        let stats = self.corpus_stats();
+        let mut per_doc_ntf = PerDocNtf::new(params.tolerance);
+        let mut batch = ScoringBatch::new();
 
         for (token_idx, token) in params.tokens.iter().enumerate() {
             let token_bit = token_bit(token_idx);
-            match &mut per_doc_ntf {
-                PerDocNtf::SingleTerm(v) => v.clear(),
-                PerDocNtf::MultiTerm(m) => m.clear(),
-            }
-            let mut corpus_df: u64 = 0;
+            per_doc_ntf.clear();
 
-            let mut batch = ScoringBatch::new();
-
-            // Search compacted layer (zero-copy)
-            let version = &self.version;
-            version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
-                live_del_cursor.reset();
-                compacted_del_cursor.reset();
-
-                let exact_boost = if is_exact {
-                    exact_match_boost_multiplier
-                } else {
-                    1.0
-                };
-
-                let mut fl_cursor: usize = 0;
-                while let Some(entry) = reader.next_ref() {
-                    if !live_del_cursor.should_keep(entry.doc_id)
-                        || !compacted_del_cursor.should_keep(entry.doc_id)
-                    {
-                        continue;
-                    }
-                    if let Some(filter) = filter {
-                        if !filter.contains(entry.doc_id) {
-                            continue;
-                        }
-                    }
-                    corpus_df += 1;
-
-                    let tf = if params.exact_match {
-                        entry.exact_positions.len()
-                    } else {
-                        entry.exact_positions.len() + entry.stemmed_positions.len()
-                    };
-                    if tf == 0 {
-                        continue;
-                    }
-
-                    let field_length = version
-                        .field_length_galloping(entry.doc_id, &mut fl_cursor)
-                        .unwrap_or(0) as f32;
-
-                    batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
-                    if batch.is_full() {
-                        flush_batch(
-                            &batch,
-                            inv_avg_fl,
-                            params.bm25_params.b,
-                            params.boost,
-                            &mut per_doc_ntf,
-                        );
-                        batch.clear();
-                    }
-                }
-                // Flush remaining entries from this term match
-                flush_batch(
-                    &batch,
-                    inv_avg_fl,
-                    params.bm25_params.b,
-                    params.boost,
-                    &mut per_doc_ntf,
-                );
-                batch.clear();
-            })?;
-
-            // Search live layer
-            let snapshot = &self.snapshot;
-            snapshot.for_each_term_match(token, params.tolerance, |is_exact, postings| {
-                live_del_cursor.reset();
-                compacted_del_cursor.reset();
-
-                let exact_boost = if is_exact {
-                    exact_match_boost_multiplier
-                } else {
-                    1.0
-                };
-
-                for (doc_id, exact, stemmed) in postings {
-                    if !live_del_cursor.should_keep(*doc_id)
-                        || !compacted_del_cursor.should_keep(*doc_id)
-                    {
-                        continue;
-                    }
-                    if let Some(filter) = filter {
-                        if !filter.contains(*doc_id) {
-                            continue;
-                        }
-                    }
-                    corpus_df += 1;
-
-                    let tf = if params.exact_match {
-                        exact.len()
-                    } else {
-                        exact.len() + stemmed.len()
-                    };
-                    if tf == 0 {
-                        continue;
-                    }
-
-                    let field_length =
-                        snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
-
-                    batch.push(*doc_id, tf as f32, field_length, exact_boost);
-                    if batch.is_full() {
-                        flush_batch(
-                            &batch,
-                            inv_avg_fl,
-                            params.bm25_params.b,
-                            params.boost,
-                            &mut per_doc_ntf,
-                        );
-                        batch.clear();
-                    }
-                }
-                // Flush remaining entries from this term match
-                flush_batch(
-                    &batch,
-                    inv_avg_fl,
-                    params.bm25_params.b,
-                    params.boost,
-                    &mut per_doc_ntf,
-                );
-                batch.clear();
-            });
+            let corpus_df =
+                self.accumulate_token(token, params, filter, &stats, &mut per_doc_ntf, &mut batch)?;
 
             // Compute IDF for this token and feed directly into scorer
-            let idf = calculate_idf(total_documents, corpus_df);
+            let idf = calculate_idf(stats.total_documents, corpus_df);
             match &per_doc_ntf {
                 PerDocNtf::SingleTerm(v) => {
                     let mut i = 0;
@@ -433,7 +532,7 @@ impl SearchHandle {
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
-        scorer: &mut BM25Scorer,
+        scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
         let total_documents = (self.version.total_documents + self.snapshot.total_documents)
             .saturating_sub(self.snapshot.compacted_deletes_count);
@@ -769,7 +868,7 @@ mod tests {
     }
 
     fn execute_search(handle: &SearchHandle, params: &SearchParams<'_>) -> SearchResult {
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         handle
             .execute::<NoFilter>(params, None, &mut scorer)
             .unwrap();
@@ -1244,7 +1343,7 @@ mod tests {
         };
 
         // threshold=1.0 with 3 tokens => floor(3 * 1.0) = 3, need all 3
-        let mut scorer = BM25Scorer::with_threshold(3);
+        let mut scorer = BM25u64Scorer::with_threshold(3);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
@@ -1292,7 +1391,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut scorer = BM25Scorer::with_threshold(1);
+        let mut scorer = BM25u64Scorer::with_threshold(1);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
@@ -1344,7 +1443,7 @@ mod tests {
         };
 
         // threshold=1.0 with 1 token => need >= 1
-        let mut scorer = BM25Scorer::with_threshold(1);
+        let mut scorer = BM25u64Scorer::with_threshold(1);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
@@ -1473,7 +1572,7 @@ mod tests {
         };
 
         // threshold=0.7 with 3 tokens => floor(3 * 0.7) = 2, need >= 2 tokens
-        let mut scorer = BM25Scorer::with_threshold(2);
+        let mut scorer = BM25u64Scorer::with_threshold(2);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
@@ -1540,7 +1639,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert_eq!(result.docs.len(), 2);
@@ -1591,7 +1690,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
         assert!(result.docs.is_empty());
@@ -1653,7 +1752,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
@@ -1708,7 +1807,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut scorer = BM25Scorer::new();
+        let mut scorer = BM25u64Scorer::new();
         handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
 
@@ -1779,5 +1878,321 @@ mod tests {
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > 0.0);
+    }
+
+    // ---- collect_contributions tests ----
+
+    fn execute_collect(handle: &SearchHandle, params: &SearchParams<'_>) -> ContributionsResult {
+        handle
+            .execute_collect::<NoFilter>(params, None)
+            .unwrap()
+    }
+
+    /// A test filter that only keeps doc IDs in the given set.
+    struct TestFilter(std::collections::HashSet<u64>);
+    impl super::super::DocumentFilter for TestFilter {
+        fn contains(&self, doc_id: u64) -> bool {
+            self.0.contains(&doc_id)
+        }
+    }
+
+    #[test]
+    fn test_collect_empty_index() {
+        let version = Arc::new(CompactedVersion::empty());
+        let snapshot = Arc::new(LiveSnapshot::empty());
+        let handle = SearchHandle::new(version, snapshot);
+
+        let tokens = vec!["hello".to_string()];
+        let params = SearchParams {
+            tokens: &tokens,
+            ..Default::default()
+        };
+
+        let result = execute_collect(&handle, &params);
+        assert_eq!(result.total_documents, 0);
+        assert_eq!(result.token_contributions.len(), 1);
+        assert!(result.token_contributions[0].per_doc_ntf.is_empty());
+        assert_eq!(result.token_contributions[0].df, 0);
+    }
+
+    #[test]
+    fn test_collect_single_token_consistency() {
+        // Verify that manually computing BM25 from contributions matches search().
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
+        layer.insert(2, make_value(5, vec![("hello", vec![0, 3], vec![])]));
+        layer.insert(3, make_value(2, vec![("world", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let search_result = execute_search(&handle, &params);
+        let contrib_result = execute_collect(&handle, &params);
+
+        assert_eq!(contrib_result.total_documents, 3);
+        assert_eq!(contrib_result.token_contributions.len(), 1);
+
+        let tc = &contrib_result.token_contributions[0];
+        assert_eq!(tc.df, 2);
+        assert_eq!(tc.per_doc_ntf.len(), 2);
+
+        // Manually compute BM25 scores from contributions
+        let idf = calculate_idf(contrib_result.total_documents, tc.df);
+        let mut manual_scores: Vec<(u64, f32)> = tc
+            .per_doc_ntf
+            .iter()
+            .map(|&(doc_id, ntf)| {
+                let score = bm25f_score(ntf, params.bm25_params.k, idf);
+                (doc_id, score)
+            })
+            .collect();
+        manual_scores.sort_by_key(|&(doc_id, _)| doc_id);
+
+        let mut search_scores: Vec<(u64, f32)> = search_result
+            .docs
+            .iter()
+            .map(|d| (d.doc_id, d.score))
+            .collect();
+        search_scores.sort_by_key(|&(doc_id, _)| doc_id);
+
+        assert_eq!(manual_scores.len(), search_scores.len());
+        for (manual, search) in manual_scores.iter().zip(search_scores.iter()) {
+            assert_eq!(manual.0, search.0);
+            assert!(
+                (manual.1 - search.1).abs() < 1e-5,
+                "doc_id={}: manual={} vs search={}",
+                manual.0,
+                manual.1,
+                search.1
+            );
+        }
+    }
+
+    #[test]
+    fn test_collect_multi_token() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(
+            1,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
+        layer.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string(), "world".to_string()],
+            ..Default::default()
+        };
+
+        let result = execute_collect(&handle, &params);
+        assert_eq!(result.token_contributions.len(), 2);
+
+        // "hello" matches docs 1 and 2
+        assert_eq!(result.token_contributions[0].df, 2);
+        assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
+
+        // "world" matches only doc 1
+        assert_eq!(result.token_contributions[1].df, 1);
+        assert_eq!(result.token_contributions[1].per_doc_ntf.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_with_filter() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let filter = TestFilter([1, 3].into_iter().collect());
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = handle
+            .execute_collect(&params, Some(&filter))
+            .unwrap();
+
+        assert_eq!(result.token_contributions[0].df, 2);
+        assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
+        let doc_ids: Vec<u64> = result.token_contributions[0]
+            .per_doc_ntf
+            .iter()
+            .map(|&(id, _)| id)
+            .collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&3));
+        assert!(!doc_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_collect_with_deletes() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("hello", vec![0], vec![])]));
+        layer.delete(2);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = execute_collect(&handle, &params);
+        assert_eq!(result.total_documents, 2);
+        assert_eq!(result.token_contributions[0].df, 2);
+        let doc_ids: Vec<u64> = result.token_contributions[0]
+            .per_doc_ntf
+            .iter()
+            .map(|&(id, _)| id)
+            .collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&3));
+        assert!(!doc_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_collect_prefix_tolerance() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
+        layer.insert(2, make_value(3, vec![("application", vec![0], vec![])]));
+        layer.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["app".to_string()],
+            tolerance: None, // prefix search
+            ..Default::default()
+        };
+
+        let result = execute_collect(&handle, &params);
+        // Both "apple" and "application" match prefix "app"
+        assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
+        let doc_ids: Vec<u64> = result.token_contributions[0]
+            .per_doc_ntf
+            .iter()
+            .map(|&(id, _)| id)
+            .collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_collect_total_documents_accuracy() {
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+        layer.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
+        layer.insert(3, make_value(2, vec![("foo", vec![0], vec![])]));
+        layer.insert(4, make_value(2, vec![("bar", vec![0], vec![])]));
+        layer.delete(2);
+        layer.delete(4);
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string()],
+            ..Default::default()
+        };
+
+        let result = execute_collect(&handle, &params);
+        // 4 inserted - 2 deleted = 2
+        assert_eq!(result.total_documents, 2);
+    }
+
+    #[test]
+    fn test_collect_multi_token_consistency_with_search() {
+        // Verify that for each token, manually computing BM25 from contributions
+        // produces the same total score as search().
+        let version = Arc::new(CompactedVersion::empty());
+
+        let mut layer = LiveLayer::new();
+        layer.insert(
+            1,
+            make_value(
+                6,
+                vec![
+                    ("hello", vec![0], vec![]),
+                    ("world", vec![1], vec![]),
+                    ("foo", vec![2], vec![]),
+                ],
+            ),
+        );
+        layer.insert(
+            2,
+            make_value(
+                4,
+                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
+            ),
+        );
+        layer.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
+        layer.refresh_snapshot();
+        let snapshot = layer.get_snapshot();
+
+        let handle = SearchHandle::new(version, snapshot);
+
+        let params = SearchParams {
+            tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
+            ..Default::default()
+        };
+
+        let search_result = execute_search(&handle, &params);
+        let contrib_result = execute_collect(&handle, &params);
+
+        // Manually compute scores from contributions
+        let mut manual_scores: StdHashMap<u64, f32> = StdHashMap::new();
+        for tc in &contrib_result.token_contributions {
+            let idf = calculate_idf(contrib_result.total_documents, tc.df);
+            for &(doc_id, ntf) in &tc.per_doc_ntf {
+                let score = bm25f_score(ntf, params.bm25_params.k, idf);
+                *manual_scores.entry(doc_id).or_insert(0.0) += score;
+            }
+        }
+
+        for scored_doc in &search_result.docs {
+            let manual = manual_scores.get(&scored_doc.doc_id).copied().unwrap_or(0.0);
+            assert!(
+                (manual - scored_doc.score).abs() < 1e-4,
+                "doc_id={}: manual={} vs search={}",
+                scored_doc.doc_id,
+                manual,
+                scored_doc.score
+            );
+        }
     }
 }
