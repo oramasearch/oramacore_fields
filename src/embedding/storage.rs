@@ -576,10 +576,14 @@ impl EmbeddingStorage {
 
     pub fn info(&self) -> IndexInfo {
         let current = self.segments.load();
+        // Get a fresh snapshot to include live (pending) entries in the count.
+        let snapshot = self.fresh_snapshot();
         let live = self.live.read().unwrap();
         let ver_dir = version_dir(&self.base_path, current.version_number);
 
-        let num_embeddings = current.total_embeddings();
+        // Count embeddings from both compacted segments and live (pending) entries.
+        // After compaction the live layer is drained, so there is no double-counting.
+        let num_embeddings = current.total_embeddings() + snapshot.entries.len();
 
         IndexInfo {
             format_version: FORMAT_VERSION,
