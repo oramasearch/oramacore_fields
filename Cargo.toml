@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "On-disk field indexes (bool, number, string, string_filter, geopoint) for search engines"
+homepage="https://orama.com/"
+repository="https://github.com/oramasearch/oramacore_fields"
+
 
 [features]
 default = ["simd"]
