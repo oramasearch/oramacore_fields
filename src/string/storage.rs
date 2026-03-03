@@ -107,10 +107,7 @@ impl StringStorage {
     /// Collect raw per-token contributions (normalized TF + document frequency)
     /// without computing IDF or BM25F saturation. Used by callers implementing
     /// cross-field BM25F scoring.
-    pub fn collect_contributions(
-        &self,
-        params: &SearchParams<'_>,
-    ) -> Result<ContributionsResult> {
+    pub fn collect_contributions(&self, params: &SearchParams<'_>) -> Result<ContributionsResult> {
         self.collect_contributions_filtered::<NoFilter>(params, None)
     }
 

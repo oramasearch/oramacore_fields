@@ -6,9 +6,9 @@ use anyhow::Result;
 use super::compacted::{CompactedVersion, SortedDeleteCursor};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
-use super::BM25u64Scorer;
 use super::scoring::{bm25f_score, calculate_idf};
 use super::simd;
+use super::BM25u64Scorer;
 use super::DocumentFilter;
 
 /// Parameters for a search query.
@@ -418,8 +418,7 @@ impl SearchHandle {
                     continue;
                 }
 
-                let field_length =
-                    snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
+                let field_length = snapshot.doc_lengths.get(doc_id).copied().unwrap_or(0) as f32;
 
                 batch.push(*doc_id, tf as f32, field_length, exact_boost);
                 if batch.is_full() {
@@ -1883,9 +1882,7 @@ mod tests {
     // ---- collect_contributions tests ----
 
     fn execute_collect(handle: &SearchHandle, params: &SearchParams<'_>) -> ContributionsResult {
-        handle
-            .execute_collect::<NoFilter>(params, None)
-            .unwrap()
+        handle.execute_collect::<NoFilter>(params, None).unwrap()
     }
 
     /// A test filter that only keeps doc IDs in the given set.
@@ -2030,9 +2027,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = handle
-            .execute_collect(&params, Some(&filter))
-            .unwrap();
+        let result = handle.execute_collect(&params, Some(&filter)).unwrap();
 
         assert_eq!(result.token_contributions[0].df, 2);
         assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
@@ -2185,7 +2180,10 @@ mod tests {
         }
 
         for scored_doc in &search_result.docs {
-            let manual = manual_scores.get(&scored_doc.doc_id).copied().unwrap_or(0.0);
+            let manual = manual_scores
+                .get(&scored_doc.doc_id)
+                .copied()
+                .unwrap_or(0.0);
             assert!(
                 (manual - scored_doc.score).abs() < 1e-4,
                 "doc_id={}: manual={} vs search={}",

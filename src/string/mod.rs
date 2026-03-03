@@ -82,6 +82,7 @@
 //! assert_eq!(result.docs.len(), 1);
 //! ```
 
+mod bm25;
 mod compacted;
 mod config;
 mod error;
@@ -96,8 +97,8 @@ mod platform;
 mod scoring;
 mod simd;
 mod storage;
-mod bm25;
 
+pub use bm25::BM25FFieldParams;
 pub use config::{Bm25Params, Threshold};
 pub use error::Error;
 pub use indexer::{IndexedValue, StringIndexer, TermData, Tokenizer};
@@ -105,10 +106,8 @@ pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};
 pub use iterator::{ContributionsResult, ScoredDoc, SearchParams, SearchResult, TokenContribution};
 pub use scoring::{bm25f_score, calculate_idf};
 pub use storage::StringStorage;
-pub use bm25::{BM25FFieldParams};
 
 pub type BM25u64Scorer = bm25::BM25Scorer<u64>;
-
 
 pub trait DocumentFilter {
     fn contains(&self, doc_id: u64) -> bool;

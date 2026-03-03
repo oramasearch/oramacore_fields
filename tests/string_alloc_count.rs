@@ -81,7 +81,7 @@ fn setup_index(dir: &Path, n: usize) -> StringStorage {
     index
 }
 
-/// After compaction, search should only allocate for BM25Scorer's internal HashMap
+/// After compaction, search should only allocate for BM25u64Scorer's internal HashMap
 /// (not for PostingEntry Vec<u32> or search_terms Vec/String).
 #[test]
 fn test_search_alloc_after_compact() {
@@ -91,7 +91,7 @@ fn test_search_alloc_after_compact() {
 
     // Warm up snapshot so the first search doesn't trigger snapshot rebuild
     let tokens = vec!["apple".to_string()];
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -105,7 +105,7 @@ fn test_search_alloc_after_compact() {
 
     // Now measure allocations for a real search
     let baseline = start_counting();
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -119,7 +119,7 @@ fn test_search_alloc_after_compact() {
     let (allocs, _) = stop_counting(baseline);
 
     assert_eq!(result.docs.len(), 34, "Expected 34 apple docs");
-    // Only BM25Scorer HashMap + per_doc_ntf HashMap + result Vec should allocate.
+    // Only BM25u64Scorer HashMap + per_doc_ntf HashMap + result Vec should allocate.
     // With 34 matching docs this should be very few allocations (HashMap internals).
     // The key improvement: no 2*N PostingEntry Vec<u32> allocations.
     assert!(
@@ -136,7 +136,7 @@ fn test_search_alloc_clean_snapshot() {
 
     // Warm up snapshot
     let tokens = vec!["apple".to_string()];
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -149,7 +149,7 @@ fn test_search_alloc_clean_snapshot() {
     drop(scorer);
 
     let baseline = start_counting();
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -186,7 +186,7 @@ fn test_search_alloc_prefix() {
 
     // Warm up
     let tokens = vec!["app".to_string()];
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -200,7 +200,7 @@ fn test_search_alloc_prefix() {
     drop(scorer);
 
     let baseline = start_counting();
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -242,7 +242,7 @@ fn test_search_alloc_phrase_boost() {
     let tokens = vec!["hello".to_string(), "world".to_string()];
 
     // Warm up
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
@@ -256,7 +256,7 @@ fn test_search_alloc_phrase_boost() {
     drop(scorer);
 
     let baseline = start_counting();
-    let mut scorer = BM25Scorer::new();
+    let mut scorer = BM25u64Scorer::new();
     index
         .search(
             &SearchParams {
