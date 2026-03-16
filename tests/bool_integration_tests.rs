@@ -3100,3 +3100,47 @@ fn test_sort_only_false() {
     // true group empty, false desc: 2, 1
     assert_eq!(results, vec![2, 1]);
 }
+
+/// Compacting with the same version number as the current active version should fail,
+/// but retrying with a different version number should succeed without data loss.
+#[test]
+fn test_compact_same_version_then_retry_with_different_version() {
+    let tmp = TempDir::new().unwrap();
+    let index = BoolStorage::new(tmp.path().to_path_buf(), DeletionThreshold::default()).unwrap();
+
+    index.insert(&IndexedValue::Plain(true), 1);
+    index.insert(&IndexedValue::Plain(false), 2);
+
+    // First compaction to version 1
+    index.compact(1).unwrap();
+
+    let true_results: Vec<u64> = index.filter(true).iter().collect();
+    let false_results: Vec<u64> = index.filter(false).iter().collect();
+    assert_eq!(true_results, vec![1]);
+    assert_eq!(false_results, vec![2]);
+
+    // Insert more data
+    index.insert(&IndexedValue::Plain(true), 3);
+    index.insert(&IndexedValue::Plain(false), 4);
+
+    // Compact with the same version number (1) should fail
+    let result = index.compact(1);
+    assert!(
+        result.is_err(),
+        "Compacting with the same version number should fail"
+    );
+
+    // Data should still be intact after the failed compaction
+    let true_results: Vec<u64> = index.filter(true).iter().collect();
+    let false_results: Vec<u64> = index.filter(false).iter().collect();
+    assert_eq!(true_results, vec![1, 3]);
+    assert_eq!(false_results, vec![2, 4]);
+
+    // Retry with a different version number should succeed
+    index.compact(2).unwrap();
+
+    let true_results: Vec<u64> = index.filter(true).iter().collect();
+    let false_results: Vec<u64> = index.filter(false).iter().collect();
+    assert_eq!(true_results, vec![1, 3]);
+    assert_eq!(false_results, vec![2, 4]);
+}

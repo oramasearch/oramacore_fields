@@ -155,7 +155,7 @@ impl StringStorage {
         // Nothing to compact — free memory and return early
         if snapshot.term_postings.is_empty() && snapshot.deletes.is_empty() {
             let mut live = self.live.write().unwrap();
-            live.ops.drain(..snapshot.ops_len);
+            live.drain_compacted_ops(snapshot.ops_len);
             if live.ops.is_empty() {
                 live.ops.shrink_to_fit();
             }
@@ -691,6 +691,43 @@ mod tests {
 
         let result = search_default(&index, &["hello"]);
         assert_eq!(result.docs.len(), 3);
+    }
+
+    #[test]
+    fn test_compact_empty_snapshot_resets_replay_state() {
+        // Regression: compacting when the live snapshot has ops but empty
+        // term_postings and deletes (e.g., documents with no terms) used to
+        // drain ops without resetting replay_applied_ops, causing the next
+        // refresh_snapshot() to panic with
+        // "range start index N out of range for slice of length 0".
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+
+        // Step 1: Insert and compact normally so there's a base version
+        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.compact(1).unwrap();
+
+        // Step 2: Insert documents with no terms (e.g., empty string field).
+        // This produces a snapshot with non-zero ops_len but empty
+        // term_postings and empty deletes — triggering the early return.
+        index.insert(2, make_value(0, vec![]));
+        index.insert(3, make_value(0, vec![]));
+
+        // Step 3: Compact — hits the "nothing to compact" early return
+        // which drains ops. Without the fix, replay_applied_ops is left
+        // at 2 while ops becomes empty.
+        index.compact(2).unwrap();
+
+        // Step 4: Insert after the empty compaction — this triggers
+        // refresh_snapshot() which panicked before the fix because
+        // replay_applied_ops (2) > ops.len() (0).
+        index.insert(4, make_value(2, vec![("hello", vec![0], vec![])]));
+
+        let result = search_default(&index, &["hello"]);
+        assert_eq!(result.docs.len(), 2);
+        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
+        assert!(doc_ids.contains(&1));
+        assert!(doc_ids.contains(&4));
     }
 
     #[test]
