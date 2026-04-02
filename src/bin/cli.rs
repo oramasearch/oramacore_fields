@@ -878,7 +878,10 @@ fn string_info(path: &Path, format: OutputFormat) -> Result<(), String> {
             println!("Deleted entries:   {}", info.deleted_count);
             println!();
             println!("Num segments:      {}", info.num_segments);
-            println!("Segments size:     {} bytes", info.total_segments_size_bytes);
+            println!(
+                "Segments size:     {} bytes",
+                info.total_segments_size_bytes
+            );
             println!("Deleted size:      {} bytes", info.deleted_size_bytes);
             println!("Global info size:  {} bytes", info.global_info_size_bytes);
             println!("Total size:        {} bytes", info.total_size_bytes());

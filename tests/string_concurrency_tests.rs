@@ -11,7 +11,7 @@ use std::thread;
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25u64Scorer, IndexedValue, SearchParams, SegmentConfig, StringStorage, TermData, Threshold,
+    BM25u64Scorer, IndexedValue, SearchParams, SegmentConfig, StringStorage, TermData,
 };
 
 // ============================================================================

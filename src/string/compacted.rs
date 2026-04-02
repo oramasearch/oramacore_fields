@@ -1,6 +1,4 @@
-use super::io::{
-    read_manifest, segment_data_dir, version_dir, ManifestEntry,
-};
+use super::io::{read_manifest, segment_data_dir, version_dir, ManifestEntry};
 use super::platform::advise_random;
 use anyhow::{Context, Result};
 use fst::automaton::{Levenshtein, Str};
@@ -427,8 +425,7 @@ pub fn build_segment_data<'a, P: std::ops::Deref<Target = [u32]>>(
                             )?;
                             num_postings += count as usize;
                         }
-                        compacted_entry =
-                            compacted_terms.next_term_into(&mut compacted_key_buf);
+                        compacted_entry = compacted_terms.next_term_into(&mut compacted_key_buf);
                     }
                     std::cmp::Ordering::Greater => {
                         compacted_entry = Some(reader);
@@ -507,12 +504,7 @@ pub fn build_segment_data<'a, P: std::ops::Deref<Target = [u32]>>(
                                     }
                                     std::cmp::Ordering::Greater => {
                                         if delete_cursor.should_keep(l.0) {
-                                            write_entry_to_buf(
-                                                &mut entries_buf,
-                                                l.0,
-                                                &l.1,
-                                                &l.2,
-                                            );
+                                            write_entry_to_buf(&mut entries_buf, l.0, &l.1, &l.2);
                                             count += 1;
                                         }
                                         li += 1;
@@ -520,12 +512,7 @@ pub fn build_segment_data<'a, P: std::ops::Deref<Target = [u32]>>(
                                     std::cmp::Ordering::Equal => {
                                         // Live wins
                                         if delete_cursor.should_keep(l.0) {
-                                            write_entry_to_buf(
-                                                &mut entries_buf,
-                                                l.0,
-                                                &l.1,
-                                                &l.2,
-                                            );
+                                            write_entry_to_buf(&mut entries_buf, l.0, &l.1, &l.2);
                                             count += 1;
                                         }
                                         compacted_next = reader.next_ref();
@@ -546,8 +533,7 @@ pub fn build_segment_data<'a, P: std::ops::Deref<Target = [u32]>>(
                             )?;
                             num_postings += count as usize;
                         }
-                        compacted_entry =
-                            compacted_terms.next_term_into(&mut compacted_key_buf);
+                        compacted_entry = compacted_terms.next_term_into(&mut compacted_key_buf);
                     }
                 }
             }
@@ -567,13 +553,12 @@ pub fn build_segment_data<'a, P: std::ops::Deref<Target = [u32]>>(
         .with_context(|| "Failed to sync postings file")?;
 
     // ── Build doc_lengths ──
-    let (total_doc_length, total_documents, min_doc_id, max_doc_id) =
-        merge_and_write_doc_lengths(
-            &doc_lengths_path,
-            compacted_doc_lengths,
-            live_doc_lengths,
-            deleted_set,
-        )?;
+    let (total_doc_length, total_documents, min_doc_id, max_doc_id) = merge_and_write_doc_lengths(
+        &doc_lengths_path,
+        compacted_doc_lengths,
+        live_doc_lengths,
+        deleted_set,
+    )?;
 
     Ok(SegmentBuildResult {
         num_postings,
@@ -742,9 +727,8 @@ fn load_fst(path: &Path) -> Result<Option<Map<Mmap>>> {
         return Ok(None);
     }
 
-    let mmap = unsafe {
-        Mmap::map(&file).with_context(|| format!("Failed to mmap FST file: {path:?}"))?
-    };
+    let mmap =
+        unsafe { Mmap::map(&file).with_context(|| format!("Failed to mmap FST file: {path:?}"))? };
 
     advise_random(&mmap);
 
@@ -1077,7 +1061,12 @@ mod tests {
         }];
         write_manifest(&ver_dir, &manifest).unwrap();
         write_deleted(&ver_dir.join("deleted.bin"), &[]).unwrap();
-        write_global_info(&ver_dir.join("global_info.bin"), result.total_doc_length, result.total_documents).unwrap();
+        write_global_info(
+            &ver_dir.join("global_info.bin"),
+            result.total_doc_length,
+            result.total_documents,
+        )
+        .unwrap();
 
         let seg_list = SegmentList::load(base_path, 1).unwrap();
         assert_eq!(seg_list.segments.len(), 1);

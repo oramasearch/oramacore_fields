@@ -5,10 +5,9 @@ use super::config::SegmentConfig;
 use super::indexer::IndexedValue;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
 use super::io::{
-    ensure_segment_dir, ensure_version_dir, list_segment_dirs, list_version_dirs,
-    read_current, read_manifest, remove_segment_dir, remove_version_dir, segment_data_dir,
-    sync_dir, version_dir, write_current_atomic, write_manifest, ManifestEntry, FORMAT_VERSION,
-    FORMAT_VERSION_V1,
+    ensure_segment_dir, ensure_version_dir, list_segment_dirs, list_version_dirs, read_current,
+    read_manifest, remove_segment_dir, remove_version_dir, segment_data_dir, sync_dir, version_dir,
+    write_current_atomic, write_manifest, ManifestEntry, FORMAT_VERSION, FORMAT_VERSION_V1,
 };
 use super::iterator::{ContributionsResult, SearchHandle, SearchParams};
 use super::live::{LiveLayer, LiveSnapshot};
@@ -209,11 +208,8 @@ impl StringStorage {
             let is_last = seg_idx == current.segments.len() - 1;
 
             // Count deletes in this segment's doc_id range
-            let segment_deletes = count_deletes_in_range(
-                &merged_deletes,
-                segment.min_doc_id,
-                segment.max_doc_id,
-            );
+            let segment_deletes =
+                count_deletes_in_range(&merged_deletes, segment.min_doc_id, segment.max_doc_id);
             let deletion_ratio = if segment.num_postings > 0 {
                 segment_deletes as f64 / segment.num_postings as f64
             } else {
@@ -222,8 +218,7 @@ impl StringStorage {
 
             if is_last && has_live_data {
                 // Estimate combined postings
-                let live_postings: usize =
-                    snapshot.term_postings.values().map(|v| v.len()).sum();
+                let live_postings: usize = snapshot.term_postings.values().map(|v| v.len()).sum();
                 let combined_postings = segment.num_postings + live_postings;
 
                 if combined_postings <= max_postings {
@@ -262,8 +257,12 @@ impl StringStorage {
                     // Last segment exceeds max_postings when combined
                     // Rebuild or carry forward last segment
                     if deletion_ratio > threshold_value {
-                        let entry =
-                            rebuild_segment(segment, &merged_deletes, &self.base_path, seg_id_counter)?;
+                        let entry = rebuild_segment(
+                            segment,
+                            &merged_deletes,
+                            &self.base_path,
+                            seg_id_counter,
+                        )?;
                         seg_id_counter += 1;
                         if let Some(e) = entry {
                             new_manifest.push(e);
@@ -277,7 +276,7 @@ impl StringStorage {
                             min_doc_id: segment.min_doc_id,
                             max_doc_id: segment.max_doc_id,
                             total_doc_length: segment.num_postings as u64, // will be recomputed
-                            total_documents: segment.num_postings as u64, // will be recomputed
+                            total_documents: segment.num_postings as u64,  // will be recomputed
                         });
                         // Fix: read actual stats from the segment's doc_lengths
                         let last = new_manifest.last_mut().unwrap();
@@ -386,10 +385,7 @@ impl StringStorage {
         } else {
             &[] as &[u64]
         };
-        super::io::write_deleted(
-            &new_version_dir.join("deleted.bin"),
-            deletes_to_write,
-        )?;
+        super::io::write_deleted(&new_version_dir.join("deleted.bin"), deletes_to_write)?;
         super::io::write_global_info(
             &new_version_dir.join("global_info.bin"),
             global_total_doc_length,
@@ -584,12 +580,14 @@ impl StringStorage {
 
                         // Check each segment directory
                         for entry in &manifest {
-                            let seg_dir =
-                                segment_data_dir(&self.base_path, entry.segment_id);
+                            let seg_dir = segment_data_dir(&self.base_path, entry.segment_id);
                             if !seg_dir.exists() {
                                 checks.push(IntegrityCheck::failed(
                                     format!("segment {}", entry.segment_id),
-                                    Some(format!("Directory does not exist: {}", seg_dir.display())),
+                                    Some(format!(
+                                        "Directory does not exist: {}",
+                                        seg_dir.display()
+                                    )),
                                 ));
                                 continue;
                             }

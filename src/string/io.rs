@@ -135,9 +135,7 @@ pub fn remove_version_dir(base_path: &Path, version_number: u64) -> Result<()> {
 
 /// Return the path for a segment data directory: `base_path/segments/seg_{id}`.
 pub fn segment_data_dir(base_path: &Path, segment_id: u64) -> PathBuf {
-    base_path
-        .join("segments")
-        .join(format!("seg_{segment_id}"))
+    base_path.join("segments").join(format!("seg_{segment_id}"))
 }
 
 /// Create and return the segment data directory.
@@ -204,11 +202,11 @@ pub fn write_manifest(version_dir: &Path, entries: &[ManifestEntry]) -> Result<(
     }
 
     let path = version_dir.join("manifest.json");
-    let json = serde_json::to_string_pretty(entries)
-        .with_context(|| "Failed to serialize manifest")?;
+    let json =
+        serde_json::to_string_pretty(entries).with_context(|| "Failed to serialize manifest")?;
 
-    let file = File::create(&path)
-        .with_context(|| format!("Failed to create manifest file: {path:?}"))?;
+    let file =
+        File::create(&path).with_context(|| format!("Failed to create manifest file: {path:?}"))?;
     let mut writer = BufWriter::new(file);
     writer.write_all(json.as_bytes())?;
     writer

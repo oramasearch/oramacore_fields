@@ -248,7 +248,10 @@ fn test_compaction_applies_deletes() {
     // Low threshold → apply-deletes mode
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        SegmentConfig { deletion_threshold: Threshold::try_from(0.01f64).unwrap(), ..Default::default() },
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -281,7 +284,10 @@ fn test_compaction_carries_forward_deletes() {
     // High threshold → carry-forward mode
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        SegmentConfig { deletion_threshold: Threshold::try_from(0.99f64).unwrap(), ..Default::default() },
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.99f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1167,7 +1173,10 @@ fn test_info_with_deletes() {
     // Compact with low threshold to apply deletes
     let index2 = StringStorage::new(
         tmp.path().to_path_buf(),
-        SegmentConfig { deletion_threshold: Threshold::try_from(0.01f64).unwrap(), ..Default::default() },
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
     index2.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
