@@ -164,7 +164,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
     /// - `Array(values)`: inserts one entry per value for the same doc_id
     pub fn insert(&self, indexed_value: &IndexedValue<T>, doc_id: u64) -> Result<(), Error> {
         let mut live = self.live.write().unwrap();
-        match indexed_value {
+        let result = match indexed_value {
             IndexedValue::Plain(v) => live.insert(*v, doc_id),
             IndexedValue::Array(values) => {
                 for v in values {
@@ -172,7 +172,9 @@ impl<T: IndexableNumber> NumberStorage<T> {
                 }
                 Ok(())
             }
-        }
+        };
+        drop(live);
+        result
     }
 
     /// Delete a document from the index.
@@ -182,6 +184,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     /// Query the index with a filter operation.
@@ -194,6 +197,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
             if !live.is_snapshot_dirty() {
                 let snapshot = live.get_snapshot();
                 let version = self.version.load();
+                drop(live);
                 return FilterHandle::new(Arc::clone(&version), snapshot, op);
             }
         }
@@ -208,6 +212,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
 
         let snapshot = live.get_snapshot();
         let version = self.version.load();
+        drop(live);
         FilterHandle::new(Arc::clone(&version), snapshot, op)
     }
 
@@ -254,6 +259,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
             if !live.is_snapshot_dirty() {
                 let snapshot = live.get_snapshot();
                 let version = self.version.load();
+                drop(live);
                 return SortHandle::new(Arc::clone(&version), snapshot, order);
             }
         }
@@ -268,6 +274,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
 
         let snapshot = live.get_snapshot();
         let version = self.version.load();
+        drop(live);
         SortHandle::new(Arc::clone(&version), snapshot, order)
     }
 
@@ -307,6 +314,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
             if !live.is_snapshot_dirty() {
                 let snapshot = live.get_snapshot();
                 let version = self.version.load();
+                drop(live);
                 return SortGroupedIterator::new(Arc::clone(&version), snapshot, order);
             }
         }
@@ -321,6 +329,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
 
         let snapshot = live.get_snapshot();
         let version = self.version.load();
+        drop(live);
         SortGroupedIterator::new(Arc::clone(&version), snapshot, order)
     }
 
@@ -360,6 +369,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -391,6 +401,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
             // that concurrent inserts of the same doc_id are preserved.
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
+            drop(live);
         }
 
         drop(compaction_guard);
@@ -699,6 +710,9 @@ impl<T: IndexableNumber> NumberStorage<T> {
         let version = self.version.load();
         let stats = version.stats();
         let live = self.live.read().unwrap();
+        let pending_inserts = live.inserts_len();
+        let pending_deletes = live.deletes_len();
+        drop(live);
 
         IndexInfo {
             format_version: super::io::FORMAT_VERSION,
@@ -713,8 +727,8 @@ impl<T: IndexableNumber> NumberStorage<T> {
             header_size_bytes: stats.header_size_bytes,
             deleted_size_bytes: stats.deleted_size_bytes,
             data_total_bytes: stats.data_total_bytes,
-            pending_inserts: live.inserts_len(),
-            pending_deletes: live.deletes_len(),
+            pending_inserts,
+            pending_deletes,
         }
     }
 
@@ -876,7 +890,7 @@ impl<T: IndexableNumber> NumberStorage<T> {
     /// Call this after compaction to reclaim disk space. Safe to call during
     /// normal operation. Errors are logged but do not cause the method to fail.
     pub fn cleanup(&self) {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
         let current_offset = self.current_offset();
 
         let version_numbers = match list_version_dirs(&self.base_path) {
@@ -894,6 +908,8 @@ impl<T: IndexableNumber> NumberStorage<T> {
                 }
             }
         }
+
+        drop(compaction_guard);
     }
 }
 

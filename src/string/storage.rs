@@ -61,12 +61,14 @@ impl StringStorage {
     pub fn insert(&self, doc_id: u64, indexed_value: IndexedValue) {
         let mut live = self.live.write().unwrap();
         live.insert(doc_id, indexed_value);
+        drop(live);
     }
 
     /// Mark a doc_id as deleted.
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     /// Search the index for documents matching the given tokens, accumulating scores into `scorer`.
@@ -136,19 +138,23 @@ impl StringStorage {
         {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                return live.get_snapshot();
+                let snapshot = live.get_snapshot();
+                drop(live);
+                return snapshot;
             }
         }
         let mut live = self.live.write().unwrap();
         if live.is_snapshot_dirty() {
             live.refresh_snapshot();
         }
-        live.get_snapshot()
+        let snapshot = live.get_snapshot();
+        drop(live);
+        snapshot
     }
 
     /// Persist pending changes to disk at the given version number.
     pub fn compact(&self, version_number: u64) -> Result<()> {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
 
         let snapshot = self.get_fresh_snapshot();
 
@@ -160,6 +166,7 @@ impl StringStorage {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -193,8 +200,10 @@ impl StringStorage {
 
             live.drain_compacted_ops(snapshot.ops_len);
             live.refresh_snapshot();
+            drop(live);
         }
 
+        drop(compaction_guard);
         Ok(())
     }
 
@@ -293,7 +302,7 @@ impl StringStorage {
 
     /// Delete old version directories, keeping only the current one.
     pub fn cleanup(&self) {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version = self.version.load().version_number;
 
         let version_numbers = match list_version_dirs(&self.base_path) {
@@ -311,12 +320,16 @@ impl StringStorage {
                 }
             }
         }
+        drop(compaction_guard);
     }
 
     /// Return metadata and statistics about the index.
     pub fn info(&self) -> IndexInfo {
         let version = self.version.load();
         let live = self.live.read().unwrap();
+        let pending_ops = live.ops.len();
+        drop(live);
+
         let ver_dir = version_dir(&self.base_path, version.version_number);
 
         let avg_field_length = if version.total_documents > 0 {
@@ -339,7 +352,7 @@ impl StringStorage {
             doc_lengths_size_bytes: file_size(&ver_dir.join("doc_lengths.dat")),
             deleted_size_bytes: file_size(&ver_dir.join("deleted.bin")),
             global_info_size_bytes: file_size(&ver_dir.join("global_info.bin")),
-            pending_ops: live.ops.len(),
+            pending_ops,
         }
     }
 
