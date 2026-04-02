@@ -227,9 +227,9 @@ impl StringFilterStorage {
         write_current_atomic(&self.base_path, version_number)?;
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_number)?;
         {
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
             self.version.store(Arc::new(new_version));
 
             live.ops.drain(..snapshot.ops_len);

@@ -350,14 +350,18 @@ impl<T: IndexableNumber> NumberStorage<T> {
         let snapshot = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             }
         };
 
@@ -389,9 +393,9 @@ impl<T: IndexableNumber> NumberStorage<T> {
         write_current_atomic(&self.base_path, offset)?;
 
         // Step 6: Swap version and clear live layer
+        let new_version = CompactedVersion::load(&self.base_path, offset)?;
         {
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, offset)?;
             self.version.store(Arc::new(new_version));
             // Remove compacted ops by position, not by value.
             // Vec::push is append-only: items at indices 0..ops_len were present

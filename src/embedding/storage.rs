@@ -83,7 +83,9 @@ impl EmbeddingStorage {
     fn fresh_snapshot(&self) -> Arc<LiveSnapshot> {
         let live = self.live.read().unwrap();
         if !live.is_snapshot_dirty() {
-            return live.get_snapshot();
+            let snapshot = live.get_snapshot();
+            drop(live);
+            return snapshot;
         }
         drop(live);
         let mut live = self.live.write().unwrap();

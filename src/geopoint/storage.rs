@@ -224,10 +224,9 @@ impl GeoPointStorage {
         }
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_id)?;
         {
             let mut live = self.live.write().unwrap();
-
-            let new_version = CompactedVersion::load(&self.base_path, version_id)?;
             self.version.store(Arc::new(new_version));
 
             live.ops.drain(..snapshot.ops_len);
