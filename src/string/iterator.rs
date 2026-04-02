@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::compacted::{CompactedVersion, SortedDeleteCursor};
+use super::compacted::{SegmentList, SortedDeleteCursor};
 use super::config::Bm25Params;
 use super::live::LiveSnapshot;
 use super::scoring::{bm25f_score, calculate_idf};
@@ -98,8 +98,6 @@ struct CorpusStats {
 }
 
 /// Accumulator for per-document normalized TF values.
-/// Uses a Vec when only one term matches (tolerance=0) to avoid HashMap overhead,
-/// and a HashMap when multiple terms can match (fuzzy/prefix) to aggregate scores.
 enum PerDocNtf {
     /// Single term match: each doc appears at most once, stored in a flat Vec.
     SingleTerm(Vec<(u64, f32)>),
@@ -209,15 +207,15 @@ fn flush_batch(
     }
 }
 
-/// Holds references to compacted + live data and executes searches.
+/// Holds references to segments + live data and executes searches.
 pub struct SearchHandle {
-    version: Arc<CompactedVersion>,
+    segments: Arc<SegmentList>,
     snapshot: Arc<LiveSnapshot>,
 }
 
 impl SearchHandle {
-    pub fn new(version: Arc<CompactedVersion>, snapshot: Arc<LiveSnapshot>) -> Self {
-        Self { version, snapshot }
+    pub fn new(segments: Arc<SegmentList>, snapshot: Arc<LiveSnapshot>) -> Self {
+        Self { segments, snapshot }
     }
 
     pub fn execute<F: DocumentFilter>(
@@ -236,9 +234,7 @@ impl SearchHandle {
         }
     }
 
-    /// Collect raw per-token contributions (normalized TF + document frequency)
-    /// without computing IDF or applying BM25F saturation. Used by callers
-    /// implementing cross-field BM25F scoring.
+    /// Collect raw per-token contributions without computing IDF or applying BM25F saturation.
     pub fn execute_collect<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
@@ -267,15 +263,11 @@ impl SearchHandle {
 
     /// Compute corpus-level statistics shared across all tokens in a search.
     fn corpus_stats(&self) -> CorpusStats {
-        let total_documents = (self.version.total_documents + self.snapshot.total_documents)
+        let total_documents = (self.segments.total_documents + self.snapshot.total_documents)
             .saturating_sub(self.snapshot.compacted_deletes_count);
-        // NOTE: total_document_length (and thus avg_field_length) is not corrected for
-        // live-layer deletes of compacted docs because the live layer does not know their
-        // field lengths (stored in the compacted mmap). Looking them up here would cost
-        // O(d × log n) per search. The inaccuracy is minor (affects only length normalization,
-        // not IDF) and is fully resolved on the next compaction.
+
         let total_document_length =
-            self.version.total_document_length + self.snapshot.total_field_length;
+            self.segments.total_document_length + self.snapshot.total_field_length;
 
         let avg_field_length = if total_documents > 0 {
             total_document_length as f32 / total_documents as f32
@@ -306,7 +298,7 @@ impl SearchHandle {
         batch: &mut ScoringBatch,
     ) -> Result<u64> {
         let deletes = &self.snapshot.deletes;
-        let compacted_deletes = self.version.deletes_slice();
+        let compacted_deletes = self.segments.deletes_slice();
 
         let mut live_del_cursor = SortedDeleteCursor::new(if deletes.is_empty() {
             None
@@ -322,67 +314,67 @@ impl SearchHandle {
         let exact_match_boost_multiplier = params.bm25_params.exact_match_boost;
         let mut corpus_df: u64 = 0;
 
-        // Search compacted layer (zero-copy)
-        let version = &self.version;
-        version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
-            live_del_cursor.reset();
-            compacted_del_cursor.reset();
+        // Search compacted layer — loop over all segments
+        // Delete cursors advance monotonically across segments (doc_ids increase).
+        // fl_cursor resets per segment (each segment has its own doc_lengths).
+        for segment in &self.segments.segments {
+            segment.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+                let exact_boost = if is_exact {
+                    exact_match_boost_multiplier
+                } else {
+                    1.0
+                };
 
-            let exact_boost = if is_exact {
-                exact_match_boost_multiplier
-            } else {
-                1.0
-            };
-
-            let mut fl_cursor: usize = 0;
-            while let Some(entry) = reader.next_ref() {
-                if !live_del_cursor.should_keep(entry.doc_id)
-                    || !compacted_del_cursor.should_keep(entry.doc_id)
-                {
-                    continue;
-                }
-                if let Some(filter) = filter {
-                    if !filter.contains(entry.doc_id) {
+                let mut fl_cursor: usize = 0;
+                while let Some(entry) = reader.next_ref() {
+                    if !live_del_cursor.should_keep(entry.doc_id)
+                        || !compacted_del_cursor.should_keep(entry.doc_id)
+                    {
                         continue;
                     }
-                }
-                corpus_df += 1;
+                    if let Some(filter) = filter {
+                        if !filter.contains(entry.doc_id) {
+                            continue;
+                        }
+                    }
+                    corpus_df += 1;
 
-                let tf = if params.exact_match {
-                    entry.exact_positions.len()
-                } else {
-                    entry.exact_positions.len() + entry.stemmed_positions.len()
-                };
-                if tf == 0 {
-                    continue;
-                }
+                    let tf = if params.exact_match {
+                        entry.exact_positions.len()
+                    } else {
+                        entry.exact_positions.len() + entry.stemmed_positions.len()
+                    };
+                    if tf == 0 {
+                        continue;
+                    }
 
-                let field_length = version
-                    .field_length_galloping(entry.doc_id, &mut fl_cursor)
-                    .unwrap_or(0) as f32;
+                    let field_length = segment
+                        .field_length_galloping(entry.doc_id, &mut fl_cursor)
+                        .unwrap_or(0) as f32;
 
-                batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
-                if batch.is_full() {
-                    flush_batch(
-                        batch,
-                        stats.inv_avg_fl,
-                        params.bm25_params.b,
-                        params.boost,
-                        per_doc_ntf,
-                    );
-                    batch.clear();
+                    batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
+                    if batch.is_full() {
+                        flush_batch(
+                            batch,
+                            stats.inv_avg_fl,
+                            params.bm25_params.b,
+                            params.boost,
+                            per_doc_ntf,
+                        );
+                        batch.clear();
+                    }
                 }
-            }
-            // Flush remaining entries from this term match
-            flush_batch(
-                batch,
-                stats.inv_avg_fl,
-                params.bm25_params.b,
-                params.boost,
-                per_doc_ntf,
-            );
-            batch.clear();
-        })?;
+                // Flush remaining entries from this term match
+                flush_batch(
+                    batch,
+                    stats.inv_avg_fl,
+                    params.bm25_params.b,
+                    params.boost,
+                    per_doc_ntf,
+                );
+                batch.clear();
+            })?;
+        }
 
         // Search live layer
         let snapshot = &self.snapshot;
@@ -447,21 +439,6 @@ impl SearchHandle {
     }
 
     /// Fast path: no phrase boost needed.
-    ///
-    /// Algorithm (per token):
-    /// 1. Scan compacted + live layers for matching terms (exact, prefix, or fuzzy
-    ///    depending on `tolerance`).
-    /// 2. For each matching (term, doc) pair, compute the BM25F normalized TF:
-    ///    `ntf = tf / (1 - b + b * field_len / avg_field_len)`, weighted by field
-    ///    boost and exact-match boost. Multiple term matches for the same doc are
-    ///    summed (BM25F multi-field aggregation with a single field).
-    /// 3. Compute Lucene-style IDF: `ln(1 + (N - df + 0.5) / (df + 0.5))`.
-    /// 4. Final per-token score: `idf * (k+1) * ntf / (k + ntf)` — the standard
-    ///    BM25 saturation formula that caps the TF contribution.
-    /// 5. Scores are fed into `BM25Scorer` which sums across tokens and optionally
-    ///    enforces a minimum-token-match threshold.
-    ///
-    /// A single `per_doc_ntf` accumulator is reused across tokens to avoid allocations.
     fn execute_simple<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
@@ -522,26 +499,17 @@ impl SearchHandle {
 
     /// Phrase boost path: same BM25F scoring as `execute_simple`, but additionally
     /// collects token positions to detect consecutive token pairs (phrase matches).
-    ///
-    /// After all tokens are scored, each document's score is multiplied by
-    /// `1 + count * phrase_boost`, where `count` is the number of adjacent token
-    /// pairs found. Adjacency is checked via a merge-join on sorted (doc_id, pos)
-    /// buffers — O(n+m) with zero extra allocations.
     fn execute_with_phrase_boost<F: DocumentFilter>(
         &self,
         params: &SearchParams<'_>,
         filter: Option<&F>,
         scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
-        let total_documents = (self.version.total_documents + self.snapshot.total_documents)
+        let total_documents = (self.segments.total_documents + self.snapshot.total_documents)
             .saturating_sub(self.snapshot.compacted_deletes_count);
-        // NOTE: total_document_length (and thus avg_field_length) is not corrected for
-        // live-layer deletes of compacted docs because the live layer does not know their
-        // field lengths (stored in the compacted mmap). Looking them up here would cost
-        // O(d × log n) per search. The inaccuracy is minor (affects only length normalization,
-        // not IDF) and is fully resolved on the next compaction.
+
         let total_document_length =
-            self.version.total_document_length + self.snapshot.total_field_length;
+            self.segments.total_document_length + self.snapshot.total_field_length;
 
         let avg_field_length = if total_documents > 0 {
             total_document_length as f32 / total_documents as f32
@@ -555,7 +523,7 @@ impl SearchHandle {
         };
 
         let deletes = &self.snapshot.deletes;
-        let compacted_deletes = self.version.deletes_slice();
+        let compacted_deletes = self.segments.deletes_slice();
 
         let mut live_del_cursor = SortedDeleteCursor::new(if deletes.is_empty() {
             None
@@ -590,79 +558,77 @@ impl SearchHandle {
 
             let mut batch = ScoringBatch::new();
 
-            // Search compacted layer (zero-copy)
-            let version = &self.version;
-            version.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
-                live_del_cursor.reset();
-                compacted_del_cursor.reset();
+            // Search compacted layer — loop over all segments
+            for segment in &self.segments.segments {
+                segment.for_each_term_match(token, params.tolerance, |is_exact, mut reader| {
+                    let exact_boost = if is_exact {
+                        exact_match_boost_multiplier
+                    } else {
+                        1.0
+                    };
 
-                let exact_boost = if is_exact {
-                    exact_match_boost_multiplier
-                } else {
-                    1.0
-                };
-
-                let mut fl_cursor: usize = 0;
-                while let Some(entry) = reader.next_ref() {
-                    if !live_del_cursor.should_keep(entry.doc_id)
-                        || !compacted_del_cursor.should_keep(entry.doc_id)
-                    {
-                        continue;
-                    }
-                    if let Some(filter) = filter {
-                        if !filter.contains(entry.doc_id) {
+                    let mut fl_cursor: usize = 0;
+                    while let Some(entry) = reader.next_ref() {
+                        if !live_del_cursor.should_keep(entry.doc_id)
+                            || !compacted_del_cursor.should_keep(entry.doc_id)
+                        {
                             continue;
                         }
-                    }
-                    corpus_df += 1;
-
-                    let tf = if params.exact_match {
-                        entry.exact_positions.len()
-                    } else {
-                        entry.exact_positions.len() + entry.stemmed_positions.len()
-                    };
-                    if tf == 0 {
-                        continue;
-                    }
-
-                    if params.exact_match {
-                        for &p in entry.exact_positions {
-                            curr_raw.push((entry.doc_id, p));
+                        if let Some(filter) = filter {
+                            if !filter.contains(entry.doc_id) {
+                                continue;
+                            }
                         }
-                    } else {
-                        for &p in entry.exact_positions {
-                            curr_raw.push((entry.doc_id, p));
+                        corpus_df += 1;
+
+                        let tf = if params.exact_match {
+                            entry.exact_positions.len()
+                        } else {
+                            entry.exact_positions.len() + entry.stemmed_positions.len()
+                        };
+                        if tf == 0 {
+                            continue;
                         }
-                        for &p in entry.stemmed_positions {
-                            curr_raw.push((entry.doc_id, p));
+
+                        if params.exact_match {
+                            for &p in entry.exact_positions {
+                                curr_raw.push((entry.doc_id, p));
+                            }
+                        } else {
+                            for &p in entry.exact_positions {
+                                curr_raw.push((entry.doc_id, p));
+                            }
+                            for &p in entry.stemmed_positions {
+                                curr_raw.push((entry.doc_id, p));
+                            }
+                        }
+
+                        let field_length = segment
+                            .field_length_galloping(entry.doc_id, &mut fl_cursor)
+                            .unwrap_or(0) as f32;
+
+                        batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
+                        if batch.is_full() {
+                            flush_batch(
+                                &batch,
+                                inv_avg_fl,
+                                params.bm25_params.b,
+                                params.boost,
+                                &mut per_doc_ntf,
+                            );
+                            batch.clear();
                         }
                     }
-
-                    let field_length = version
-                        .field_length_galloping(entry.doc_id, &mut fl_cursor)
-                        .unwrap_or(0) as f32;
-
-                    batch.push(entry.doc_id, tf as f32, field_length, exact_boost);
-                    if batch.is_full() {
-                        flush_batch(
-                            &batch,
-                            inv_avg_fl,
-                            params.bm25_params.b,
-                            params.boost,
-                            &mut per_doc_ntf,
-                        );
-                        batch.clear();
-                    }
-                }
-                flush_batch(
-                    &batch,
-                    inv_avg_fl,
-                    params.bm25_params.b,
-                    params.boost,
-                    &mut per_doc_ntf,
-                );
-                batch.clear();
-            })?;
+                    flush_batch(
+                        &batch,
+                        inv_avg_fl,
+                        params.bm25_params.b,
+                        params.boost,
+                        &mut per_doc_ntf,
+                    );
+                    batch.clear();
+                })?;
+            }
 
             // Search live layer
             let snapshot = &self.snapshot;
@@ -818,7 +784,6 @@ fn check_adjacency_pairs(
         match (target_doc, target_pos).cmp(&(cd, cp)) {
             std::cmp::Ordering::Equal => {
                 *consecutive_counts.entry(pd).or_insert(0) += 1;
-                // Skip remaining pairs for this doc — we only need one adjacent pair per token pair
                 let skip_doc = pd;
                 while pi < prev.len() && prev[pi].0 == skip_doc {
                     pi += 1;
@@ -876,9 +841,9 @@ mod tests {
 
     #[test]
     fn test_search_empty() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
         let snapshot = Arc::new(LiveSnapshot::empty());
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let tokens = vec!["hello".to_string()];
         let params = SearchParams {
@@ -892,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_search_live_only() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
@@ -901,7 +866,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -916,7 +881,7 @@ mod tests {
 
     #[test]
     fn test_search_exact_match_mode() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
@@ -924,7 +889,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -939,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_search_with_deletes() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -948,7 +913,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -987,7 +952,7 @@ mod tests {
 
     #[test]
     fn test_search_multiple_tokens() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(
@@ -1001,7 +966,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1016,14 +981,14 @@ mod tests {
 
     #[test]
     fn test_search_boost() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(Arc::clone(&version), Arc::clone(&snapshot));
+        let handle = SearchHandle::new(Arc::clone(&segments), Arc::clone(&snapshot));
 
         let params_normal = SearchParams {
             tokens: &["hello".to_string()],
@@ -1044,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_search_prefix() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
@@ -1053,7 +1018,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["app".to_string()],
@@ -1070,7 +1035,7 @@ mod tests {
 
     #[test]
     fn test_search_prefix_exact_boost() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("app", vec![0], vec![])]));
@@ -1078,7 +1043,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["app".to_string()],
@@ -1094,7 +1059,7 @@ mod tests {
 
     #[test]
     fn test_search_tolerance_zero_is_exact() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
@@ -1102,7 +1067,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["apple".to_string()],
@@ -1118,10 +1083,9 @@ mod tests {
 
     #[test]
     fn test_phrase_boost_adjacent() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Doc 1: "hello" at pos 0, "world" at pos 1 (adjacent)
         layer.insert(
             1,
             make_value(
@@ -1129,7 +1093,6 @@ mod tests {
                 vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
             ),
         );
-        // Doc 2: "hello" at pos 0, "world" at pos 5 (not adjacent)
         layer.insert(
             2,
             make_value(
@@ -1140,7 +1103,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1150,17 +1113,15 @@ mod tests {
 
         let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 2);
-        // Doc 1 should score higher due to phrase boost
         assert_eq!(result.docs[0].doc_id, 1);
         assert!(result.docs[0].score > result.docs[1].score);
     }
 
     #[test]
     fn test_phrase_boost_non_adjacent() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Tokens are not adjacent
         layer.insert(
             1,
             make_value(
@@ -1171,7 +1132,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params_with_boost = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1186,16 +1147,14 @@ mod tests {
         let result_with = execute_search(&handle, &params_with_boost);
         let result_without = execute_search(&handle, &params_without_boost);
 
-        // Non-adjacent: no boost applied, scores should be equal
         assert_eq!(result_with.docs[0].score, result_without.docs[0].score);
     }
 
     #[test]
     fn test_phrase_boost_three_tokens() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // All 3 tokens at consecutive positions: 2 adjacent pairs
         layer.insert(
             1,
             make_value(
@@ -1210,7 +1169,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["the".to_string(), "quick".to_string(), "fox".to_string()],
@@ -1227,7 +1186,6 @@ mod tests {
 
         let result_base = execute_search(&handle, &params_no_boost);
 
-        // With 2 consecutive pairs and phrase_boost=1.0: score *= 1 + 2*1.0 = 3.0
         let expected_ratio = 3.0;
         let actual_ratio = result_boosted.docs[0].score / result_base.docs[0].score;
         assert!(
@@ -1238,7 +1196,7 @@ mod tests {
 
     #[test]
     fn test_phrase_boost_disabled() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(
@@ -1251,7 +1209,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params_none = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1271,12 +1229,9 @@ mod tests {
 
     #[test]
     fn test_phrase_boost_with_exact_match() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // "hello" has exact pos 0, stemmed pos 5
-        // "world" has exact pos 1, stemmed pos 3
-        // Only exact positions adjacent: 0->1
         layer.insert(
             1,
             make_value(
@@ -1287,7 +1242,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1306,7 +1261,6 @@ mod tests {
 
         let result_base = execute_search(&handle, &params_no_boost);
 
-        // Should be boosted (exact positions 0,1 are adjacent)
         assert!(result_boosted.docs[0].score > result_base.docs[0].score);
     }
 
@@ -1314,10 +1268,9 @@ mod tests {
 
     #[test]
     fn test_threshold_filters_partial_match() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Doc 1 matches all 3 tokens
         layer.insert(
             1,
             make_value(
@@ -1329,35 +1282,31 @@ mod tests {
                 ],
             ),
         );
-        // Doc 2 matches only 1 of 3 tokens
         layer.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
             ..Default::default()
         };
 
-        // threshold=1.0 with 3 tokens => floor(3 * 1.0) = 3, need all 3
         let mut scorer = BM25u64Scorer::with_threshold(3);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
         let result = scorer.into_search_result();
-        // Only doc 1 matches all 3 tokens
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
     }
 
     #[test]
     fn test_threshold_allows_partial_match() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Doc 1 matches all 3 tokens
         layer.insert(
             1,
             make_value(
@@ -1369,7 +1318,6 @@ mod tests {
                 ],
             ),
         );
-        // Doc 2 matches 2 of 3 tokens
         layer.insert(
             2,
             make_value(
@@ -1377,14 +1325,12 @@ mod tests {
                 vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
             ),
         );
-        // Doc 3 matches only 1 of 3 tokens
         layer.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
-        // threshold=0.5 => floor(3 * 0.5) = 1, so docs matching >= 1 token pass
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
             ..Default::default()
@@ -1400,7 +1346,7 @@ mod tests {
 
     #[test]
     fn test_threshold_none_no_filter() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(
@@ -1414,7 +1360,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1427,21 +1373,20 @@ mod tests {
 
     #[test]
     fn test_threshold_single_token() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
             ..Default::default()
         };
 
-        // threshold=1.0 with 1 token => need >= 1
         let mut scorer = BM25u64Scorer::with_threshold(1);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
@@ -1454,18 +1399,16 @@ mod tests {
 
     #[test]
     fn test_custom_exact_match_boost() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // "app" exact match and "application" prefix match
         layer.insert(1, make_value(3, vec![("app", vec![0], vec![])]));
         layer.insert(2, make_value(3, vec![("application", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
-        // Default boost (3.0)
         let params_default = SearchParams {
             tokens: &["app".to_string()],
             tolerance: None,
@@ -1473,7 +1416,6 @@ mod tests {
         };
         let result_default = execute_search(&handle, &params_default);
 
-        // Custom boost (10.0)
         let params_custom = SearchParams {
             tokens: &["app".to_string()],
             tolerance: None,
@@ -1485,11 +1427,9 @@ mod tests {
         };
         let result_custom = execute_search(&handle, &params_custom);
 
-        // Both should have doc 1 first
         assert_eq!(result_default.docs[0].doc_id, 1);
         assert_eq!(result_custom.docs[0].doc_id, 1);
 
-        // Higher exact_match_boost should give doc 1 an even bigger advantage
         let ratio_default = result_default.docs[0].score / result_default.docs[1].score;
         let ratio_custom = result_custom.docs[0].score / result_custom.docs[1].score;
         assert!(ratio_custom > ratio_default);
@@ -1497,22 +1437,20 @@ mod tests {
 
     #[test]
     fn test_exact_match_boost_applied_in_exact_mode() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
-        // tolerance=Some(0) with default boost (3.0)
         let params_default = SearchParams {
             tokens: &["hello".to_string()],
             tolerance: Some(0),
             ..Default::default()
         };
-        // tolerance=Some(0) with custom boost (100.0)
         let params_boosted = SearchParams {
             tokens: &["hello".to_string()],
             tolerance: Some(0),
@@ -1526,7 +1464,6 @@ mod tests {
         let result_default = execute_search(&handle, &params_default);
         let result_boosted = execute_search(&handle, &params_boosted);
 
-        // Higher exact_match_boost should give a higher score
         assert!(result_boosted.docs[0].score > result_default.docs[0].score);
     }
 
@@ -1534,10 +1471,9 @@ mod tests {
 
     #[test]
     fn test_phrase_boost_with_threshold() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Doc 1: matches all 3 tokens, consecutive
         layer.insert(
             1,
             make_value(
@@ -1549,7 +1485,6 @@ mod tests {
                 ],
             ),
         );
-        // Doc 2: matches 2 of 3 tokens, consecutive
         layer.insert(
             2,
             make_value(
@@ -1557,12 +1492,11 @@ mod tests {
                 vec![("the", vec![0], vec![]), ("quick", vec![1], vec![])],
             ),
         );
-        // Doc 3: matches only 1 token
         layer.insert(3, make_value(2, vec![("the", vec![0], vec![])]));
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["the".to_string(), "quick".to_string(), "fox".to_string()],
@@ -1570,18 +1504,15 @@ mod tests {
             ..Default::default()
         };
 
-        // threshold=0.7 with 3 tokens => floor(3 * 0.7) = 2, need >= 2 tokens
         let mut scorer = BM25u64Scorer::with_threshold(2);
         handle
             .execute::<NoFilter>(&params, None, &mut scorer)
             .unwrap();
         let result = scorer.into_search_result();
-        // Doc 3 filtered out (matches only 1 token, need >= 2)
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
         assert!(doc_ids.contains(&2));
-        // Doc 1 should score higher (more phrase matches + more token matches)
         assert_eq!(result.docs[0].doc_id, 1);
     }
 
@@ -1590,19 +1521,16 @@ mod tests {
     #[test]
     fn test_check_adjacency_pairs_basic() {
         let mut counts = HashMap::new();
-        // Token 0→1: doc 1 has pos 0→1 (adjacent)
         let prev = vec![(1u64, 0u32)];
         let curr = vec![(1u64, 1u32)];
         check_adjacency_pairs(&prev, &curr, &mut counts);
         assert_eq!(*counts.get(&1).unwrap(), 1);
 
-        // Token 1→2: doc 1 has pos 1→2 (adjacent)
         let prev2 = vec![(1u64, 1u32)];
         let curr2 = vec![(1u64, 2u32)];
         check_adjacency_pairs(&prev2, &curr2, &mut counts);
         assert_eq!(*counts.get(&1).unwrap(), 2);
 
-        // Doc 99 never appeared
         assert!(!counts.contains_key(&99));
     }
 
@@ -1619,7 +1547,7 @@ mod tests {
 
     #[test]
     fn test_document_filter_skips_non_matching() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -1628,7 +1556,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let filter = SortedDocumentFilter {
             doc_ids: vec![1, 3],
@@ -1650,7 +1578,7 @@ mod tests {
 
     #[test]
     fn test_document_filter_none_returns_all() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -1659,7 +1587,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -1672,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_document_filter_empty_returns_nothing() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -1681,7 +1609,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let filter = SortedDocumentFilter { doc_ids: vec![] };
         let params = SearchParams {
@@ -1695,81 +1623,13 @@ mod tests {
         assert!(result.docs.is_empty());
     }
 
-    // ---- Coverage: phrase boost against compacted layer ----
-
-    #[allow(clippy::type_complexity)]
-    fn build_compacted_simple(
-        entries: &[(&str, Vec<(u64, Vec<u32>, Vec<u32>)>)],
-        doc_lengths: &[(u64, u16)],
-        deleted: &[u64],
-        path: &std::path::Path,
-    ) {
-        let empty = CompactedVersion::empty();
-        let mut compacted_terms = empty.iter_terms();
-        let live: Vec<_> = entries.iter().map(|(k, v)| (*k, v.as_slice())).collect();
-        let mut compacted_dl = empty.iter_doc_lengths();
-
-        CompactedVersion::build_from_sorted_sources(
-            &mut compacted_terms,
-            &live,
-            &mut compacted_dl,
-            doc_lengths,
-            None,
-            None,
-            deleted,
-            path,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn test_phrase_boost_compacted_layer() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let base_path = tmp.path();
-        let version_path = super::super::io::ensure_version_dir(base_path, 1).unwrap();
-
-        // Doc 1: "hello" at pos 0, "world" at pos 1 (adjacent)
-        // Doc 2: "hello" at pos 0, "world" at pos 5 (not adjacent)
-        build_compacted_simple(
-            &[
-                ("hello", vec![(1, vec![0], vec![]), (2, vec![0], vec![])]),
-                ("world", vec![(1, vec![1], vec![]), (2, vec![5], vec![])]),
-            ],
-            &[(1, 4), (2, 6)],
-            &[],
-            &version_path,
-        );
-
-        let version = Arc::new(CompactedVersion::load(base_path, 1).unwrap());
-        let snapshot = Arc::new(LiveSnapshot::empty());
-        let handle = SearchHandle::new(version, snapshot);
-
-        let tokens = vec!["hello".to_string(), "world".to_string()];
-        let params = SearchParams {
-            tokens: &tokens,
-            phrase_boost: Some(2.0),
-            ..Default::default()
-        };
-
-        let mut scorer = BM25u64Scorer::new();
-        handle
-            .execute::<NoFilter>(&params, None, &mut scorer)
-            .unwrap();
-        let mut result = scorer.into_search_result();
-        result.sort_by_score();
-
-        assert_eq!(result.docs.len(), 2);
-        // Doc 1 should score higher due to phrase boost (adjacent positions)
-        assert_eq!(result.docs[0].doc_id, 1);
-        assert!(result.docs[0].score > result.docs[1].score);
-    }
+    // ---- Phrase boost with filter ----
 
     #[test]
     fn test_phrase_boost_with_filter() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // All 3 docs: "hello" at pos 0, "world" at pos 1 (adjacent)
         layer.insert(
             1,
             make_value(
@@ -1794,7 +1654,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let filter = SortedDocumentFilter {
             doc_ids: vec![1, 3],
@@ -1810,7 +1670,6 @@ mod tests {
         handle.execute(&params, Some(&filter), &mut scorer).unwrap();
         let result = scorer.into_search_result();
 
-        // Only docs 1 and 3 should be returned; doc 2 is excluded by filter
         assert_eq!(result.docs.len(), 2);
         let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
         assert!(doc_ids.contains(&1));
@@ -1821,19 +1680,12 @@ mod tests {
     #[test]
     fn test_check_adjacency_greater_branch() {
         let mut counts = HashMap::new();
-        // prev: doc 2 pos 0, doc 3 pos 0 → targets: (2, 1), (3, 1)
-        // curr: doc 1 pos 5, doc 2 pos 1, doc 3 pos 1
-        //
-        // pi=0 target=(2,1) vs curr[0]=(1,5) → Greater (ci advances)
-        // pi=0 target=(2,1) vs curr[1]=(2,1) → Equal (match doc 2, skip doc 2 in both)
-        // pi=1 target=(3,1) vs curr[2]=(3,1) → Equal (match doc 3)
         let prev = vec![(2u64, 0u32), (3u64, 0u32)];
         let curr = vec![(1u64, 5u32), (2u64, 1u32), (3u64, 1u32)];
         check_adjacency_pairs(&prev, &curr, &mut counts);
 
         assert_eq!(*counts.get(&2).unwrap(), 1);
         assert_eq!(*counts.get(&3).unwrap(), 1);
-        // Doc 1 never appeared in prev, so no entry
         assert!(!counts.contains_key(&1));
     }
 
@@ -1848,10 +1700,9 @@ mod tests {
 
     #[test]
     fn test_many_tokens_no_panic() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
-        // Insert a doc that matches a few terms
         let mut terms = Vec::new();
         for i in 0..40u32 {
             terms.push((format!("token{i}"), vec![i], vec![]));
@@ -1864,7 +1715,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let token_strings: Vec<String> = (0..40).map(|i| format!("token{i}")).collect();
         let params = SearchParams {
@@ -1872,7 +1723,6 @@ mod tests {
             ..Default::default()
         };
 
-        // Should not panic even with 40 tokens (> 32 bits)
         let result = execute_search(&handle, &params);
         assert_eq!(result.docs.len(), 1);
         assert_eq!(result.docs[0].doc_id, 1);
@@ -1885,7 +1735,6 @@ mod tests {
         handle.execute_collect::<NoFilter>(params, None).unwrap()
     }
 
-    /// A test filter that only keeps doc IDs in the given set.
     struct TestFilter(std::collections::HashSet<u64>);
     impl super::super::DocumentFilter for TestFilter {
         fn contains(&self, doc_id: u64) -> bool {
@@ -1895,9 +1744,9 @@ mod tests {
 
     #[test]
     fn test_collect_empty_index() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
         let snapshot = Arc::new(LiveSnapshot::empty());
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let tokens = vec!["hello".to_string()];
         let params = SearchParams {
@@ -1914,8 +1763,7 @@ mod tests {
 
     #[test]
     fn test_collect_single_token_consistency() {
-        // Verify that manually computing BM25 from contributions matches search().
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
@@ -1924,7 +1772,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -1941,7 +1789,6 @@ mod tests {
         assert_eq!(tc.df, 2);
         assert_eq!(tc.per_doc_ntf.len(), 2);
 
-        // Manually compute BM25 scores from contributions
         let idf = calculate_idf(contrib_result.total_documents, tc.df);
         let mut manual_scores: Vec<(u64, f32)> = tc
             .per_doc_ntf
@@ -1975,7 +1822,7 @@ mod tests {
 
     #[test]
     fn test_collect_multi_token() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(
@@ -1989,7 +1836,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string()],
@@ -1998,19 +1845,15 @@ mod tests {
 
         let result = execute_collect(&handle, &params);
         assert_eq!(result.token_contributions.len(), 2);
-
-        // "hello" matches docs 1 and 2
         assert_eq!(result.token_contributions[0].df, 2);
         assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
-
-        // "world" matches only doc 1
         assert_eq!(result.token_contributions[1].df, 1);
         assert_eq!(result.token_contributions[1].per_doc_ntf.len(), 1);
     }
 
     #[test]
     fn test_collect_with_filter() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -2019,7 +1862,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let filter = TestFilter([1, 3].into_iter().collect());
         let params = SearchParams {
@@ -2043,7 +1886,7 @@ mod tests {
 
     #[test]
     fn test_collect_with_deletes() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
@@ -2053,7 +1896,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -2075,7 +1918,7 @@ mod tests {
 
     #[test]
     fn test_collect_prefix_tolerance() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
@@ -2084,16 +1927,15 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["app".to_string()],
-            tolerance: None, // prefix search
+            tolerance: None,
             ..Default::default()
         };
 
         let result = execute_collect(&handle, &params);
-        // Both "apple" and "application" match prefix "app"
         assert_eq!(result.token_contributions[0].per_doc_ntf.len(), 2);
         let doc_ids: Vec<u64> = result.token_contributions[0]
             .per_doc_ntf
@@ -2106,7 +1948,7 @@ mod tests {
 
     #[test]
     fn test_collect_total_documents_accuracy() {
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -2118,7 +1960,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string()],
@@ -2126,15 +1968,12 @@ mod tests {
         };
 
         let result = execute_collect(&handle, &params);
-        // 4 inserted - 2 deleted = 2
         assert_eq!(result.total_documents, 2);
     }
 
     #[test]
     fn test_collect_multi_token_consistency_with_search() {
-        // Verify that for each token, manually computing BM25 from contributions
-        // produces the same total score as search().
-        let version = Arc::new(CompactedVersion::empty());
+        let segments = Arc::new(SegmentList::empty());
 
         let mut layer = LiveLayer::new();
         layer.insert(
@@ -2159,7 +1998,7 @@ mod tests {
         layer.refresh_snapshot();
         let snapshot = layer.get_snapshot();
 
-        let handle = SearchHandle::new(version, snapshot);
+        let handle = SearchHandle::new(segments, snapshot);
 
         let params = SearchParams {
             tokens: &["hello".to_string(), "world".to_string(), "foo".to_string()],
@@ -2169,7 +2008,6 @@ mod tests {
         let search_result = execute_search(&handle, &params);
         let contrib_result = execute_collect(&handle, &params);
 
-        // Manually compute scores from contributions
         let mut manual_scores: StdHashMap<u64, f32> = StdHashMap::new();
         for tc in &contrib_result.token_contributions {
             let idf = calculate_idf(contrib_result.total_documents, tc.df);

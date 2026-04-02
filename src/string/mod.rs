@@ -57,13 +57,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use oramacore_fields::string::{StringStorage, Threshold, Bm25Params, IndexedValue, TermData, SearchParams, BM25u64Scorer};
+//! use oramacore_fields::string::{StringStorage, SegmentConfig, Bm25Params, IndexedValue, TermData, SearchParams, BM25u64Scorer};
 //! use std::collections::HashMap;
 //! use std::path::PathBuf;
 //!
 //! let index = StringStorage::new(
 //!     PathBuf::from("/tmp/my_string_index"),
-//!     Threshold::default(),
+//!     SegmentConfig::default(),
 //! ).unwrap();
 //!
 //! // Insert a document
@@ -99,7 +99,7 @@ mod simd;
 mod storage;
 
 pub use bm25::BM25FFieldParams;
-pub use config::{Bm25Params, Threshold};
+pub use config::{Bm25Params, SegmentConfig, Threshold};
 pub use error::Error;
 pub use indexer::{IndexedValue, StringIndexer, TermData, Tokenizer};
 pub use info::{CheckStatus, IndexInfo, IntegrityCheck, IntegrityCheckResult};

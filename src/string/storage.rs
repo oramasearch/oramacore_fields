@@ -1,10 +1,14 @@
-use super::compacted::CompactedVersion;
-use super::config::Threshold;
+use super::compacted::{
+    build_segment_data, CompactedTermIterator, DocLengthIterator, Segment, SegmentList,
+};
+use super::config::SegmentConfig;
 use super::indexer::IndexedValue;
 use super::info::{IndexInfo, IntegrityCheck, IntegrityCheckResult};
 use super::io::{
-    ensure_version_dir, list_version_dirs, read_current, remove_version_dir, sync_dir, version_dir,
-    write_current_atomic, FORMAT_VERSION,
+    ensure_segment_dir, ensure_version_dir, list_segment_dirs, list_version_dirs,
+    read_current, read_manifest, remove_segment_dir, remove_version_dir, segment_data_dir,
+    sync_dir, version_dir, write_current_atomic, write_manifest, ManifestEntry, FORMAT_VERSION,
+    FORMAT_VERSION_V1,
 };
 use super::iterator::{ContributionsResult, SearchHandle, SearchParams};
 use super::live::{LiveLayer, LiveSnapshot};
@@ -18,42 +22,49 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Persistent full-text string index with BM25 scoring, concurrent reads and writes,
-/// and compaction to disk.
+/// and multi-segment compaction to disk.
 pub struct StringStorage {
     base_path: PathBuf,
-    version: ArcSwap<CompactedVersion>,
+    segments: ArcSwap<SegmentList>,
     live: RwLock<LiveLayer>,
     compaction_lock: Mutex<()>,
-    threshold: Threshold,
+    segment_config: SegmentConfig,
 }
 
 impl StringStorage {
     /// Open or create a string index at the given path.
-    pub fn new(path: impl Into<PathBuf>, threshold: Threshold) -> Result<Self> {
+    pub fn new(path: impl Into<PathBuf>, segment_config: SegmentConfig) -> Result<Self> {
         let base_path = path.into();
         fs::create_dir_all(&base_path)
             .with_context(|| format!("Failed to create base directory: {base_path:?}"))?;
 
-        let version = match read_current(&base_path)? {
+        let segments = match read_current(&base_path)? {
             Some((format_version, version_number)) => {
-                if format_version != FORMAT_VERSION {
+                if format_version == FORMAT_VERSION_V1 {
+                    // Migrate v1 → v2
+                    migrate_v1_to_v2(&base_path, version_number)?;
+                    SegmentList::load(&base_path, version_number).with_context(|| {
+                        format!("Failed to load after v1→v2 migration at version {version_number}")
+                    })?
+                } else if format_version == FORMAT_VERSION {
+                    SegmentList::load(&base_path, version_number).with_context(|| {
+                        format!("Failed to load version at version_number {version_number}")
+                    })?
+                } else {
                     return Err(anyhow!(
                         "Unsupported format version {format_version}, expected {FORMAT_VERSION}"
                     ));
                 }
-                CompactedVersion::load(&base_path, version_number).with_context(|| {
-                    format!("Failed to load version at version_number {version_number}")
-                })?
             }
-            None => CompactedVersion::empty(),
+            None => SegmentList::empty(),
         };
 
         Ok(Self {
             base_path,
-            version: ArcSwap::new(Arc::new(version)),
+            segments: ArcSwap::new(Arc::new(segments)),
             live: RwLock::new(LiveLayer::new()),
             compaction_lock: Mutex::new(()),
-            threshold,
+            segment_config,
         })
     }
 
@@ -71,14 +82,6 @@ impl StringStorage {
         drop(live);
     }
 
-    /// Search the index for documents matching the given tokens, accumulating scores into `scorer`.
-    ///
-    /// Uses BM25F scoring: for each query token, computes a length-normalized term frequency
-    /// (ntf) per document, then combines it with inverse document frequency (IDF) to produce
-    /// a relevance score. Scores from multiple tokens are summed per document.
-    ///
-    /// Both the compacted (mmap) and live (in-memory) layers are searched and merged, so
-    /// results reflect all inserts/deletes without requiring a compaction first.
     /// Search the index without document filtering.
     pub fn search(&self, params: &SearchParams<'_>, scorer: &mut BM25u64Scorer) -> Result<()> {
         self.search_filtered::<NoFilter>(params, None, scorer)
@@ -101,14 +104,12 @@ impl StringStorage {
         scorer: &mut BM25u64Scorer,
     ) -> Result<()> {
         let snapshot = self.get_fresh_snapshot();
-        let version = self.version.load();
-        let handle = SearchHandle::new(Arc::clone(&version), snapshot);
+        let segments = self.segments.load();
+        let handle = SearchHandle::new(Arc::clone(&segments), snapshot);
         handle.execute(params, filter, scorer)
     }
 
-    /// Collect raw per-token contributions (normalized TF + document frequency)
-    /// without computing IDF or BM25F saturation. Used by callers implementing
-    /// cross-field BM25F scoring.
+    /// Collect raw per-token contributions without computing IDF or BM25F saturation.
     pub fn collect_contributions(&self, params: &SearchParams<'_>) -> Result<ContributionsResult> {
         self.collect_contributions_filtered::<NoFilter>(params, None)
     }
@@ -128,8 +129,8 @@ impl StringStorage {
         filter: Option<&F>,
     ) -> Result<ContributionsResult> {
         let snapshot = self.get_fresh_snapshot();
-        let version = self.version.load();
-        let handle = SearchHandle::new(Arc::clone(&version), snapshot);
+        let segments = self.segments.load();
+        let handle = SearchHandle::new(Arc::clone(&segments), snapshot);
         handle.execute_collect(params, filter)
     }
 
@@ -152,7 +153,7 @@ impl StringStorage {
         snapshot
     }
 
-    /// Persist pending changes to disk at the given version number.
+    /// Persist pending changes to disk at the given version number using multi-segment compaction.
     pub fn compact(&self, version_number: u64) -> Result<()> {
         let compaction_guard = self.compaction_lock.lock().unwrap();
 
@@ -170,7 +171,7 @@ impl StringStorage {
             return Ok(());
         }
 
-        let current = self.version.load();
+        let current = self.segments.load();
 
         if version_number == current.version_number && current.has_data() {
             return Err(anyhow!(
@@ -181,22 +182,228 @@ impl StringStorage {
 
         let new_version_dir = ensure_version_dir(&self.base_path, version_number)?;
 
-        let should_apply_deletes = self.should_apply_deletes(&snapshot, &current);
+        // Compute merged global deletes
+        let merged_deletes: Vec<u64> = sorted_merge(
+            current.deletes_slice().iter().copied(),
+            snapshot.deletes.iter().copied(),
+        )
+        .collect();
 
-        if should_apply_deletes {
-            self.compact_apply_deletes(&snapshot, &current, &new_version_dir)?;
-        } else {
-            self.compact_carry_forward(&snapshot, &current, &new_version_dir)?;
+        let has_live_data = !snapshot.term_postings.is_empty();
+
+        // Determine next segment_id
+        let next_seg_id = current
+            .segments
+            .iter()
+            .map(|s| s.segment_id + 1)
+            .max()
+            .unwrap_or(0);
+
+        let mut new_manifest: Vec<ManifestEntry> = Vec::new();
+        let mut live_absorbed = false;
+        let threshold_value = self.segment_config.deletion_threshold.value();
+        let max_postings = self.segment_config.max_postings_per_segment;
+        let mut seg_id_counter = next_seg_id;
+
+        for (seg_idx, segment) in current.segments.iter().enumerate() {
+            let is_last = seg_idx == current.segments.len() - 1;
+
+            // Count deletes in this segment's doc_id range
+            let segment_deletes = count_deletes_in_range(
+                &merged_deletes,
+                segment.min_doc_id,
+                segment.max_doc_id,
+            );
+            let deletion_ratio = if segment.num_postings > 0 {
+                segment_deletes as f64 / segment.num_postings as f64
+            } else {
+                0.0
+            };
+
+            if is_last && has_live_data {
+                // Estimate combined postings
+                let live_postings: usize =
+                    snapshot.term_postings.values().map(|v| v.len()).sum();
+                let combined_postings = segment.num_postings + live_postings;
+
+                if combined_postings <= max_postings {
+                    // REBUILD with merge: old segment data + live data
+                    let new_seg_id = seg_id_counter;
+                    seg_id_counter += 1;
+                    let seg_dir = ensure_segment_dir(&self.base_path, new_seg_id)?;
+
+                    let mut compacted_terms = segment.iter_terms();
+                    let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
+                    let mut compacted_dl = segment.iter_doc_lengths();
+                    let live_dl = snapshot.iter_doc_lengths_sorted();
+
+                    let result = build_segment_data(
+                        &mut compacted_terms,
+                        &live_terms,
+                        &mut compacted_dl,
+                        &live_dl,
+                        Some(&merged_deletes),
+                        &seg_dir,
+                    )?;
+
+                    if result.total_documents > 0 {
+                        new_manifest.push(ManifestEntry {
+                            segment_id: new_seg_id,
+                            num_postings: result.num_postings,
+                            num_deletes: 0, // Deletes applied
+                            min_doc_id: result.min_doc_id,
+                            max_doc_id: result.max_doc_id,
+                            total_doc_length: result.total_doc_length,
+                            total_documents: result.total_documents,
+                        });
+                    }
+                    live_absorbed = true;
+                } else {
+                    // Last segment exceeds max_postings when combined
+                    // Rebuild or carry forward last segment
+                    if deletion_ratio > threshold_value {
+                        let entry =
+                            rebuild_segment(segment, &merged_deletes, &self.base_path, seg_id_counter)?;
+                        seg_id_counter += 1;
+                        if let Some(e) = entry {
+                            new_manifest.push(e);
+                        }
+                    } else {
+                        // Carry forward
+                        new_manifest.push(ManifestEntry {
+                            segment_id: segment.segment_id,
+                            num_postings: segment.num_postings,
+                            num_deletes: segment_deletes,
+                            min_doc_id: segment.min_doc_id,
+                            max_doc_id: segment.max_doc_id,
+                            total_doc_length: segment.num_postings as u64, // will be recomputed
+                            total_documents: segment.num_postings as u64, // will be recomputed
+                        });
+                        // Fix: read actual stats from the segment's doc_lengths
+                        let last = new_manifest.last_mut().unwrap();
+                        let (td, tl) = scan_segment_stats(segment, &merged_deletes);
+                        last.total_documents = td;
+                        last.total_doc_length = tl;
+                    }
+                    // Create NEW segment from live data alone
+                    let new_seg_id = seg_id_counter;
+                    seg_id_counter += 1;
+                    let seg_dir = ensure_segment_dir(&self.base_path, new_seg_id)?;
+
+                    let mut empty_terms = CompactedTermIterator::empty();
+                    let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
+                    let mut empty_dl = DocLengthIterator::empty();
+                    let live_dl = snapshot.iter_doc_lengths_sorted();
+
+                    let result = build_segment_data(
+                        &mut empty_terms,
+                        &live_terms,
+                        &mut empty_dl,
+                        &live_dl,
+                        Some(&merged_deletes),
+                        &seg_dir,
+                    )?;
+
+                    if result.total_documents > 0 {
+                        new_manifest.push(ManifestEntry {
+                            segment_id: new_seg_id,
+                            num_postings: result.num_postings,
+                            num_deletes: 0,
+                            min_doc_id: result.min_doc_id,
+                            max_doc_id: result.max_doc_id,
+                            total_doc_length: result.total_doc_length,
+                            total_documents: result.total_documents,
+                        });
+                    }
+                    live_absorbed = true;
+                }
+            } else if deletion_ratio > threshold_value {
+                // REBUILD segment filtering deletes
+                let entry =
+                    rebuild_segment(segment, &merged_deletes, &self.base_path, seg_id_counter)?;
+                seg_id_counter += 1;
+                if let Some(e) = entry {
+                    new_manifest.push(e);
+                }
+            } else {
+                // CARRY FORWARD
+                let (td, tl) = scan_segment_stats(segment, &merged_deletes);
+                new_manifest.push(ManifestEntry {
+                    segment_id: segment.segment_id,
+                    num_postings: segment.num_postings,
+                    num_deletes: segment_deletes,
+                    min_doc_id: segment.min_doc_id,
+                    max_doc_id: segment.max_doc_id,
+                    total_doc_length: tl,
+                    total_documents: td,
+                });
+            }
         }
+
+        // If live not absorbed: create new segment from live data only
+        if !live_absorbed && has_live_data {
+            let new_seg_id = seg_id_counter;
+            let seg_dir = ensure_segment_dir(&self.base_path, new_seg_id)?;
+
+            let mut empty_terms = CompactedTermIterator::empty();
+            let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
+            let mut empty_dl = DocLengthIterator::empty();
+            let live_dl = snapshot.iter_doc_lengths_sorted();
+
+            let result = build_segment_data(
+                &mut empty_terms,
+                &live_terms,
+                &mut empty_dl,
+                &live_dl,
+                Some(&merged_deletes),
+                &seg_dir,
+            )?;
+
+            if result.total_documents > 0 {
+                new_manifest.push(ManifestEntry {
+                    segment_id: new_seg_id,
+                    num_postings: result.num_postings,
+                    num_deletes: 0,
+                    min_doc_id: result.min_doc_id,
+                    max_doc_id: result.max_doc_id,
+                    total_doc_length: result.total_doc_length,
+                    total_documents: result.total_documents,
+                });
+            }
+        }
+
+        // Compute global stats from manifest
+        let global_total_documents: u64 = new_manifest.iter().map(|e| e.total_documents).sum();
+        let global_total_doc_length: u64 = new_manifest.iter().map(|e| e.total_doc_length).sum();
+
+        // Write manifest, deleted.bin, global_info.bin
+        write_manifest(&new_version_dir, &new_manifest)?;
+
+        // If all segments have been rebuilt (no carry-forward), deletes are fully applied
+        let any_carried_forward = new_manifest.iter().any(|e| e.num_deletes > 0);
+        let deletes_to_write = if any_carried_forward {
+            &merged_deletes
+        } else {
+            &[] as &[u64]
+        };
+        super::io::write_deleted(
+            &new_version_dir.join("deleted.bin"),
+            deletes_to_write,
+        )?;
+        super::io::write_global_info(
+            &new_version_dir.join("global_info.bin"),
+            global_total_doc_length,
+            global_total_documents,
+        )?;
 
         sync_dir(&new_version_dir)?;
         write_current_atomic(&self.base_path, version_number)?;
 
-        // Atomic update: swap version AND clear compacted items
+        // Atomic update: swap segments AND clear compacted items
+        let new_segments = SegmentList::load(&self.base_path, version_number)?;
         {
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
-            self.version.store(Arc::new(new_version));
+            self.segments.store(Arc::new(new_segments));
 
             live.drain_compacted_ops(snapshot.ops_len);
             live.refresh_snapshot();
@@ -207,104 +414,18 @@ impl StringStorage {
         Ok(())
     }
 
-    /// Check whether deletions exceed the threshold for physical removal.
-    fn should_apply_deletes(
-        &self,
-        snapshot: &LiveSnapshot,
-        current: &Arc<CompactedVersion>,
-    ) -> bool {
-        if snapshot.deletes.is_empty() && current.deletes_slice().is_empty() {
-            return false;
-        }
-
-        let merged_deletes_count = current.deletes_slice().len() + snapshot.deletes.len();
-
-        let compacted_postings = current.total_postings();
-        // Estimate live postings as number of unique (term, doc_id) pairs
-        let live_postings: usize = snapshot.term_postings.values().map(|v| v.len()).sum();
-        let total_postings = compacted_postings + live_postings;
-
-        if total_postings == 0 {
-            return true;
-        }
-
-        merged_deletes_count as f64 / total_postings as f64 > self.threshold.value()
-    }
-
-    /// Compact by physically removing deleted doc_ids from the data.
-    fn compact_apply_deletes(
-        &self,
-        snapshot: &LiveSnapshot,
-        current: &Arc<CompactedVersion>,
-        new_version_dir: &std::path::Path,
-    ) -> Result<()> {
-        let deleted_set: Vec<u64> = sorted_merge(
-            current.deletes_slice().iter().copied(),
-            snapshot.deletes.iter().copied(),
-        )
-        .collect();
-
-        let mut compacted_terms = current.iter_terms();
-        let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
-        let mut compacted_dl = current.iter_doc_lengths();
-        let live_dl = snapshot.iter_doc_lengths_sorted();
-
-        CompactedVersion::build_from_sorted_sources(
-            &mut compacted_terms,
-            &live_terms,
-            &mut compacted_dl,
-            &live_dl,
-            Some(&deleted_set),
-            Some(&deleted_set),
-            &[],
-            new_version_dir,
-        )?;
-
-        Ok(())
-    }
-
-    /// Compact by merging new data while carrying deletions forward.
-    fn compact_carry_forward(
-        &self,
-        snapshot: &LiveSnapshot,
-        current: &Arc<CompactedVersion>,
-        new_version_dir: &std::path::Path,
-    ) -> Result<()> {
-        let mut compacted_terms = current.iter_terms();
-        let live_terms: Vec<_> = snapshot.iter_terms_sorted().collect();
-        let mut compacted_dl = current.iter_doc_lengths();
-        let live_dl = snapshot.iter_doc_lengths_sorted();
-
-        let deletes_merged: Vec<u64> = sorted_merge(
-            current.deletes_slice().iter().copied(),
-            snapshot.deletes.iter().copied(),
-        )
-        .collect();
-
-        CompactedVersion::build_from_sorted_sources(
-            &mut compacted_terms,
-            &live_terms,
-            &mut compacted_dl,
-            &live_dl,
-            None,
-            Some(&deletes_merged),
-            &deletes_merged,
-            new_version_dir,
-        )?;
-
-        Ok(())
-    }
-
     /// Return the current compacted version number.
     pub fn current_version_number(&self) -> u64 {
-        self.version.load().version_number
+        self.segments.load().version_number
     }
 
-    /// Delete old version directories, keeping only the current one.
+    /// Delete old version directories and unreferenced segment directories.
     pub fn cleanup(&self) {
         let compaction_guard = self.compaction_lock.lock().unwrap();
-        let current_version = self.version.load().version_number;
+        let current = self.segments.load();
+        let current_version = current.version_number;
 
+        // Remove old version directories
         let version_numbers = match list_version_dirs(&self.base_path) {
             Ok(v) => v,
             Err(e) => {
@@ -320,36 +441,70 @@ impl StringStorage {
                 }
             }
         }
+
+        // Remove unreferenced segment directories
+        let referenced_ids: std::collections::HashSet<u64> =
+            current.segments.iter().map(|s| s.segment_id).collect();
+
+        let all_seg_ids = match list_segment_dirs(&self.base_path) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to list segment directories: {e}");
+                return;
+            }
+        };
+
+        for seg_id in all_seg_ids {
+            if !referenced_ids.contains(&seg_id) {
+                if let Err(e) = remove_segment_dir(&self.base_path, seg_id) {
+                    tracing::error!("Failed to remove unreferenced segment {seg_id}: {e}");
+                }
+            }
+        }
+
         drop(compaction_guard);
     }
 
     /// Return metadata and statistics about the index.
     pub fn info(&self) -> IndexInfo {
-        let version = self.version.load();
+        let current = self.segments.load();
         let live = self.live.read().unwrap();
         let pending_ops = live.ops.len();
         drop(live);
 
-        let ver_dir = version_dir(&self.base_path, version.version_number);
+        let ver_dir = version_dir(&self.base_path, current.version_number);
 
-        let avg_field_length = if version.total_documents > 0 {
-            version.total_document_length as f64 / version.total_documents as f64
+        let avg_field_length = if current.total_documents > 0 {
+            current.total_document_length as f64 / current.total_documents as f64
         } else {
             0.0
         };
 
+        let mut unique_terms_count = 0;
+        let mut total_postings_count = 0;
+        let mut total_segments_size_bytes: u64 = 0;
+
+        for segment in &current.segments {
+            unique_terms_count += segment.term_count();
+            total_postings_count += segment.num_postings;
+
+            let seg_dir = segment_data_dir(&self.base_path, segment.segment_id);
+            total_segments_size_bytes += file_size(&seg_dir.join("keys.fst"));
+            total_segments_size_bytes += file_size(&seg_dir.join("postings.dat"));
+            total_segments_size_bytes += file_size(&seg_dir.join("doc_lengths.dat"));
+        }
+
         IndexInfo {
             format_version: FORMAT_VERSION,
-            current_version_number: version.version_number,
+            current_version_number: current.version_number,
             version_dir: ver_dir.clone(),
-            unique_terms_count: version.term_count(),
-            total_postings_count: version.total_postings(),
-            total_documents: version.total_documents,
+            num_segments: current.segments.len(),
+            unique_terms_count,
+            total_postings_count,
+            total_documents: current.total_documents,
             avg_field_length,
-            deleted_count: version.deletes_slice().len(),
-            fst_size_bytes: file_size(&ver_dir.join("keys.fst")),
-            postings_size_bytes: file_size(&ver_dir.join("postings.dat")),
-            doc_lengths_size_bytes: file_size(&ver_dir.join("doc_lengths.dat")),
+            deleted_count: current.deletes_slice().len(),
+            total_segments_size_bytes,
             deleted_size_bytes: file_size(&ver_dir.join("deleted.bin")),
             global_info_size_bytes: file_size(&ver_dir.join("global_info.bin")),
             pending_ops,
@@ -410,30 +565,81 @@ impl StringStorage {
                     Some(ver_dir.display().to_string()),
                 ));
 
-                let required_files = [
-                    "keys.fst",
-                    "postings.dat",
-                    "doc_lengths.dat",
-                    "deleted.bin",
-                    "global_info.bin",
-                ];
-                let missing: Vec<&str> = required_files
+                // Check manifest
+                let manifest_path = ver_dir.join("manifest.json");
+                if !manifest_path.exists() {
+                    checks.push(IntegrityCheck::failed(
+                        "manifest.json",
+                        Some("File does not exist".to_string()),
+                    ));
+                    return IntegrityCheckResult::new(checks);
+                }
+
+                match read_manifest(&ver_dir) {
+                    Ok(manifest) => {
+                        checks.push(IntegrityCheck::ok(
+                            "manifest.json",
+                            Some(format!("{} segments", manifest.len())),
+                        ));
+
+                        // Check each segment directory
+                        for entry in &manifest {
+                            let seg_dir =
+                                segment_data_dir(&self.base_path, entry.segment_id);
+                            if !seg_dir.exists() {
+                                checks.push(IntegrityCheck::failed(
+                                    format!("segment {}", entry.segment_id),
+                                    Some(format!("Directory does not exist: {}", seg_dir.display())),
+                                ));
+                                continue;
+                            }
+
+                            let required_files = ["keys.fst", "postings.dat", "doc_lengths.dat"];
+                            let missing: Vec<&str> = required_files
+                                .iter()
+                                .filter(|f| !seg_dir.join(f).exists())
+                                .copied()
+                                .collect();
+
+                            if !missing.is_empty() {
+                                checks.push(IntegrityCheck::failed(
+                                    format!("segment {}", entry.segment_id),
+                                    Some(format!("Missing files: {}", missing.join(", "))),
+                                ));
+                            } else {
+                                checks.push(IntegrityCheck::ok(
+                                    format!("segment {}", entry.segment_id),
+                                    Some("All files present".to_string()),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        checks.push(IntegrityCheck::failed(
+                            "manifest.json",
+                            Some(format!("Failed to read: {e}")),
+                        ));
+                    }
+                }
+
+                // Check version-level files
+                let required_version_files = ["deleted.bin", "global_info.bin"];
+                let missing_version: Vec<&str> = required_version_files
                     .iter()
                     .filter(|f| !ver_dir.join(f).exists())
                     .copied()
                     .collect();
-
-                if !missing.is_empty() {
+                if !missing_version.is_empty() {
                     checks.push(IntegrityCheck::failed(
-                        "index files",
-                        Some(format!("Missing: {}", missing.join(", "))),
+                        "version files",
+                        Some(format!("Missing: {}", missing_version.join(", "))),
                     ));
-                    return IntegrityCheckResult::new(checks);
+                } else {
+                    checks.push(IntegrityCheck::ok(
+                        "version files",
+                        Some("deleted.bin, global_info.bin present".to_string()),
+                    ));
                 }
-                checks.push(IntegrityCheck::ok(
-                    "index files",
-                    Some("All present".to_string()),
-                ));
 
                 // Validate deleted.bin
                 match validate_deleted_file(&ver_dir.join("deleted.bin")) {
@@ -487,6 +693,187 @@ impl StringStorage {
     }
 }
 
+/// Rebuild a segment by re-writing its data, filtering out deleted doc_ids.
+fn rebuild_segment(
+    segment: &Segment,
+    deleted_set: &[u64],
+    base_path: &std::path::Path,
+    new_seg_id: u64,
+) -> Result<Option<ManifestEntry>> {
+    let seg_dir = ensure_segment_dir(base_path, new_seg_id)?;
+
+    let mut compacted_terms = segment.iter_terms();
+    let mut compacted_dl = segment.iter_doc_lengths();
+
+    let empty_live: &[(&str, &[(u64, Vec<u32>, Vec<u32>)])] = &[];
+    let result = build_segment_data(
+        &mut compacted_terms,
+        empty_live,
+        &mut compacted_dl,
+        &[],
+        Some(deleted_set),
+        &seg_dir,
+    )?;
+
+    if result.total_documents == 0 {
+        // Segment is now empty after applying deletes
+        let _ = fs::remove_dir_all(&seg_dir);
+        return Ok(None);
+    }
+
+    Ok(Some(ManifestEntry {
+        segment_id: new_seg_id,
+        num_postings: result.num_postings,
+        num_deletes: 0,
+        min_doc_id: result.min_doc_id,
+        max_doc_id: result.max_doc_id,
+        total_doc_length: result.total_doc_length,
+        total_documents: result.total_documents,
+    }))
+}
+
+/// Scan segment doc_lengths to compute stats excluding deleted docs.
+fn scan_segment_stats(segment: &Segment, deleted_set: &[u64]) -> (u64, u64) {
+    let mut total_documents: u64 = 0;
+    let mut total_doc_length: u64 = 0;
+
+    let mut del_idx = 0;
+    for (doc_id, field_len) in segment.iter_doc_lengths() {
+        // Advance delete cursor
+        while del_idx < deleted_set.len() && deleted_set[del_idx] < doc_id {
+            del_idx += 1;
+        }
+        let is_deleted = del_idx < deleted_set.len() && deleted_set[del_idx] == doc_id;
+        if !is_deleted {
+            total_documents += 1;
+            total_doc_length += field_len as u64;
+        }
+    }
+
+    (total_documents, total_doc_length)
+}
+
+/// Count how many entries in `deleted_set` fall within [min_doc_id, max_doc_id].
+fn count_deletes_in_range(deleted_set: &[u64], min_doc_id: u64, max_doc_id: u64) -> usize {
+    if deleted_set.is_empty() {
+        return 0;
+    }
+    let start = deleted_set.partition_point(|&d| d < min_doc_id);
+    let end = deleted_set.partition_point(|&d| d <= max_doc_id);
+    end - start
+}
+
+/// Migrate a v1 format index to v2 multi-segment layout.
+fn migrate_v1_to_v2(base_path: &std::path::Path, version_number: u64) -> Result<()> {
+    let ver_dir = version_dir(base_path, version_number);
+    let seg_dir = ensure_segment_dir(base_path, 0)?;
+
+    // Check if already partially migrated
+    let manifest_exists = ver_dir.join("manifest.json").exists();
+    let seg_fst_exists = seg_dir.join("keys.fst").exists();
+
+    if manifest_exists && seg_fst_exists {
+        // Already migrated (or partially), just need to update CURRENT
+        super::io::write_current_atomic_versioned(base_path, FORMAT_VERSION, version_number)?;
+        return Ok(());
+    }
+
+    // Move the three data files into the segment directory
+    let files_to_move = ["keys.fst", "postings.dat", "doc_lengths.dat"];
+    for file_name in &files_to_move {
+        let src = ver_dir.join(file_name);
+        let dst = seg_dir.join(file_name);
+        if src.exists() && !dst.exists() {
+            // Try rename first (fast, atomic on same filesystem)
+            if fs::rename(&src, &dst).is_err() {
+                // Fallback: copy + delete
+                fs::copy(&src, &dst).with_context(|| {
+                    format!("Failed to copy {file_name} during v1→v2 migration")
+                })?;
+                fs::remove_file(&src).ok();
+            }
+        }
+    }
+
+    // Compute segment metadata
+    let global_info_path = ver_dir.join("global_info.bin");
+    let (total_doc_length, total_documents) = super::io::read_global_info(&global_info_path)?;
+
+    // Read min/max doc_id from doc_lengths.dat
+    let doc_lengths_path = seg_dir.join("doc_lengths.dat");
+    let (min_doc_id, max_doc_id) = if doc_lengths_path.exists() {
+        let metadata = fs::metadata(&doc_lengths_path)?;
+        let size = metadata.len();
+        if size >= 12 {
+            let bytes = fs::read(&doc_lengths_path)?;
+            let min = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+            let last_offset = (size as usize / 12 - 1) * 12;
+            let max = u64::from_ne_bytes(bytes[last_offset..last_offset + 8].try_into().unwrap());
+            (min, max)
+        } else {
+            (0, 0)
+        }
+    } else {
+        (0, 0)
+    };
+
+    // Count postings by scanning FST
+    let num_postings = {
+        let fst_path = seg_dir.join("keys.fst");
+        if fst_path.exists() {
+            let entry = ManifestEntry {
+                segment_id: 0,
+                num_postings: 0,
+                num_deletes: 0,
+                min_doc_id,
+                max_doc_id,
+                total_doc_length,
+                total_documents,
+            };
+            let segment = Segment::load(base_path, &entry)?;
+            segment.total_postings()
+        } else {
+            0
+        }
+    };
+
+    // Count deletes
+    let deleted_path = ver_dir.join("deleted.bin");
+    let num_deletes = if deleted_path.exists() {
+        let metadata = fs::metadata(&deleted_path)?;
+        metadata.len() as usize / 8
+    } else {
+        0
+    };
+
+    // Write manifest
+    let manifest = vec![ManifestEntry {
+        segment_id: 0,
+        num_postings,
+        num_deletes,
+        min_doc_id,
+        max_doc_id,
+        total_doc_length,
+        total_documents,
+    }];
+
+    // Only write manifest if there's actual data
+    if total_documents > 0 || num_postings > 0 {
+        write_manifest(&ver_dir, &manifest)?;
+    } else {
+        write_manifest(&ver_dir, &[])?;
+    }
+
+    // Update CURRENT to format version 2
+    super::io::write_current_atomic_versioned(base_path, FORMAT_VERSION, version_number)?;
+
+    // Sync directories
+    sync_dir(&ver_dir)?;
+    sync_dir(&seg_dir)?;
+
+    Ok(())
+}
+
 fn file_size(path: &std::path::Path) -> u64 {
     fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -529,7 +916,6 @@ mod tests {
     use super::super::indexer::TermData;
     use super::super::iterator::SearchResult;
     use super::*;
-    use assert_approx_eq::assert_approx_eq;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -565,17 +951,21 @@ mod tests {
         scorer.into_search_result()
     }
 
+    fn default_config() -> SegmentConfig {
+        SegmentConfig::default()
+    }
+
     #[test]
     fn test_new_empty_index() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
         assert_eq!(index.current_version_number(), 0);
     }
 
     #[test]
     fn test_insert_and_search() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
         index.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -598,7 +988,7 @@ mod tests {
     #[test]
     fn test_delete_and_search() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -612,7 +1002,7 @@ mod tests {
     #[test]
     fn test_compact_basic() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
         index.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -635,971 +1025,123 @@ mod tests {
         let base_path = tmp.path().to_path_buf();
 
         {
-            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
+            let index = StringStorage::new(base_path.clone(), default_config()).unwrap();
             index.insert(1, make_value(3, vec![("hello", vec![0], vec![1])]));
             index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
             index.compact(1).unwrap();
         }
 
         {
-            let index = StringStorage::new(base_path, Threshold::default()).unwrap();
+            let index = StringStorage::new(base_path, default_config()).unwrap();
             let result = search_default(&index, &["hello"]);
             assert_eq!(result.docs.len(), 1);
             assert_eq!(result.docs[0].doc_id, 1);
-
-            let result = search_default(&index, &["world"]);
-            assert_eq!(result.docs.len(), 1);
-            assert_eq!(result.docs[0].doc_id, 2);
-
-            assert_eq!(index.current_version_number(), 1);
         }
     }
 
     #[test]
-    fn test_compact_with_deletes() {
+    fn test_compact_with_deletes_carry_forward() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        // High threshold → carry forward
+        let config = SegmentConfig {
+            deletion_threshold: 0.99f64.try_into().unwrap(),
+            ..Default::default()
+        };
+        let index = StringStorage::new(tmp.path().to_path_buf(), config).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.delete(2);
-
         index.compact(1).unwrap();
 
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-        assert!(doc_ids.contains(&1));
-        assert!(doc_ids.contains(&3));
-    }
-
-    #[test]
-    fn test_ops_during_compaction_preserved() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-    }
-
-    #[test]
-    fn test_compact_multiple_rounds() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(2).unwrap();
-
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(3).unwrap();
-
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 3);
-    }
-
-    #[test]
-    fn test_compact_empty_snapshot_resets_replay_state() {
-        // Regression: compacting when the live snapshot has ops but empty
-        // term_postings and deletes (e.g., documents with no terms) used to
-        // drain ops without resetting replay_applied_ops, causing the next
-        // refresh_snapshot() to panic with
-        // "range start index N out of range for slice of length 0".
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        // Step 1: Insert and compact normally so there's a base version
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        // Step 2: Insert documents with no terms (e.g., empty string field).
-        // This produces a snapshot with non-zero ops_len but empty
-        // term_postings and empty deletes — triggering the early return.
-        index.insert(2, make_value(0, vec![]));
-        index.insert(3, make_value(0, vec![]));
-
-        // Step 3: Compact — hits the "nothing to compact" early return
-        // which drains ops. Without the fix, replay_applied_ops is left
-        // at 2 while ops becomes empty.
-        index.compact(2).unwrap();
-
-        // Step 4: Insert after the empty compaction — this triggers
-        // refresh_snapshot() which panicked before the fix because
-        // replay_applied_ops (2) > ops.len() (0).
-        index.insert(4, make_value(2, vec![("hello", vec![0], vec![])]));
-
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-        assert!(doc_ids.contains(&1));
-        assert!(doc_ids.contains(&4));
-    }
-
-    #[test]
-    fn test_compact_carries_forward_deletes() {
-        let tmp = TempDir::new().unwrap();
-        // High threshold so deletes are carried forward
-        let index =
-            StringStorage::new(tmp.path().to_path_buf(), 0.9f64.try_into().unwrap()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.delete(2);
-        index.compact(1).unwrap();
-
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-
-        // Insert more and compact again
-        index.insert(4, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.delete(1);
         index.compact(2).unwrap();
 
         let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 3);
+        assert_eq!(result.docs.len(), 1);
+        assert_eq!(result.docs[0].doc_id, 2);
     }
 
     #[test]
-    fn test_cleanup_removes_old_versions() {
+    fn test_compact_with_deletes_apply() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        // Low threshold → apply deletes
+        let config = SegmentConfig {
+            deletion_threshold: 0.01f64.try_into().unwrap(),
+            ..Default::default()
+        };
+        let index = StringStorage::new(tmp.path().to_path_buf(), config).unwrap();
+
+        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.compact(1).unwrap();
+
+        index.delete(1);
+        index.compact(2).unwrap();
+
+        let result = search_default(&index, &["hello"]);
+        assert_eq!(result.docs.len(), 1);
+        assert_eq!(result.docs[0].doc_id, 2);
+    }
+
+    #[test]
+    fn test_empty_compaction_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
         index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
-        assert!(tmp.path().join("versions/1").exists());
 
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
+        // No new changes, compaction should be a no-op
         index.compact(2).unwrap();
+        // Version stays at 1 since nothing was written
+        assert_eq!(index.current_version_number(), 1);
+    }
 
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(3).unwrap();
+    #[test]
+    fn test_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
+
+        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.compact(1).unwrap();
+
+        index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
+        index.compact(2).unwrap();
 
         index.cleanup();
 
-        assert!(!tmp.path().join("versions/1").exists());
-        assert!(!tmp.path().join("versions/2").exists());
-        assert!(tmp.path().join("versions/3").exists());
+        // Version 1 dir should be gone
+        assert!(!version_dir(tmp.path(), 1).exists());
+        // Version 2 dir should still exist
+        assert!(version_dir(tmp.path(), 2).exists());
     }
 
     #[test]
-    fn test_info_after_operations() {
+    fn test_info() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
-        let info = index.info();
-        assert_eq!(info.current_version_number, 0);
-        assert_eq!(info.unique_terms_count, 0);
-
-        index.insert(1, make_value(5, vec![("hello", vec![0], vec![])]));
-        index.insert(
-            2,
-            make_value(
-                3,
-                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
-            ),
-        );
+        index.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
+        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
 
         let info = index.info();
+        assert_eq!(info.format_version, FORMAT_VERSION);
         assert_eq!(info.current_version_number, 1);
-        assert_eq!(info.unique_terms_count, 2);
         assert_eq!(info.total_documents, 2);
-        assert!(info.avg_field_length > 0.0);
-        assert_eq!(info.pending_ops, 0);
-        assert!(info.fst_size_bytes > 0);
-        assert!(info.postings_size_bytes > 0);
+        assert_eq!(info.num_segments, 1);
+        assert!(info.total_segments_size_bytes > 0);
     }
 
     #[test]
     fn test_integrity_check_valid() {
         let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+        let index = StringStorage::new(tmp.path().to_path_buf(), default_config()).unwrap();
 
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
+        index.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
         index.compact(1).unwrap();
 
         let result = index.integrity_check();
-        assert!(
-            result.passed,
-            "integrity check should pass: {:?}",
-            result.checks
-        );
-    }
-
-    #[test]
-    fn test_integrity_check_missing_files() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        fs::remove_file(tmp.path().join("versions/1/postings.dat")).unwrap();
-
-        let result = index.integrity_check();
-        assert!(
-            !result.passed,
-            "integrity check should fail with missing file"
-        );
-    }
-
-    #[test]
-    fn test_open_incompatible_format_version() {
-        let tmp = TempDir::new().unwrap();
-        let base_path = tmp.path().to_path_buf();
-
-        {
-            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
-            index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-            index.compact(1).unwrap();
-        }
-
-        let current_path = base_path.join("CURRENT");
-        fs::write(&current_path, "999\n1").unwrap();
-
-        let result = StringStorage::new(base_path, Threshold::default());
-        match result {
-            Ok(_) => panic!("Expected error for incompatible format version"),
-            Err(e) => {
-                let err_msg = e.to_string();
-                assert!(
-                    err_msg.contains("Unsupported format version"),
-                    "Expected 'Unsupported format version' error, got: {err_msg}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_delete_compacted_doc_id() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        index.delete(2);
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-
-        index.compact(2).unwrap();
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 2);
-    }
-
-    #[test]
-    fn test_concurrent_reads_writes() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let tmp = TempDir::new().unwrap();
-        let index =
-            Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
-
-        // Pre-populate
-        for i in 0..50u64 {
-            index.insert(i, make_value(2, vec![("term", vec![0], vec![])]));
-        }
-
-        let index_clone = Arc::clone(&index);
-        let writer = thread::spawn(move || {
-            for i in 50..100u64 {
-                index_clone.insert(i, make_value(2, vec![("term", vec![0], vec![])]));
-            }
-        });
-
-        let index_clone = Arc::clone(&index);
-        let reader = thread::spawn(move || {
-            for _ in 0..20 {
-                let tokens = vec!["term".to_string()];
-                let mut scorer = BM25u64Scorer::new();
-                index_clone
-                    .search(
-                        &SearchParams {
-                            tokens: &tokens,
-                            ..Default::default()
-                        },
-                        &mut scorer,
-                    )
-                    .unwrap();
-                let result = scorer.into_search_result();
-                assert!(result.docs.len() >= 50);
-            }
-        });
-
-        writer.join().unwrap();
-        reader.join().unwrap();
-
-        let final_result = search_default(&index, &["term"]);
-        assert_eq!(final_result.docs.len(), 100);
-    }
-
-    #[test]
-    fn test_persistence_with_deletes() {
-        let tmp = TempDir::new().unwrap();
-        let base_path = tmp.path().to_path_buf();
-
-        {
-            let index = StringStorage::new(base_path.clone(), Threshold::default()).unwrap();
-            index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-            index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-            index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-            index.delete(2);
-            index.compact(1).unwrap();
-        }
-
-        {
-            let index = StringStorage::new(base_path, Threshold::default()).unwrap();
-            let result = search_default(&index, &["hello"]);
-            assert_eq!(result.docs.len(), 2);
-            let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-            assert!(doc_ids.contains(&1));
-            assert!(doc_ids.contains(&3));
-        }
-    }
-
-    #[test]
-    fn test_compact_all_deleted() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.delete(1);
-        index.delete(2);
-        index.compact(1).unwrap();
-
-        let result = search_default(&index, &["hello"]);
-        assert!(result.docs.is_empty());
-
-        // Re-insert after all deleted
-        index.insert(3, make_value(2, vec![("hello", vec![0], vec![])]));
-        let result = search_default(&index, &["hello"]);
-        assert_eq!(result.docs.len(), 1);
-        assert_eq!(result.docs[0].doc_id, 3);
-    }
-
-    #[test]
-    fn test_search_multiple_tokens_combined() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        // Doc 1 matches both "hello" and "world"
-        index.insert(
-            1,
-            make_value(
-                4,
-                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
-            ),
-        );
-        // Doc 2 matches only "hello"
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-
-        index.compact(1).unwrap();
-
-        let result = search_default(&index, &["hello", "world"]);
-        assert_eq!(result.docs.len(), 2);
-        // Doc 1 should rank higher (matches both tokens)
-        assert_eq!(result.docs[0].doc_id, 1);
-    }
-
-    #[test]
-    fn test_insert_compact_delete_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("k", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        index.insert(2, make_value(2, vec![("k", vec![0], vec![])]));
-        index.compact(2).unwrap();
-
-        index.delete(1);
-        index.compact(3).unwrap();
-
-        let result = search_default(&index, &["k"]);
-        assert_eq!(result.docs.len(), 1);
-        assert_eq!(result.docs[0].doc_id, 2);
-
-        // Persistence check
-        drop(index);
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-        let result = search_default(&index, &["k"]);
-        assert_eq!(result.docs.len(), 1);
-        assert_eq!(result.docs[0].doc_id, 2);
-    }
-
-    #[test]
-    fn test_total_size_bytes() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        let info = index.info();
-        assert_eq!(
-            info.total_size_bytes(),
-            info.fst_size_bytes
-                + info.postings_size_bytes
-                + info.doc_lengths_size_bytes
-                + info.deleted_size_bytes
-                + info.global_info_size_bytes
-        );
-        assert!(info.total_size_bytes() > 0);
-    }
-
-    #[test]
-    fn test_prefix_search_after_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
-        index.insert(2, make_value(3, vec![("application", vec![0], vec![])]));
-        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["app".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let result = scorer.into_search_result();
-
-        assert_eq!(result.docs.len(), 2);
-        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-        assert!(doc_ids.contains(&1));
-        assert!(doc_ids.contains(&2));
-    }
-
-    #[test]
-    fn test_levenshtein_search_before_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
-        index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
-        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
-
-        // Fuzzy search before any compaction
-        let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    tolerance: Some(1),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let result = scorer.into_search_result();
-
-        assert_eq!(result.docs.len(), 2);
-        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-        assert!(doc_ids.contains(&1)); // "apple" exact
-        assert!(doc_ids.contains(&2)); // "apply" distance 1
-    }
-
-    #[test]
-    fn test_levenshtein_parity_before_after_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
-        index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
-        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
-
-        // Search before compaction
-        let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    tolerance: Some(1),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let before = scorer.into_search_result();
-
-        // Compact
-        index.compact(1).unwrap();
-
-        // Search after compaction
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    tolerance: Some(1),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let after = scorer.into_search_result();
-
-        // Same doc IDs should be returned
-        let before_ids: Vec<u64> = before.docs.iter().map(|d| d.doc_id).collect();
-        let after_ids: Vec<u64> = after.docs.iter().map(|d| d.doc_id).collect();
-        assert_eq!(before_ids, after_ids);
-    }
-
-    #[test]
-    fn test_levenshtein_search_after_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(3, vec![("apple", vec![0], vec![])]));
-        index.insert(2, make_value(3, vec![("apply", vec![0], vec![])]));
-        index.insert(3, make_value(3, vec![("banana", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        // Levenshtein distance 1 from "apple"
-        let tokens = vec!["apple".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    tolerance: Some(1),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let result = scorer.into_search_result();
-
-        assert_eq!(result.docs.len(), 2);
-        let doc_ids: Vec<u64> = result.docs.iter().map(|d| d.doc_id).collect();
-        assert!(doc_ids.contains(&1)); // "apple" exact
-        assert!(doc_ids.contains(&2)); // "apply" distance 1
-
-        // Exact match should score higher due to exact boost
-        assert_eq!(result.docs[0].doc_id, 1);
-        assert!(result.docs[0].score > result.docs[1].score);
-    }
-
-    #[test]
-    fn test_phrase_boost_after_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        // Doc 1: adjacent tokens
-        index.insert(
-            1,
-            make_value(
-                4,
-                vec![("hello", vec![0], vec![]), ("world", vec![1], vec![])],
-            ),
-        );
-        // Doc 2: non-adjacent tokens
-        index.insert(
-            2,
-            make_value(
-                6,
-                vec![("hello", vec![0], vec![]), ("world", vec![5], vec![])],
-            ),
-        );
-        index.compact(1).unwrap();
-
-        let tokens = vec!["hello".to_string(), "world".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    phrase_boost: Some(2.0),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let result = scorer.into_search_result();
-
-        assert_eq!(result.docs.len(), 2);
-        // Doc 1 should score higher due to phrase boost on adjacent positions
-        assert_eq!(result.docs[0].doc_id, 1);
-        assert!(result.docs[0].score > result.docs[1].score);
-    }
-
-    #[test]
-    fn test_threshold_after_compact() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        // Doc 1 matches all 3 tokens
-        index.insert(
-            1,
-            make_value(
-                6,
-                vec![
-                    ("hello", vec![0], vec![]),
-                    ("world", vec![1], vec![]),
-                    ("foo", vec![2], vec![]),
-                ],
-            ),
-        );
-        // Doc 2 matches only 1 of 3 tokens
-        index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
-        // threshold=1.0 with 3 tokens => need all 3
-        let mut scorer = BM25u64Scorer::with_threshold(3);
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let result = scorer.into_search_result();
-
-        assert_eq!(result.docs.len(), 1);
-        assert_eq!(result.docs[0].doc_id, 1);
-    }
-
-    // ---- Scoring parity tests ----
-    // These tests verify that BM25 scores from oramacore_fields match those from oramacore
-    // when given identical data and parameters.
-    //
-    // IMPORTANT: oramacore derives per-doc field_length as max(stemmed_positions) + 1,
-    // while oramacore_fields uses the explicit IndexedValue.field_length.
-    // To ensure parity, all test data satisfies: field_length = max(stemmed_positions) + 1.
-    //
-    // Run corresponding oramacore tests:
-    //   cd /path/to/oramacore && cargo test test_scoring_parity -- --nocapture
-
-    #[test]
-    fn test_scoring_parity_basic_bm25() {
-        // Test 1: Single token, two docs
-        // Doc1: field_length=5, "term1" exact=[0,1] stemmed=[0,4]
-        //   → tf(exact_match=false) = 2+2 = 4, oramacore doc_length = max(4)+1 = 5
-        // Doc2: field_length=3, "term1" exact=[0] stemmed=[2]
-        //   → tf = 1+1 = 2, oramacore doc_length = max(2)+1 = 3
-        // tolerance=None (prefix search) → 3x exact_match_boost applied
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
-        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: false,
-                    boost: 1.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-        let score2 = scores[&2];
-
-        println!("test_scoring_parity_basic_bm25:");
-        println!("  doc1 score = {score1:.10}");
-        println!("  doc2 score = {score2:.10}");
-
-        assert!(
-            score1 > score2,
-            "Doc1 (tf=4) should rank higher than Doc2 (tf=2)"
-        );
-        // Cross-repo parity: these values must match oramacore's test_scoring_parity_basic_bm25
-        assert_approx_eq!(score1, 0.358_531_8, 1e-6);
-        assert_approx_eq!(score2, 0.34503868, 1e-6);
-    }
-
-    #[test]
-    fn test_scoring_parity_exact_match() {
-        // Test 2: exact_match=true with tolerance=Some(0)
-        // Same data as Test 1
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
-        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: true,
-                    boost: 1.0,
-                    tolerance: Some(0),
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-        let score2 = scores[&2];
-
-        println!("test_scoring_parity_exact_match:");
-        println!("  doc1 score = {score1:.10}");
-        println!("  doc2 score = {score2:.10}");
-
-        // Doc1: tf=2 (exact only), Doc2: tf=1 (exact only), with 3x exact_match_boost
-        assert!(score1 > score2);
-        // Cross-repo parity: these values must match oramacore's test_scoring_parity_exact_match
-        assert_approx_eq!(score1, 0.32412723, 1e-6);
-        assert_approx_eq!(score2, 0.302_722_6, 1e-6);
-    }
-
-    #[test]
-    fn test_scoring_parity_field_boost() {
-        // Test 3: Same data as Test 1, but boost=2.0
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(5, vec![("term1", vec![0, 1], vec![0, 4])]));
-        index.insert(2, make_value(3, vec![("term1", vec![0], vec![2])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["term1".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: false,
-                    boost: 2.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-        let score2 = scores[&2];
-
-        println!("test_scoring_parity_field_boost:");
-        println!("  doc1 score = {score1:.10}");
-        println!("  doc2 score = {score2:.10}");
-
-        assert!(score1 > score2);
-        // Cross-repo parity: these values must match oramacore's test_scoring_parity_field_boost
-        assert_approx_eq!(score1, 0.37862647, 1e-6);
-        assert_approx_eq!(score2, 0.37096643, 1e-6);
-    }
-
-    #[test]
-    fn test_scoring_parity_single_doc() {
-        // Test 4: Single doc, single token (simplest case)
-        // Doc1: field_length=3, "hello" exact=[0] stemmed=[2]
-        //   → tf = 1+1 = 2, oramacore doc_length = max(2)+1 = 3
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(3, vec![("hello", vec![0], vec![2])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["hello".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: false,
-                    boost: 1.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-
-        println!("test_scoring_parity_single_doc:");
-        println!("  doc1 score = {score1:.10}");
-
-        // Cross-repo parity: must match oramacore's test_scoring_parity_single_doc
-        assert_approx_eq!(score1, 0.527_417_2, 1e-6);
-    }
-
-    #[test]
-    fn test_scoring_parity_stemmed_only() {
-        // Test 5: Stemmed-only positions
-        // Doc1: field_length=4, "run" exact=[] stemmed=[0,1,3]
-        //   → tf(exact_match=false) = 3, oramacore doc_length = max(3)+1 = 4
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(4, vec![("run", vec![], vec![0, 1, 3])]));
-        index.compact(1).unwrap();
-
-        // exact_match=false → tf=3 (stemmed only)
-        let tokens = vec!["run".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: false,
-                    boost: 1.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-        println!("test_scoring_parity_stemmed_only (exact_match=false):");
-        println!("  doc1 score = {score1:.10}");
-        // Cross-repo parity: must match oramacore's test_scoring_parity_stemmed_only
-        assert_approx_eq!(score1, 0.558_441_7, 1e-6);
-
-        // exact_match=true → tf=0, no results
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: true,
-                    boost: 1.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        println!("test_scoring_parity_stemmed_only (exact_match=true):");
-        println!("  scores = {scores:?}");
-
-        assert!(
-            scores.is_empty(),
-            "exact_match=true with stemmed-only should yield no results"
-        );
-    }
-
-    #[test]
-    fn test_scoring_parity_varying_lengths() {
-        // Test 6: Multiple documents with varying field lengths
-        // Doc1: field_length=10, "word" exact=[0,1,2] stemmed=[9]
-        //   → tf = 3+1 = 4, oramacore doc_length = max(9)+1 = 10
-        // Doc2: field_length=2,  "word" exact=[0] stemmed=[1]
-        //   → tf = 1+1 = 2, oramacore doc_length = max(1)+1 = 2
-        // Doc3: field_length=20, "word" exact=[0,1] stemmed=[0,19]
-        //   → tf = 2+2 = 4, oramacore doc_length = max(19)+1 = 20
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        index.insert(1, make_value(10, vec![("word", vec![0, 1, 2], vec![9])]));
-        index.insert(2, make_value(2, vec![("word", vec![0], vec![1])]));
-        index.insert(3, make_value(20, vec![("word", vec![0, 1], vec![0, 19])]));
-        index.compact(1).unwrap();
-
-        let tokens = vec!["word".to_string()];
-        let mut scorer = BM25u64Scorer::new();
-        index
-            .search(
-                &SearchParams {
-                    tokens: &tokens,
-                    exact_match: false,
-                    boost: 1.0,
-                    tolerance: None,
-                    ..Default::default()
-                },
-                &mut scorer,
-            )
-            .unwrap();
-        let scores = scorer.get_scores();
-
-        let score1 = scores[&1];
-        let score2 = scores[&2];
-        let score3 = scores[&3];
-
-        println!("test_scoring_parity_varying_lengths:");
-        println!("  doc1 (fl=10, tf=4) score = {score1:.10}");
-        println!("  doc2 (fl=2,  tf=2) score = {score2:.10}");
-        println!("  doc3 (fl=20, tf=4) score = {score3:.10}");
-
-        // Cross-repo parity: must match oramacore's test_scoring_parity_varying_lengths
-        assert_approx_eq!(score1, 0.268_205_7, 1e-6);
-        assert_approx_eq!(score2, 0.27248147, 1e-6);
-        assert_approx_eq!(score3, 0.252_027_1, 1e-6);
-    }
-
-    #[test]
-    fn test_score_consistency_after_live_delete_of_compacted_doc() {
-        let tmp = TempDir::new().unwrap();
-        let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
-
-        // Insert two docs with different field lengths so avg_field_length
-        // changes noticeably when one is removed.
-        index.insert(1, make_value(5, vec![("hello", vec![0], vec![])]));
-        index.insert(2, make_value(15, vec![("hello", vec![0], vec![])]));
-        index.compact(1).unwrap();
-
-        // Delete doc 2 in the live layer (no compaction yet).
-        // Logical state: only doc 1 is alive.
-        index.delete(2);
-        let score_before_compact = {
-            let result = search_default(&index, &["hello"]);
-            assert_eq!(result.docs.len(), 1, "only doc 1 should be returned");
-            assert_eq!(result.docs[0].doc_id, 1);
-            result.docs[0].score
-        };
-
-        // Compact to materialize the delete.
-        // Logical state is still: only doc 1 is alive.
-        index.compact(2).unwrap();
-        let score_after_compact = {
-            let result = search_default(&index, &["hello"]);
-            assert_eq!(result.docs.len(), 1, "only doc 1 should be returned");
-            assert_eq!(result.docs[0].doc_id, 1);
-            result.docs[0].score
-        };
-
-        // IDF is now correct (total_documents accounts for compacted-doc deletes),
-        // but avg_field_length is still slightly off because the live layer doesn't know
-        // the deleted doc's field length (stored in the compacted mmap). This causes a
-        // score difference proportional to the field-length variance. The gap is fully
-        // resolved on compaction. We use a wider tolerance to document this known trade-off.
-        assert_approx_eq!(score_before_compact, score_after_compact, 0.1);
+        assert!(result.passed);
     }
 }

@@ -37,6 +37,33 @@ impl TryFrom<f32> for Threshold {
     }
 }
 
+/// Configuration for multi-segment compaction.
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentConfig {
+    /// Maximum number of postings per segment before creating a new one.
+    pub max_postings_per_segment: usize,
+    /// Deletion threshold controlling when segments are rebuilt.
+    pub deletion_threshold: Threshold,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            max_postings_per_segment: 5_000_000,
+            deletion_threshold: Threshold::default(),
+        }
+    }
+}
+
+impl From<Threshold> for SegmentConfig {
+    fn from(threshold: Threshold) -> Self {
+        Self {
+            max_postings_per_segment: 5_000_000,
+            deletion_threshold: threshold,
+        }
+    }
+}
+
 /// BM25 scoring parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct Bm25Params {

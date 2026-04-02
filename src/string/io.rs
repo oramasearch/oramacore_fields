@@ -1,9 +1,12 @@
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+/// Previous format version for v1→v2 migration detection.
+pub const FORMAT_VERSION_V1: u32 = 1;
 
 /// Read the format version and version number from the CURRENT file.
 pub fn read_current(base_path: &Path) -> Result<Option<(u32, u64)>> {
@@ -128,6 +131,157 @@ pub fn list_version_dirs(base_path: &Path) -> Result<Box<dyn Iterator<Item = u64
 pub fn remove_version_dir(base_path: &Path, version_number: u64) -> Result<()> {
     let dir = version_dir(base_path, version_number);
     fs::remove_dir_all(&dir).with_context(|| format!("Failed to remove version directory: {dir:?}"))
+}
+
+/// Return the path for a segment data directory: `base_path/segments/seg_{id}`.
+pub fn segment_data_dir(base_path: &Path, segment_id: u64) -> PathBuf {
+    base_path
+        .join("segments")
+        .join(format!("seg_{segment_id}"))
+}
+
+/// Create and return the segment data directory.
+pub fn ensure_segment_dir(base_path: &Path, segment_id: u64) -> Result<PathBuf> {
+    let dir = segment_data_dir(base_path, segment_id);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create segment directory: {dir:?}"))?;
+    Ok(dir)
+}
+
+/// List all segment IDs that exist under `base_path/segments/`.
+pub fn list_segment_dirs(base_path: &Path) -> Result<Vec<u64>> {
+    let segments_dir = base_path.join("segments");
+    if !segments_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let entries = fs::read_dir(&segments_dir)
+        .with_context(|| format!("Failed to read segments directory: {segments_dir:?}"))?;
+
+    let mut ids: Vec<u64> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            name.strip_prefix("seg_")?.parse::<u64>().ok()
+        })
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// Remove a segment directory.
+pub fn remove_segment_dir(base_path: &Path, segment_id: u64) -> Result<()> {
+    let dir = segment_data_dir(base_path, segment_id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .with_context(|| format!("Failed to remove segment directory: {dir:?}"))?;
+    }
+    Ok(())
+}
+
+/// A single entry in the manifest describing one segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestEntry {
+    pub segment_id: u64,
+    pub num_postings: usize,
+    pub num_deletes: usize,
+    pub min_doc_id: u64,
+    pub max_doc_id: u64,
+    pub total_doc_length: u64,
+    pub total_documents: u64,
+}
+
+/// Write manifest.json to the version directory.
+/// Asserts that entries are ordered by `min_doc_id` ascending.
+pub fn write_manifest(version_dir: &Path, entries: &[ManifestEntry]) -> Result<()> {
+    // Validate ordering invariant
+    for i in 1..entries.len() {
+        assert!(
+            entries[i].min_doc_id >= entries[i - 1].min_doc_id,
+            "Manifest entries must be ordered by min_doc_id: entry {} has min_doc_id {} but entry {} has min_doc_id {}",
+            i - 1, entries[i - 1].min_doc_id, i, entries[i].min_doc_id
+        );
+    }
+
+    let path = version_dir.join("manifest.json");
+    let json = serde_json::to_string_pretty(entries)
+        .with_context(|| "Failed to serialize manifest")?;
+
+    let file = File::create(&path)
+        .with_context(|| format!("Failed to create manifest file: {path:?}"))?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(json.as_bytes())?;
+    writer
+        .into_inner()
+        .map_err(|e| e.into_error())
+        .with_context(|| format!("Failed to flush manifest buffer for: {path:?}"))?
+        .sync_all()
+        .with_context(|| format!("Failed to sync manifest file: {path:?}"))?;
+
+    Ok(())
+}
+
+/// Read manifest.json from the version directory. Returns error if ordering is violated.
+pub fn read_manifest(version_dir: &Path) -> Result<Vec<ManifestEntry>> {
+    let path = version_dir.join("manifest.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read manifest file: {path:?}"))?;
+
+    let entries: Vec<ManifestEntry> = serde_json::from_str(&contents)
+        .with_context(|| format!("Failed to parse manifest file: {path:?}"))?;
+
+    // Validate ordering invariant
+    for i in 1..entries.len() {
+        if entries[i].min_doc_id < entries[i - 1].min_doc_id {
+            return Err(anyhow!(
+                "Manifest entries not ordered by min_doc_id: entry {} has {} but entry {} has {}",
+                i - 1,
+                entries[i - 1].min_doc_id,
+                i,
+                entries[i].min_doc_id
+            ));
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Write the CURRENT file atomically with a specific format version and version number.
+pub fn write_current_atomic_versioned(
+    base_path: &Path,
+    format_version: u32,
+    version_number: u64,
+) -> Result<()> {
+    let current_path = base_path.join("CURRENT");
+    let tmp_path = base_path.join("CURRENT.tmp");
+
+    let mut file = File::create(&tmp_path)
+        .with_context(|| format!("Failed to create CURRENT.tmp: {tmp_path:?}"))?;
+
+    writeln!(file, "{format_version}")
+        .with_context(|| "Failed to write format version to CURRENT.tmp")?;
+    write!(file, "{version_number}")
+        .with_context(|| "Failed to write version number to CURRENT.tmp")?;
+
+    file.sync_all()
+        .with_context(|| "Failed to sync CURRENT.tmp")?;
+
+    fs::rename(&tmp_path, &current_path)
+        .with_context(|| "Failed to atomically rename CURRENT.tmp to CURRENT")?;
+
+    if let Ok(canonical) = base_path.canonicalize() {
+        if let Some(parent) = canonical.parent() {
+            if let Ok(dir) = OpenOptions::new().read(true).open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Write sorted u64 doc_ids to a file.

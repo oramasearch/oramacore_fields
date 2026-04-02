@@ -10,14 +10,13 @@ pub struct IndexInfo {
     pub format_version: u32,
     pub current_version_number: u64,
     pub version_dir: PathBuf,
+    pub num_segments: usize,
     pub unique_terms_count: usize,
     pub total_postings_count: usize,
     pub total_documents: u64,
     pub avg_field_length: f64,
     pub deleted_count: usize,
-    pub fst_size_bytes: u64,
-    pub postings_size_bytes: u64,
-    pub doc_lengths_size_bytes: u64,
+    pub total_segments_size_bytes: u64,
     pub deleted_size_bytes: u64,
     pub global_info_size_bytes: u64,
     pub pending_ops: usize,
@@ -25,11 +24,7 @@ pub struct IndexInfo {
 
 impl IndexInfo {
     pub fn total_size_bytes(&self) -> u64 {
-        self.fst_size_bytes
-            + self.postings_size_bytes
-            + self.doc_lengths_size_bytes
-            + self.deleted_size_bytes
-            + self.global_info_size_bytes
+        self.total_segments_size_bytes + self.deleted_size_bytes + self.global_info_size_bytes
     }
 }
 

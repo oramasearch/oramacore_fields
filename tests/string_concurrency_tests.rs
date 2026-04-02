@@ -11,7 +11,7 @@ use std::thread;
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25u64Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
+    BM25u64Scorer, IndexedValue, SearchParams, SegmentConfig, StringStorage, TermData, Threshold,
 };
 
 // ============================================================================
@@ -67,7 +67,7 @@ fn search_doc_ids_sorted(index: &StringStorage, token: &str) -> Vec<u64> {
 fn test_concurrent_reads_consistency() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Populate
     for i in 1..=100u64 {
@@ -101,7 +101,7 @@ fn test_concurrent_reads_consistency() {
 fn test_concurrent_reads_during_dirty_snapshot() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=50u64 {
@@ -157,7 +157,7 @@ fn test_concurrent_reads_during_dirty_snapshot() {
 fn test_concurrent_multi_thread_inserts() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     let num_threads = 4;
     let docs_per_thread = 250;
@@ -194,7 +194,7 @@ fn test_concurrent_multi_thread_inserts() {
 fn test_concurrent_inserts_same_doc_id() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -233,7 +233,7 @@ fn test_concurrent_inserts_same_doc_id() {
 fn test_search_during_compaction() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=100u64 {
@@ -278,7 +278,7 @@ fn test_search_during_compaction() {
 fn test_search_result_stability_across_version_swap() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     for i in 1..=50u64 {
         index.insert(i, make_value(2, vec![("term", vec![0], vec![])]));
@@ -326,7 +326,7 @@ fn test_search_result_stability_across_version_swap() {
 fn test_writes_preserved_during_compaction() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=50u64 {
@@ -365,7 +365,7 @@ fn test_writes_preserved_during_compaction() {
 fn test_deletes_preserved_during_compaction() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=100u64 {
@@ -401,7 +401,7 @@ fn test_deletes_preserved_during_compaction() {
 fn test_concurrent_compaction_serialization() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=100u64 {
@@ -447,7 +447,7 @@ fn test_concurrent_compaction_serialization() {
 fn test_mixed_insert_delete_search() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Pre-populate
     for i in 1..=100u64 {
@@ -509,7 +509,7 @@ fn test_mixed_insert_delete_search() {
 fn test_high_write_contention() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     let num_threads = 16;
     let inserts_per_thread = 1000;
@@ -553,7 +553,7 @@ fn test_high_write_contention() {
 fn test_snapshot_isolation_during_compaction() {
     let tmp = TempDir::new().unwrap();
     let index =
-        Arc::new(StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap());
+        Arc::new(StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap());
 
     // Phase 1: Insert initial data and compact
     for i in 1..=50u64 {

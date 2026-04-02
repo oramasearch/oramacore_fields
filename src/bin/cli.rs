@@ -823,9 +823,9 @@ enum StringCommands {
 }
 
 fn string_check(path: &Path, verbose: bool) -> Result<(), String> {
-    use oramacore_fields::string::{CheckStatus, StringStorage, Threshold};
+    use oramacore_fields::string::{CheckStatus, SegmentConfig, StringStorage};
 
-    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+    let index = StringStorage::new(path.to_path_buf(), SegmentConfig::default())
         .map_err(|e| format!("Failed to open index: {e}"))?;
 
     let result = index.integrity_check();
@@ -856,9 +856,9 @@ fn string_check(path: &Path, verbose: bool) -> Result<(), String> {
 }
 
 fn string_info(path: &Path, format: OutputFormat) -> Result<(), String> {
-    use oramacore_fields::string::{StringStorage, Threshold};
+    use oramacore_fields::string::{SegmentConfig, StringStorage};
 
-    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+    let index = StringStorage::new(path.to_path_buf(), SegmentConfig::default())
         .map_err(|e| format!("Failed to open index: {e}"))?;
 
     let info = index.info();
@@ -877,9 +877,8 @@ fn string_info(path: &Path, format: OutputFormat) -> Result<(), String> {
             println!("Avg field length:  {:.2}", info.avg_field_length);
             println!("Deleted entries:   {}", info.deleted_count);
             println!();
-            println!("FST size:          {} bytes", info.fst_size_bytes);
-            println!("Postings size:     {} bytes", info.postings_size_bytes);
-            println!("Doc lengths size:  {} bytes", info.doc_lengths_size_bytes);
+            println!("Num segments:      {}", info.num_segments);
+            println!("Segments size:     {} bytes", info.total_segments_size_bytes);
             println!("Deleted size:      {} bytes", info.deleted_size_bytes);
             println!("Global info size:  {} bytes", info.global_info_size_bytes);
             println!("Total size:        {} bytes", info.total_size_bytes());
@@ -920,10 +919,10 @@ fn string_search(
     format: OutputFormat,
 ) -> Result<(), String> {
     use oramacore_fields::string::{
-        BM25u64Scorer, Bm25Params, SearchParams, StringStorage, Threshold,
+        BM25u64Scorer, Bm25Params, SearchParams, SegmentConfig, StringStorage,
     };
 
-    let index = StringStorage::new(path.to_path_buf(), Threshold::default())
+    let index = StringStorage::new(path.to_path_buf(), SegmentConfig::default())
         .map_err(|e| format!("Failed to open index: {e}"))?;
 
     let tokens: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
@@ -1601,14 +1600,14 @@ mod tests_cli {
 
     fn create_test_string_index() -> (TempDir, PathBuf) {
         use oramacore_fields::string::{
-            IndexedValue as StringIndexedValue, StringStorage, TermData, Threshold,
+            IndexedValue as StringIndexedValue, SegmentConfig, StringStorage, TermData,
         };
         use std::collections::HashMap;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().to_path_buf();
 
-        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+        let index = StringStorage::new(path.clone(), SegmentConfig::default()).unwrap();
 
         let mut terms1 = HashMap::new();
         terms1.insert("hello".to_string(), TermData::new(vec![0], vec![]));
@@ -1774,11 +1773,11 @@ mod tests_cli {
 
     #[test]
     fn test_string_cmd_check_uncompacted_index() {
-        use oramacore_fields::string::{StringStorage, Threshold};
+        use oramacore_fields::string::{SegmentConfig, StringStorage};
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().to_path_buf();
-        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+        let index = StringStorage::new(path.clone(), SegmentConfig::default()).unwrap();
         let result = index.integrity_check();
         assert!(!result.passed);
     }

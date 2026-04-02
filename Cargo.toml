@@ -11,9 +11,9 @@ repository="https://github.com/oramasearch/oramacore_fields"
 [features]
 default = ["simd"]
 simd = []
-serde = ["dep:serde"]
-cli = ["clap", "serde"]
+cli = ["clap"]
 alloc-tests = []
+serde = []
 
 [dependencies]
 anyhow = "1.0"
@@ -26,7 +26,7 @@ serde_json = "1.0"
 smallvec = "1"
 tracing = "0.1"
 clap = { version = "4", features = ["derive"], optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

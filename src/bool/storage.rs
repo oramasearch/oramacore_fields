@@ -185,7 +185,9 @@ impl BoolStorage {
     fn fresh_snapshot(&self) -> Arc<LiveSnapshot> {
         let live = self.live.read().unwrap();
         if !live.is_snapshot_dirty() {
-            return live.get_snapshot();
+            let snapshot = live.get_snapshot();
+            drop(live);
+            return snapshot;
         }
         drop(live);
         let mut live = self.live.write().unwrap();
@@ -320,11 +322,11 @@ impl BoolStorage {
         write_current_atomic(&self.base_path, version_number)?;
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_number)?;
         {
             let mut live = self.live.write().unwrap();
 
             // Swap version while holding lock
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
             self.version.store(Arc::new(new_version));
 
             // Remove compacted ops by position, not by value.
