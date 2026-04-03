@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use oramacore_fields::string::{
     BM25u64Scorer, CheckStatus, DocumentFilter, IndexedValue, SearchParams, SearchResult,
-    StringStorage, TermData, Threshold,
+    SegmentConfig, StringStorage, TermData, Threshold,
 };
 
 // ============================================================================
@@ -109,7 +109,7 @@ fn search_with_filter<F: DocumentFilter>(
 #[test]
 fn test_basic_insert_and_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(3, vec![("hello", vec![0], vec![1, 2])]));
     index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
@@ -131,7 +131,7 @@ fn test_basic_insert_and_search() {
 #[test]
 fn test_search_returns_no_results_for_missing_term() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
 
@@ -145,7 +145,7 @@ fn test_search_returns_no_results_for_missing_term() {
 #[test]
 fn test_delete_removes_doc_from_results() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -159,7 +159,7 @@ fn test_delete_removes_doc_from_results() {
 #[test]
 fn test_delete_nonexistent_is_noop() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.delete(999); // does not exist
@@ -171,7 +171,7 @@ fn test_delete_nonexistent_is_noop() {
 #[test]
 fn test_duplicate_inserts() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(1, make_value(3, vec![("hello", vec![0, 1], vec![])]));
@@ -183,7 +183,7 @@ fn test_duplicate_inserts() {
 #[test]
 fn test_doc_id_zero() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(0, make_value(2, vec![("hello", vec![0], vec![])]));
     let ids = search_doc_ids(&index, "hello");
@@ -212,7 +212,7 @@ fn test_doc_id_zero() {
 #[test]
 fn test_compaction_preserves_data() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(3, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
@@ -248,7 +248,10 @@ fn test_compaction_applies_deletes() {
     // Low threshold → apply-deletes mode
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        Threshold::try_from(0.01f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -281,7 +284,10 @@ fn test_compaction_carries_forward_deletes() {
     // High threshold → carry-forward mode
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        Threshold::try_from(0.99f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.99f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -308,7 +314,7 @@ fn test_compaction_carries_forward_deletes() {
 #[test]
 fn test_multiple_compactions() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("alpha", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -330,7 +336,7 @@ fn test_multiple_compactions() {
 #[test]
 fn test_empty_compaction_skipped() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -356,14 +362,14 @@ fn test_persistence_across_reopen() {
     let path = tmp.path().to_path_buf();
 
     {
-        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+        let index = StringStorage::new(path.clone(), SegmentConfig::default()).unwrap();
         index.insert(1, make_value(3, vec![("hello", vec![0], vec![1])]));
         index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
         index.compact(1).unwrap();
     }
 
     {
-        let index = StringStorage::new(path, Threshold::default()).unwrap();
+        let index = StringStorage::new(path, SegmentConfig::default()).unwrap();
         assert_eq!(index.current_version_number(), 1);
 
         let ids = search_doc_ids(&index, "hello");
@@ -380,7 +386,7 @@ fn test_persistence_multiple_compactions() {
     let path = tmp.path().to_path_buf();
 
     {
-        let index = StringStorage::new(path.clone(), Threshold::default()).unwrap();
+        let index = StringStorage::new(path.clone(), SegmentConfig::default()).unwrap();
         index.insert(1, make_value(2, vec![("alpha", vec![0], vec![])]));
         index.compact(1).unwrap();
 
@@ -389,7 +395,7 @@ fn test_persistence_multiple_compactions() {
     }
 
     {
-        let index = StringStorage::new(path, Threshold::default()).unwrap();
+        let index = StringStorage::new(path, SegmentConfig::default()).unwrap();
         assert_eq!(index.current_version_number(), 2);
         assert_eq!(search_doc_ids(&index, "alpha"), vec![1]);
         assert_eq!(search_doc_ids(&index, "beta"), vec![2]);
@@ -403,7 +409,7 @@ fn test_persistence_multiple_compactions() {
 #[test]
 fn test_exact_match_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("apple", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("application", vec![0], vec![])]));
@@ -426,7 +432,7 @@ fn test_exact_match_search() {
 #[test]
 fn test_prefix_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("apple", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("application", vec![0], vec![])]));
@@ -455,7 +461,7 @@ fn test_prefix_search() {
 #[test]
 fn test_levenshtein_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("apple", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("apply", vec![0], vec![])]));
@@ -484,7 +490,7 @@ fn test_levenshtein_search() {
 #[test]
 fn test_exact_match_flag() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1: has both exact and stemmed positions
     index.insert(1, make_value(3, vec![("run", vec![0], vec![1, 2])]));
@@ -515,7 +521,7 @@ fn test_exact_match_flag() {
 #[test]
 fn test_stemmed_match() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Only stemmed positions
     index.insert(1, make_value(3, vec![("running", vec![], vec![0, 1])]));
@@ -554,7 +560,7 @@ fn test_stemmed_match() {
 #[test]
 fn test_multi_token_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1 matches both tokens
     index.insert(
@@ -601,7 +607,7 @@ fn test_multi_token_search() {
 #[test]
 fn test_phrase_boost_increases_score() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1: adjacent tokens (positions 0 and 1)
     index.insert(
@@ -642,7 +648,7 @@ fn test_phrase_boost_increases_score() {
 #[test]
 fn test_phrase_boost_disabled_by_default() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Both docs have same terms, same field lengths, only differ in positions
     index.insert(
@@ -687,7 +693,7 @@ fn test_phrase_boost_disabled_by_default() {
 #[test]
 fn test_scorer_threshold_filters_partial_matches() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1 matches both tokens
     index.insert(
@@ -721,7 +727,7 @@ fn test_scorer_threshold_filters_partial_matches() {
 #[test]
 fn test_scorer_no_threshold_includes_all() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1 matches both
     index.insert(
@@ -758,7 +764,7 @@ fn test_scorer_no_threshold_includes_all() {
 #[test]
 fn test_scorer_top_k_returns_highest_scores() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Insert docs with different field lengths so BM25 produces distinct scores.
     // Shorter field length → higher BM25 score for the same term.
@@ -808,7 +814,7 @@ fn test_scorer_top_k_returns_highest_scores() {
 #[test]
 fn test_scorer_top_k_larger_than_total() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(5, vec![("hello", vec![0], vec![])]));
@@ -833,7 +839,7 @@ fn test_scorer_top_k_larger_than_total() {
 #[test]
 fn test_scorer_top_k_zero() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -857,7 +863,7 @@ fn test_scorer_top_k_zero() {
 #[test]
 fn test_scorer_top_k_with_threshold() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Doc 1 matches both tokens
     index.insert(
@@ -914,7 +920,7 @@ fn test_scorer_top_k_with_threshold() {
 #[test]
 fn test_scorer_top_k_ordering_matches_full_sort() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Insert many docs with varied field lengths for score diversity
     for i in 1..=50u64 {
@@ -981,7 +987,7 @@ impl DocumentFilter for AllowList {
 #[test]
 fn test_document_filter_excludes_docs() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -996,7 +1002,7 @@ fn test_document_filter_excludes_docs() {
 #[test]
 fn test_no_filter_includes_all() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -1014,7 +1020,7 @@ fn test_no_filter_includes_all() {
 #[test]
 fn test_large_doc_ids() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     let large_id = u64::MAX - 1;
     index.insert(large_id, make_value(2, vec![("term", vec![0], vec![])]));
@@ -1037,7 +1043,7 @@ fn test_large_doc_ids() {
 #[test]
 fn test_unicode_terms() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("日本語", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("café", vec![0], vec![])]));
@@ -1052,7 +1058,7 @@ fn test_unicode_terms() {
 #[test]
 fn test_many_terms_per_doc() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     let terms: Vec<(&str, Vec<u32>, Vec<u32>)> = (0..50)
         .map(|i| {
@@ -1074,7 +1080,7 @@ fn test_many_terms_per_doc() {
 #[test]
 fn test_many_docs_same_term() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     for i in 1..=1000u64 {
         index.insert(i, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -1088,7 +1094,7 @@ fn test_many_docs_same_term() {
 #[test]
 fn test_empty_index_search() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     let ids = search_doc_ids(&index, "anything");
     assert!(ids.is_empty(), "empty index should return no results");
@@ -1101,7 +1107,7 @@ fn test_empty_index_search() {
 #[test]
 fn test_info_empty_index() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     let info = index.info();
     assert_eq!(info.current_version_number, 0);
@@ -1115,7 +1121,7 @@ fn test_info_empty_index() {
 #[test]
 fn test_info_with_pending_ops() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("world", vec![0], vec![])]));
@@ -1130,7 +1136,7 @@ fn test_info_with_pending_ops() {
 #[test]
 fn test_info_after_compaction() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(
         1,
@@ -1148,14 +1154,14 @@ fn test_info_after_compaction() {
     assert_eq!(info.total_documents, 2);
     assert_eq!(info.pending_ops, 0);
     assert!(info.avg_field_length > 0.0);
-    assert!(info.fst_size_bytes > 0);
-    assert!(info.postings_size_bytes > 0);
+    assert!(info.num_segments > 0);
+    assert!(info.total_segments_size_bytes > 0);
 }
 
 #[test]
 fn test_info_with_deletes() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -1167,7 +1173,10 @@ fn test_info_with_deletes() {
     // Compact with low threshold to apply deletes
     let index2 = StringStorage::new(
         tmp.path().to_path_buf(),
-        Threshold::try_from(0.01f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
     index2.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -1190,7 +1199,7 @@ fn test_info_with_deletes() {
 #[test]
 fn test_integrity_check_before_compaction() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     let result = index.integrity_check();
     assert!(
@@ -1202,7 +1211,7 @@ fn test_integrity_check_before_compaction() {
 #[test]
 fn test_integrity_check_after_compaction() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -1218,7 +1227,7 @@ fn test_integrity_check_after_compaction() {
 #[test]
 fn test_integrity_check_corrupted_current_file() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -1236,13 +1245,13 @@ fn test_integrity_check_corrupted_current_file() {
 #[test]
 fn test_integrity_check_missing_required_file() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
 
-    // Remove keys.fst
-    std::fs::remove_file(tmp.path().join("versions/1/keys.fst")).unwrap();
+    // Remove keys.fst from the segment directory
+    std::fs::remove_file(tmp.path().join("segments/seg_0/keys.fst")).unwrap();
 
     let result = index.integrity_check();
     assert!(
@@ -1261,7 +1270,7 @@ fn test_integrity_check_missing_required_file() {
 #[test]
 fn test_integrity_check_with_deletes_compacted() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.insert(2, make_value(2, vec![("hello", vec![0], vec![])]));
@@ -1283,7 +1292,7 @@ fn test_integrity_check_with_deletes_compacted() {
 #[test]
 fn test_cleanup_removes_old_versions() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("hello", vec![0], vec![])]));
     index.compact(1).unwrap();
@@ -1325,7 +1334,7 @@ fn test_cleanup_removes_old_versions() {
 #[test]
 fn test_delete_reinsert_live_only() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     index.insert(1, make_value(2, vec![("oldterm", vec![0], vec![])]));
     index.delete(1);
@@ -1348,7 +1357,7 @@ fn test_delete_reinsert_live_only() {
 #[test]
 fn test_delete_reinsert_after_compaction() {
     let tmp = TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Insert doc with "oldterm" and compact to disk
     index.insert(1, make_value(2, vec![("oldterm", vec![0], vec![])]));

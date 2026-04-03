@@ -146,13 +146,13 @@ assert!(results.contains(&4));
 ```rust,no_run
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # use tempfile::tempdir;
-use oramacore_fields::string::{StringStorage, Threshold, IndexedValue, TermData, SearchParams, BM25u64Scorer};
+use oramacore_fields::string::{StringStorage, SegmentConfig, IndexedValue, TermData, SearchParams, BM25u64Scorer};
 use std::collections::HashMap;
 # let dir = tempdir()?;
 
 let storage = StringStorage::new(
     dir.path().to_path_buf(),
-    Threshold::default(),
+    SegmentConfig::default(),
 ).unwrap();
 
 // Insert a document with term positions

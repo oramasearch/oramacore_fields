@@ -149,6 +149,7 @@ impl BoolStorage {
             IndexedValue::Plain(b) => {
                 let mut live = self.live.write().unwrap();
                 live.insert(*b, doc_id);
+                drop(live);
             }
             IndexedValue::Array(bools) => {
                 let has_true = bools.iter().any(|&b| b);
@@ -161,6 +162,7 @@ impl BoolStorage {
                     if has_false {
                         live.insert(false, doc_id);
                     }
+                    drop(live);
                 }
             }
         }
@@ -176,34 +178,45 @@ impl BoolStorage {
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     /// Get a snapshot of the live layer, refreshing it if needed.
     fn fresh_snapshot(&self) -> Arc<LiveSnapshot> {
         let live = self.live.read().unwrap();
         if !live.is_snapshot_dirty() {
-            return live.get_snapshot();
+            let snapshot = live.get_snapshot();
+            drop(live);
+            return snapshot;
         }
         drop(live);
         let mut live = self.live.write().unwrap();
         if live.is_snapshot_dirty() {
             live.refresh_snapshot();
         }
-        live.get_snapshot()
+        let snapshot = live.get_snapshot();
+        drop(live);
+        snapshot
     }
 
     pub fn filter(&self, value: bool) -> FilterData {
         let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                (live.get_snapshot(), self.version.load())
+                let snapshot = live.get_snapshot();
+                let version = self.version.load();
+                drop(live);
+                (snapshot, version)
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                (live.get_snapshot(), self.version.load())
+                let snapshot = live.get_snapshot();
+                let version = self.version.load();
+                drop(live);
+                (snapshot, version)
             }
         };
         FilterData::new(Arc::clone(&version), snapshot, value)
@@ -221,14 +234,20 @@ impl BoolStorage {
         let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                (live.get_snapshot(), self.version.load())
+                let snapshot = live.get_snapshot();
+                let version = self.version.load();
+                drop(live);
+                (snapshot, version)
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                (live.get_snapshot(), self.version.load())
+                let snapshot = live.get_snapshot();
+                let version = self.version.load();
+                drop(live);
+                (snapshot, version)
             }
         };
         SortData::new(Arc::clone(&version), snapshot, order)
@@ -268,6 +287,7 @@ impl BoolStorage {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -302,11 +322,11 @@ impl BoolStorage {
         write_current_atomic(&self.base_path, version_number)?;
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_number)?;
         {
             let mut live = self.live.write().unwrap();
 
             // Swap version while holding lock
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
             self.version.store(Arc::new(new_version));
 
             // Remove compacted ops by position, not by value.
@@ -319,6 +339,7 @@ impl BoolStorage {
 
             // Refresh snapshot to reflect cleared state
             live.refresh_snapshot();
+            drop(live);
         }
 
         drop(compaction_guard);
@@ -552,6 +573,8 @@ impl BoolStorage {
     pub fn info(&self) -> IndexInfo {
         let version = self.version.load();
         let live = self.live.read().unwrap();
+        let pending_ops = live.ops.len();
+        drop(live);
         let ver_dir = version_dir(&self.base_path, version.version_number);
 
         IndexInfo {
@@ -564,7 +587,7 @@ impl BoolStorage {
             true_size_bytes: file_size(&ver_dir.join("true.bin")),
             false_size_bytes: file_size(&ver_dir.join("false.bin")),
             deleted_size_bytes: file_size(&ver_dir.join("deleted.bin")),
-            pending_ops: live.ops.len(),
+            pending_ops,
         }
     }
 

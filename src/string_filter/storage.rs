@@ -62,12 +62,14 @@ impl StringFilterStorage {
             super::indexer::IndexedValue::Plain(s) => {
                 let mut live = self.live.write().unwrap();
                 live.insert(s, doc_id);
+                drop(live);
             }
             super::indexer::IndexedValue::Array(strings) => {
                 let mut live = self.live.write().unwrap();
                 for s in strings {
                     live.insert(s, doc_id);
                 }
+                drop(live);
             }
         }
     }
@@ -76,6 +78,7 @@ impl StringFilterStorage {
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     /// Return filter data for iterating over doc_ids matching the exact string value.
@@ -83,14 +86,18 @@ impl StringFilterStorage {
         let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             }
         };
         FilterData::new(Arc::clone(&version), snapshot, value)
@@ -105,14 +112,18 @@ impl StringFilterStorage {
         let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             }
         };
 
@@ -160,20 +171,24 @@ impl StringFilterStorage {
 
     /// Persist pending changes to disk at the given version number.
     pub fn compact(&self, version_number: u64) -> Result<()> {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
 
         // Take snapshot (double-check locking to avoid blocking readers)
         let snapshot = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             }
         };
 
@@ -185,6 +200,7 @@ impl StringFilterStorage {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -211,15 +227,17 @@ impl StringFilterStorage {
         write_current_atomic(&self.base_path, version_number)?;
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_number)?;
         {
             let mut live = self.live.write().unwrap();
-            let new_version = CompactedVersion::load(&self.base_path, version_number)?;
             self.version.store(Arc::new(new_version));
 
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
+            drop(live);
         }
 
+        drop(compaction_guard);
         Ok(())
     }
 
@@ -307,7 +325,7 @@ impl StringFilterStorage {
 
     /// Delete old version directories, keeping only the current one.
     pub fn cleanup(&self) {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version = self.version.load().version_number;
 
         let version_numbers = match list_version_dirs(&self.base_path) {
@@ -325,12 +343,16 @@ impl StringFilterStorage {
                 }
             }
         }
+        drop(compaction_guard);
     }
 
     /// Return metadata and statistics about the index.
     pub fn info(&self) -> IndexInfo {
         let version = self.version.load();
         let live = self.live.read().unwrap();
+        let pending_ops = live.ops.len();
+        drop(live);
+
         let ver_dir = version_dir(&self.base_path, version.version_number);
 
         let compacted_postings = version.total_postings();
@@ -345,7 +367,7 @@ impl StringFilterStorage {
             fst_size_bytes: file_size(&ver_dir.join("keys.fst")),
             postings_size_bytes: file_size(&ver_dir.join("postings.dat")),
             deleted_size_bytes: file_size(&ver_dir.join("deleted.bin")),
-            pending_ops: live.ops.len(),
+            pending_ops,
         }
     }
 

@@ -53,7 +53,7 @@ fn stop_counting(baseline: (usize, usize)) -> (usize, usize) {
 }
 
 use oramacore_fields::string::{
-    BM25u64Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
+    BM25u64Scorer, IndexedValue, SearchParams, SegmentConfig, StringStorage, TermData,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -67,7 +67,7 @@ fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> Inde
 }
 
 fn setup_index(dir: &Path, n: usize) -> StringStorage {
-    let index = StringStorage::new(dir.to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(dir.to_path_buf(), SegmentConfig::default()).unwrap();
     for i in 0..n {
         let term = if i % 3 == 0 {
             "apple"
@@ -173,7 +173,7 @@ fn test_search_alloc_clean_snapshot() {
 #[test]
 fn test_search_alloc_prefix() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     // Insert terms that share a prefix
     for i in 0..50u64 {
@@ -226,7 +226,7 @@ fn test_search_alloc_prefix() {
 #[test]
 fn test_search_alloc_phrase_boost() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let index = StringStorage::new(tmp.path().to_path_buf(), Threshold::default()).unwrap();
+    let index = StringStorage::new(tmp.path().to_path_buf(), SegmentConfig::default()).unwrap();
 
     for i in 0..50u64 {
         index.insert(

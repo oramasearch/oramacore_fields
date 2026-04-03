@@ -109,25 +109,31 @@ impl GeoPointStorage {
                 }
             }
         }
+        drop(live);
     }
 
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     pub fn filter(&self, op: GeoFilterOp) -> FilterData {
         let (snapshot, version) = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                (live.get_snapshot(), self.version.load())
+                let result = (live.get_snapshot(), self.version.load());
+                drop(live);
+                result
             }
         };
         FilterData::new(Arc::clone(&version), snapshot, op)
@@ -140,14 +146,18 @@ impl GeoPointStorage {
         let snapshot = {
             let live = self.live.read().unwrap();
             if !live.is_snapshot_dirty() {
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             } else {
                 drop(live);
                 let mut live = self.live.write().unwrap();
                 if live.is_snapshot_dirty() {
                     live.refresh_snapshot();
                 }
-                live.get_snapshot()
+                let snap = live.get_snapshot();
+                drop(live);
+                snap
             }
         };
 
@@ -159,6 +169,7 @@ impl GeoPointStorage {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -213,14 +224,14 @@ impl GeoPointStorage {
         }
 
         // Atomic update: swap version AND clear compacted items
+        let new_version = CompactedVersion::load(&self.base_path, version_id)?;
         {
             let mut live = self.live.write().unwrap();
-
-            let new_version = CompactedVersion::load(&self.base_path, version_id)?;
             self.version.store(Arc::new(new_version));
 
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
+            drop(live);
         }
 
         drop(compaction_guard);
@@ -486,7 +497,7 @@ impl GeoPointStorage {
     }
 
     pub fn cleanup(&self) {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
         let current_version_id = self.version.load().version_id;
 
         let version_ids = match list_version_dirs(&self.base_path) {
@@ -504,6 +515,7 @@ impl GeoPointStorage {
                 }
             }
         }
+        drop(compaction_guard);
     }
 
     pub fn integrity_check(&self) -> IntegrityCheckResult {
@@ -780,6 +792,7 @@ impl GeoPointStorage {
             .iter()
             .filter(|op| matches!(op, LiveOp::Delete(..)))
             .count();
+        drop(live);
 
         Ok(IndexInfo {
             format_version,

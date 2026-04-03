@@ -69,26 +69,32 @@ impl EmbeddingStorage {
             IndexedValue::Array(v) => v.into_iter().map(|e| e.embedding).collect(),
         };
         live.insert(doc_id, vectors);
+        drop(live);
     }
 
     /// Delete a doc_id.
     pub fn delete(&self, doc_id: u64) {
         let mut live = self.live.write().unwrap();
         live.delete(doc_id);
+        drop(live);
     }
 
     /// Get a fresh snapshot (double-check locking).
     fn fresh_snapshot(&self) -> Arc<LiveSnapshot> {
         let live = self.live.read().unwrap();
         if !live.is_snapshot_dirty() {
-            return live.get_snapshot();
+            let snapshot = live.get_snapshot();
+            drop(live);
+            return snapshot;
         }
         drop(live);
         let mut live = self.live.write().unwrap();
         if live.is_snapshot_dirty() {
             live.refresh_snapshot();
         }
-        live.get_snapshot()
+        let snapshot = live.get_snapshot();
+        drop(live);
+        snapshot
     }
 
     /// Search for k nearest neighbors.
@@ -256,7 +262,7 @@ impl EmbeddingStorage {
 
     /// Compact the index using multi-segment architecture.
     pub fn compact(&self, version_number: u64) -> Result<(), Error> {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
 
         let snapshot = self.fresh_snapshot();
         let current = self.segments.load();
@@ -269,6 +275,7 @@ impl EmbeddingStorage {
                 live.ops.shrink_to_fit();
             }
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -288,6 +295,7 @@ impl EmbeddingStorage {
             }
         }
 
+        drop(compaction_guard);
         Ok(())
     }
 
@@ -507,6 +515,7 @@ impl EmbeddingStorage {
             self.segments.store(Arc::new(new_segment_list));
             live.ops.drain(..snapshot.ops_len);
             live.refresh_snapshot();
+            drop(live);
             return Ok(());
         }
 
@@ -522,6 +531,7 @@ impl EmbeddingStorage {
             live.ops.drain(..snapshot.ops_len);
             live.ops.shrink_to_fit();
             live.refresh_snapshot();
+            drop(live);
         }
 
         Ok(())
@@ -532,7 +542,7 @@ impl EmbeddingStorage {
     }
 
     pub fn cleanup(&self) {
-        let _compaction_guard = self.compaction_lock.lock().unwrap();
+        let compaction_guard = self.compaction_lock.lock().unwrap();
         let current = self.segments.load();
         let current_version = current.version_number;
 
@@ -572,6 +582,7 @@ impl EmbeddingStorage {
                 }
             }
         }
+        drop(compaction_guard);
     }
 
     pub fn info(&self) -> IndexInfo {
@@ -579,6 +590,8 @@ impl EmbeddingStorage {
         // Get a fresh snapshot to include live (pending) entries in the count.
         let snapshot = self.fresh_snapshot();
         let live = self.live.read().unwrap();
+        let pending_ops = live.ops.len();
+        drop(live);
         let ver_dir = version_dir(&self.base_path, current.version_number);
 
         // Count embeddings from both compacted segments and live (pending) entries.
@@ -592,7 +605,7 @@ impl EmbeddingStorage {
             num_embeddings,
             dimensions: self.config.dimensions,
             metric: self.config.metric,
-            pending_ops: live.ops.len(),
+            pending_ops,
         }
     }
 

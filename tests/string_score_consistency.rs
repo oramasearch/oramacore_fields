@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use oramacore_fields::string::{
-    BM25u64Scorer, IndexedValue, SearchParams, StringStorage, TermData, Threshold,
+    BM25u64Scorer, IndexedValue, SearchParams, SegmentConfig, StringStorage, TermData, Threshold,
 };
 
 fn make_value(field_length: u16, terms: Vec<(&str, Vec<u32>, Vec<u32>)>) -> IndexedValue {
@@ -45,7 +45,10 @@ fn test_total_documents_inflated_after_carry_forward() {
     // High threshold → carry-forward mode
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        Threshold::try_from(0.99f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.99f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -73,14 +76,20 @@ fn test_total_documents_matches_across_compaction_strategies() {
     let tmp_cf = TempDir::new().unwrap();
     let cf_index = StringStorage::new(
         tmp_cf.path().to_path_buf(),
-        Threshold::try_from(0.99f64).unwrap(), // carry-forward
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.99f64).unwrap(),
+            ..Default::default()
+        }, // carry-forward
     )
     .unwrap();
 
     let tmp_ad = TempDir::new().unwrap();
     let ad_index = StringStorage::new(
         tmp_ad.path().to_path_buf(),
-        Threshold::try_from(0.01f64).unwrap(), // apply-deletes
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        }, // apply-deletes
     )
     .unwrap();
 
@@ -115,14 +124,20 @@ fn test_bm25_scores_identical_across_compaction_strategies() {
     let tmp_cf = TempDir::new().unwrap();
     let cf_index = StringStorage::new(
         tmp_cf.path().to_path_buf(),
-        Threshold::try_from(0.99f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.99f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
     let tmp_ad = TempDir::new().unwrap();
     let ad_index = StringStorage::new(
         tmp_ad.path().to_path_buf(),
-        Threshold::try_from(0.01f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.01f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -190,7 +205,10 @@ fn test_scores_stable_across_insert_delete_compact_cycles() {
     let tmp = TempDir::new().unwrap();
     let index = StringStorage::new(
         tmp.path().to_path_buf(),
-        Threshold::try_from(0.5f64).unwrap(),
+        SegmentConfig {
+            deletion_threshold: Threshold::try_from(0.5f64).unwrap(),
+            ..Default::default()
+        },
     )
     .unwrap();
 
