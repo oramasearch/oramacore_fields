@@ -20,6 +20,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+/// A slice of `(term, postings)` pairs used as the live-layer input to segment building.
+type LiveTermSlice<'a, P> = [(&'a str, &'a [(u64, P, P)])];
+
 /// Persistent full-text string index with BM25 scoring, concurrent reads and writes,
 /// and multi-segment compaction to disk.
 pub struct StringStorage {
@@ -703,7 +706,7 @@ fn rebuild_segment(
     let mut compacted_terms = segment.iter_terms();
     let mut compacted_dl = segment.iter_doc_lengths();
 
-    let empty_live: &[(&str, &[(u64, Vec<u32>, Vec<u32>)])] = &[];
+    let empty_live: &LiveTermSlice<'_, Vec<u32>> = &[];
     let result = build_segment_data(
         &mut compacted_terms,
         empty_live,

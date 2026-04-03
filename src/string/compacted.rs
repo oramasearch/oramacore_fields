@@ -211,11 +211,6 @@ impl Segment {
         }
         count
     }
-
-    /// Returns true if this segment has any data.
-    pub fn has_data(&self) -> bool {
-        self.fst_map.is_some() || self.postings_mmap.is_some() || self.doc_lengths_mmap.is_some()
-    }
 }
 
 // ─── SegmentList ───────────────────────────────────────────────────────────
